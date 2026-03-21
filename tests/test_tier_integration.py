@@ -131,14 +131,17 @@ _INTEGRATION_CASES = [
         "Silver",
     ),
     # -------------------------------------------------------------------
-    # PXD004683 — COMPLETE, PSI results present, publication + organism_part
+    # Synthetic Silver scenario: PSI results + publication + organism_part
     # annotated, BUT no SDRF.  Confirms the ladder is strictly sequential:
     # publication and organism_part do NOT elevate tier past Silver when the
     # SDRF requirement is unmet.
+    # Note: PXD000001 is re-used as the routing accession (it is genuinely
+    # Silver in real data too, though for different reasons).  The mock
+    # payload is what drives the assertion — not the live API.
     # -------------------------------------------------------------------
     (
-        "PXD004683-Silver-no-sdrf-despite-pub",
-        "PXD004683",
+        "Silver-no-sdrf-despite-pub-and-orgpart",
+        "PXD000001",
         _mk_project(
             submission_type="COMPLETE",
             organism_parts=[{"name": "lung"}],
@@ -151,6 +154,27 @@ _INTEGRATION_CASES = [
             _mk_file("results.dat", "SEARCH"),
         ],
         "Silver",
+    ),
+    # -------------------------------------------------------------------
+    # PXD004683 — COMPLETE, real submission profile.  SDRF via authoritative
+    # EXPERIMENTAL DESIGN category, open spectra (MGF), PSI results (mzid.gz
+    # in a RESULT-category file), publication, organism_part → Diamond.
+    # -------------------------------------------------------------------
+    (
+        "PXD004683-Diamond",
+        "PXD004683",
+        _mk_project(
+            submission_type="COMPLETE",
+            organism_parts=[{"name": "lung"}],
+            references=[{"pubmedID": 27794522}],
+        ),
+        [
+            _mk_file("run1.raw", "RAW"),
+            _mk_file("run1.mgf", "PEAK"),
+            _mk_file("results.mzid.gz", "RESULT"),
+            _mk_file("sdrf.tsv", "EXPERIMENTAL DESIGN"),
+        ],
+        "Diamond",
     ),
     # -------------------------------------------------------------------
     # PXD073444 — COMPLETE, SDRF + open spectra + organism_part annotated,

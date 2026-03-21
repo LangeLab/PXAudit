@@ -63,6 +63,53 @@ _GOLD_PROJECT: dict = {
     "instruments": [{"@type": "CvParam", "name": "Orbitrap Fusion"}],
 }
 
+# Diamond fixture: every flag True — used for "no ✘" output tests.
+_DIAMOND_PROJECT: dict = {
+    "title": "Diamond study",
+    "submissionDate": "2021-06-01",
+    "submissionType": "COMPLETE",
+    "keywords": ["proteomics"],
+    "organisms": [{"@type": "CvParam", "name": "Homo sapiens", "accession": "NEWT:9606"}],
+    "instruments": [{"@type": "CvParam", "name": "Orbitrap Fusion"}],
+    "organismParts": [{"name": "brain"}],
+    "references": [{"pubmedID": 12345}],
+    "quantificationMethods": [{"name": "iTRAQ"}],
+}
+_DIAMOND_FILES: list[dict] = [
+    {
+        "fileName": "results.mzid",
+        "fileCategory": {"@type": "CvParam", "value": "RESULT"},
+        "fileSizeBytes": 1024,
+        "publicFileLocations": [],
+    },
+    {
+        "fileName": "run1.mzML",
+        "fileCategory": {"@type": "CvParam", "value": "PEAK"},
+        "fileSizeBytes": 2048,
+        "publicFileLocations": [],
+    },
+    {
+        "fileName": "sdrf.tsv",
+        "fileCategory": {"@type": "CvParam", "value": "EXPERIMENTAL DESIGN"},
+        "fileSizeBytes": 512,
+        "publicFileLocations": [],
+    },
+    {
+        "fileName": "results.mzTab",
+        "fileCategory": {"@type": "CvParam", "value": "RESULT"},
+        "fileSizeBytes": 256,
+        "publicFileLocations": [
+            {"name": "FTP Protocol", "value": "ftp://ftp.ebi.ac.uk/results.mzTab"},
+        ],
+    },
+    {
+        "fileName": "proteinGroups.txt",
+        "fileCategory": {"@type": "CvParam", "value": "OTHER"},
+        "fileSizeBytes": 1024,
+        "publicFileLocations": [],
+    },
+]
+
 _GOLD_FILES: list[dict] = [
     {
         "fileName": "results.mzid",
@@ -150,11 +197,38 @@ def test_check_valid_pxd_stdout_contains_accession_and_tier(mocks: dict) -> None
 
 
 def test_check_gold_stdout_contains_checkmarks(mocks: dict) -> None:
-    """All flags True for Gold tier — every line should have ✔, none ✘."""
+    """Gold tier: at least one ✔ must appear in the output.
+
+    Gold requires SDRF + PSI results but is missing open spectra and organism
+    part, so the output will contain both ✔ and ✘ symbols.  The assertion
+    deliberately only checks that ✔ appears; for the "no ✘" invariant see
+    test_check_diamond_stdout_no_crossmarks.
+    """
     runner = CliRunner()
     result = runner.invoke(main, ["check", "PXD000001"])
     assert "\u2714" in result.output
+
+
+def test_check_diamond_stdout_no_crossmarks(mocks: dict, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Diamond tier with all flags True — output must contain only ✔, no ✘."""
+    from unittest.mock import MagicMock
+
+    monkeypatch.setattr("pxaudit.cli.fetch_project", MagicMock(return_value=_DIAMOND_PROJECT))
+    monkeypatch.setattr("pxaudit.cli.fetch_files", MagicMock(return_value=_DIAMOND_FILES))
+    runner = CliRunner()
+    result = runner.invoke(main, ["check", "PXD000001"])
+    assert result.exit_code == 0
+    assert "Diamond" in result.output
+    assert "\u2714" in result.output
     assert "\u2718" not in result.output
+
+
+def test_check_stdout_shows_quant_tier(mocks: dict) -> None:
+    """Quant Tier line must appear in stdout for a Gold (Partial quant) run."""
+    runner = CliRunner()
+    result = runner.invoke(main, ["check", "PXD000001"])
+    assert "Quant Tier" in result.output
+    assert "Partial" in result.output
 
 
 def test_check_write_cache_called_on_miss(mocks: dict) -> None:
@@ -357,6 +431,7 @@ def test_extract_study_all_fields_populated() -> None:
     project = {
         "title": "Test study",
         "submissionDate": "2019-06-01",
+        "submissionType": "COMPLETE",
         "keywords": ["proteomics"],
         "organisms": [{"name": "Homo sapiens", "accession": "NEWT:9606"}],
         "instruments": [{"name": "Orbitrap Fusion"}],
@@ -368,6 +443,7 @@ def test_extract_study_all_fields_populated() -> None:
     assert row["organism_id"] == "NEWT:9606"
     assert row["instrument"] == "Orbitrap Fusion"
     assert row["submission_year"] == 2019
+    assert row["submission_type"] == "COMPLETE"
     assert row["keywords"] == "proteomics"
     assert row["repository"] == "PRIDE"
     assert row["fetched_at"] == "2026-01-01T00:00:00+00:00"
@@ -407,6 +483,18 @@ def test_extract_study_multi_keyword_joined() -> None:
 def test_extract_study_repository_always_pride() -> None:
     row = _extract_study("PXD999", {}, "ts")
     assert row["repository"] == "PRIDE"
+
+
+def test_extract_study_submission_type_extracted() -> None:
+    """submissionType present in project → stored in submission_type field."""
+    row = _extract_study("PXD000001", {"submissionType": "PARTIAL"}, "ts")
+    assert row["submission_type"] == "PARTIAL"
+
+
+def test_extract_study_missing_submission_type_gives_none() -> None:
+    """No submissionType key → submission_type is None (not KeyError)."""
+    row = _extract_study("PXD000001", {}, "ts")
+    assert row["submission_type"] is None
 
 
 # ---------------------------------------------------------------------------

@@ -34,7 +34,7 @@ line-length = 100
 select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 
 [tool.pytest.ini_options]
-addopts = "--strict-markers --tb=short --cov=pxaudit --cov-report=term-missing"
+addopts = "--strict-markers --tb=short --cov=pxaudit --cov-report=term-missing -m 'not integration'"
 markers = [
     "integration: marks tests as integration tests requiring live PRIDE API access",
 ]
