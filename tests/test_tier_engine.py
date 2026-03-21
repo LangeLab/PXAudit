@@ -270,6 +270,8 @@ def test_files_fetch_failed_false_with_empty_files_still_bronze() -> None:
         ("sdrfile.txt", False),  # sdrf immediately followed by a letter
         ("sdrfdata.tsv", False),  # same
         ("not_related.tsv", False),
+        ("sdrf_instructions.pdf", False),  # tabular-ext guard: .pdf must NOT match
+        ("PXD073444.sdrf.tsv.gz", True),  # compressed SDRF — .tsv.gz suffix allowed
     ],
     ids=[
         "lowercase",
@@ -280,11 +282,44 @@ def test_files_fetch_failed_false_with_empty_files_still_bronze() -> None:
         "sdrfile-no-match",
         "sdrfdata-no-match",
         "unrelated",
+        "sdrf-pdf-no-match",
+        "compressed-sdrf",
     ],
 )
 def test_sdrf_pattern_matching(file_name: str, expected: bool) -> None:
     files = [
         _file(file_name, "RESULT"),  # result so tier would be Silver, not None
+        _file("result.mzid", "RESULT"),
+    ]
+    r = compute_audit("PXD000001", _project(), files)
+    assert r.has_sdrf is expected
+
+
+# ---------------------------------------------------------------------------
+# 5b. SDRF primary path — EXPERIMENTAL DESIGN category
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "file_name, category, expected",
+    [
+        ("sdrf_sample.tsv", "EXPERIMENTAL DESIGN", True),  # canonical PRIDE casing
+        ("experimental_design.sdrf.tsv", "Experimental Design", True),  # mixed casing
+        ("SDRF_data.tsv", "experimental design", True),  # all-lowercase category
+        ("isa_metadata.tsv", "EXPERIMENTAL DESIGN", False),  # category OK, no sdrf in name
+        ("sdrf.tsv", "OTHER", True),  # category mismatch → falls back to filename match
+    ],
+    ids=[
+        "primary-canonical",
+        "primary-mixed-case-cat",
+        "primary-lowercase-cat",
+        "primary-no-sdrf-in-name",
+        "fallback-other-category",
+    ],
+)
+def test_sdrf_primary_path(file_name: str, category: str, expected: bool) -> None:
+    files = [
+        _file(file_name, category),
         _file("result.mzid", "RESULT"),
     ]
     r = compute_audit("PXD000001", _project(), files)

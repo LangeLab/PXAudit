@@ -170,7 +170,7 @@ def test_file_category_near_matches_not_counted_as_result(category: str) -> None
 @pytest.mark.parametrize(
     "filename, expected",
     [
-        ("sdrf", True),  # bare token, no extension
+        ("sdrf", False),  # bare token, no extension — fallback requires tabular ext
         ("_sdrf_.tsv", True),  # underscores are not letters → boundary OK
         ("123sdrf456.tsv", True),  # digits are not letters → boundary OK
         ("xsdrfx.tsv", False),  # letter immediately on both sides
@@ -179,7 +179,7 @@ def test_file_category_near_matches_not_counted_as_result(category: str) -> None
         ("sdrf_file.tsv", True),  # sdrf followed by underscore (not a letter)
     ],
     ids=[
-        "bare-token",
+        "bare-token-no-ext",
         "underscore-both-sides",
         "digit-both-sides",
         "letter-both-sides",

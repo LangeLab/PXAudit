@@ -33,10 +33,35 @@ _PRIDE_PREFIX = "PXD"
 #         "Search engine output file URI" → value "SEARCH".
 _RESULT_CATEGORIES: frozenset[str] = frozenset({"result", "search"})
 
-# SDRF token regex: "sdrf" as a complete alphabetic token.
-# Matches: sdrf.tsv, SDRF.tsv, my_sdrf_file.txt, experimental_design.sdrf.tsv
-# Rejects: sdrfile.txt  (immediately followed by another letter)
-_SDRF_PATTERN: re.Pattern[str] = re.compile(r"(?<![a-zA-Z])sdrf(?![a-zA-Z])", re.IGNORECASE)
+# ---------------------------------------------------------------------------
+# SDRF detection
+# ---------------------------------------------------------------------------
+
+# Primary path: PRIDE applies this category to all SDRF files in well-annotated
+# submissions.  We require the filename to ALSO contain "sdrf" because the category
+# can be applied to any experimental-design document (Excel, plain text) that is
+# not an SDRF.
+_SDRF_CATEGORY: str = "experimental design"
+
+# Fallback path: pre-category-era submissions where the SDRF exists but was not
+# tagged with the EXPERIMENTAL DESIGN category.
+#
+# Two requirements to avoid false positives:
+#   1. The word-boundary lookbehind/lookahead (?<![a-zA-Z])sdrf(?![a-zA-Z]) ensures
+#      that "sdrfile.txt", "asdrf.tsv", "prefixsdrfsuffix" are NOT matched.  Note:
+#      underscores and digits are NOT letters, so "_sdrf_.tsv" and "123sdrf456.tsv"
+#      still match — that is intentional and matches the token-boundary test suite.
+#   2. The tabular extension guard \.(tsv|txt|csv) ensures "sdrf_instructions.pdf"
+#      and "sdrf_template.docx" are NOT matched.  An SDRF must be a tab/comma-
+#      delimited text file; the extension is the authoritative discriminator.
+#   3. An optional compression suffix allows "PXD073444.sdrf.tsv.gz" to match.
+#
+# Spec note: the original draft proposed r"sdrf.*\.(tsv|txt|csv)...", which lacks
+# the word-boundary guard and regresses sdrfile.txt / asdrf.tsv / sdrfdata.tsv.
+_SDRF_FALLBACK_RE: re.Pattern[str] = re.compile(
+    r"(?<![a-zA-Z])sdrf(?![a-zA-Z]).*\.(?:tsv|txt|csv)(?:\.(?:gz|zip|bz2|7z))?$",
+    re.IGNORECASE,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -179,7 +204,20 @@ def compute_audit(
         )
 
         has_result_files = bool(file_cats.str.casefold().isin(_RESULT_CATEGORIES).any())
-        has_sdrf = bool(file_names.str.contains(_SDRF_PATTERN).any())
+
+        # Two-stage SDRF detection — see module-level constants for rationale.
+        # Primary: authoritative EXPERIMENTAL DESIGN category + "sdrf" in filename.
+        experimental_design_mask = file_cats.str.casefold() == _SDRF_CATEGORY
+        primary_sdrf = bool(
+            experimental_design_mask.any()
+            and file_names[experimental_design_mask]
+            .str.contains(r"sdrf", case=False, na=False)
+            .any()
+        )
+        # Fallback: filename pattern only (for pre-category-era submissions).
+        fallback_sdrf = bool(file_names.str.contains(_SDRF_FALLBACK_RE, na=False).any())
+        has_sdrf = primary_sdrf or fallback_sdrf
+
         has_mztab = bool(file_names.str.casefold().str.endswith(".mztab").any())
 
     # ------------------------------------------------------------------
