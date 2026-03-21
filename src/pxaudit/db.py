@@ -18,6 +18,7 @@ _STUDY_COLS = (
     "organism_id",
     "instrument",
     "submission_year",
+    "submission_type",  # «new» "COMPLETE" or "PARTIAL" from PRIDE API
     "keywords",
     "repository",
     "fetched_at",
@@ -40,6 +41,14 @@ _AUDIT_COLS = (
     "has_organism_id",
     "has_instrument",
     "has_result_files",
+    # ── New v2 flags ──────────────────────────────────────────────────────────────────────
+    "has_psi_results",  # FileClass.RESULT found (mzIdentML / mzTab)
+    "has_open_spectra",  # FileClass.PEAK found
+    "has_organism_part",  # len(project["organismParts"]) > 0
+    "has_publication",  # pubmedID present, non-null, and != 0
+    "has_tabular_quant",  # FileClass.QUANT_MATRIX or ID_LIST found
+    "has_quant_metadata",  # quantificationMethods[] non-empty
+    # ─────────────────────────────────────────────────────────────────────────────────────
     "has_sdrf",
     "has_mztab",
     "files_fetch_failed",
@@ -59,6 +68,7 @@ CREATE TABLE IF NOT EXISTS study (
     organism_id      TEXT,
     instrument       TEXT,
     submission_year  INTEGER,
+    submission_type  TEXT,
     keywords         TEXT,
     repository       TEXT,
     fetched_at       TEXT
@@ -90,6 +100,12 @@ CREATE TABLE IF NOT EXISTS audit (
     has_organism_id     INTEGER,
     has_instrument      INTEGER,
     has_result_files    INTEGER,
+    has_psi_results     INTEGER,
+    has_open_spectra    INTEGER,
+    has_organism_part   INTEGER,
+    has_publication     INTEGER,
+    has_tabular_quant   INTEGER,
+    has_quant_metadata  INTEGER,
     has_sdrf            INTEGER,
     has_mztab           INTEGER,
     files_fetch_failed  INTEGER,
@@ -105,8 +121,8 @@ CREATE TABLE IF NOT EXISTS audit (
 _INSERT_STUDY = (
     "INSERT OR REPLACE INTO study "
     "(accession, title, organism, organism_id, instrument, "
-    "submission_year, keywords, repository, fetched_at) "
-    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    "submission_year, submission_type, keywords, repository, fetched_at) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
 
 _INSERT_STUDY_FILES = (
@@ -117,10 +133,11 @@ _INSERT_STUDY_FILES = (
 
 _INSERT_AUDIT = (
     "INSERT OR REPLACE INTO audit "
-    "(accession, tier, has_title, has_organism, has_organism_id, "
-    "has_instrument, has_result_files, has_sdrf, has_mztab, "
-    "files_fetch_failed, is_unverifiable, tier_logic_version) "
-    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    "(accession, tier, has_title, has_organism, has_organism_id, has_instrument, "
+    "has_result_files, has_psi_results, has_open_spectra, has_organism_part, "
+    "has_publication, has_tabular_quant, has_quant_metadata, "
+    "has_sdrf, has_mztab, files_fetch_failed, is_unverifiable, tier_logic_version) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
 
 # ---------------------------------------------------------------------------
@@ -202,3 +219,28 @@ def insert_audit(conn: sqlite3.Connection, data: dict) -> None:
     except Exception:
         conn.execute("ROLLBACK")
         raise
+
+
+def migrate_audit_v2(conn: sqlite3.Connection) -> None:
+    """Upgrade an existing database to the v2 schema in-place.
+
+    Adds the six new boolean flag columns to the ``audit`` table and the
+    ``submission_type`` column to the ``study`` table if they are not already
+    present.  Safe to run multiple times (idempotent: uses ``PRAGMA table_info``
+    to guard each ``ALTER TABLE ADD COLUMN``).
+    """
+    existing_audit = {row[1] for row in conn.execute("PRAGMA table_info(audit)")}
+    for col in (
+        "has_psi_results",
+        "has_open_spectra",
+        "has_organism_part",
+        "has_publication",
+        "has_tabular_quant",
+        "has_quant_metadata",
+    ):
+        if col not in existing_audit:
+            conn.execute(f"ALTER TABLE audit ADD COLUMN {col} INTEGER")  # noqa: S608
+
+    existing_study = {row[1] for row in conn.execute("PRAGMA table_info(study)")}
+    if "submission_type" not in existing_study:
+        conn.execute("ALTER TABLE study ADD COLUMN submission_type TEXT")

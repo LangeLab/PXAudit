@@ -51,19 +51,33 @@ class AuditResult:
     Boolean flags map directly to the ``audit`` table columns.  The DB layer
     stores them as SQLite integers (0/1); Python ``bool`` is a subclass of
     ``int`` so no explicit conversion is needed.
+
+    Field order must match ``pxaudit.db._AUDIT_COLS`` exactly — the
+    schema-contract test ``test_audit_result_field_names_match_audit_cols_exactly``
+    enforces this.
     """
 
+    # ── Identifying (required) fields ─────────────────────────────────────────
     accession: str
     tier: str
-    has_title: bool
-    has_organism: bool
-    has_organism_id: bool
-    has_instrument: bool
-    has_result_files: bool
-    has_sdrf: bool
-    has_mztab: bool
-    files_fetch_failed: bool
-    is_unverifiable: bool
+    # ── Existing metadata flags ────────────────────────────────────────────────
+    has_title: bool = False
+    has_organism: bool = False
+    has_organism_id: bool = False
+    has_instrument: bool = False
+    has_result_files: bool = False
+    # ── v2 flags (C03 / C06) ──────────────────────────────────────────────────
+    has_psi_results: bool = False  # FileClass.RESULT found (mzIdentML / mzTab)
+    has_open_spectra: bool = False  # FileClass.PEAK found
+    has_organism_part: bool = False  # len(project["organismParts"]) > 0
+    has_publication: bool = False  # pubmedID present, non-null, != 0
+    has_tabular_quant: bool = False  # FileClass.QUANT_MATRIX or ID_LIST found
+    has_quant_metadata: bool = False  # quantificationMethods[] non-empty
+    # ── Legacy flags (kept for backward compat) ───────────────────────────────
+    has_sdrf: bool = False
+    has_mztab: bool = False
+    files_fetch_failed: bool = False
+    is_unverifiable: bool = False
     tier_logic_version: str = _TIER_LOGIC_VERSION
 
 
