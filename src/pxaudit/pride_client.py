@@ -125,10 +125,31 @@ def fetch_project(accession: str, *, delay: float = 0.5) -> dict:
 
 
 def fetch_files(accession: str, *, delay: float = 0.5) -> list[dict]:
-    """Fetch the file list from ``/projects/{accession}/files``.
+    """Fetch **all** files from ``/projects/{accession}/files``, paginating until exhausted.
 
-    Returns the raw JSON list. Each element is a file object dict; the
-    ``fileCategory`` field is a nested CvParam dict, not a plain string.
+    ISS-004 fix: the original implementation made a single un-paginated request.
+    PRIDE's API caps its default page at 100 files; datasets with >100 files were
+    silently truncated, causing file-level flags (``has_open_spectra``, etc.) to be
+    derived from an incomplete file list and tier scores to be understated.
+
+    The loop requests successive pages of 100 rows until a page returns fewer than
+    100 rows, which signals the final (possibly empty) page has been reached.
+
+    Note: No early exit keyed on ``fileCategory`` is used.  Stopping on
+    RESULT/EXPERIMENTAL DESIGN categories can skip PEAK files on later pages and
+    cause a Platinum/Diamond dataset to be mis-scored as Gold (Audit Issue 1).
     """
-    url = f"{_BASE_URL}/projects/{accession}/files"
-    return cast(list[dict], _request(url, delay=delay))
+    all_files: list[dict] = []
+    page = 0
+    page_size = 100
+    while True:
+        url = (
+            f"{_BASE_URL}/projects/{accession}/files"
+            f"?page={page}&pageSize={page_size}&sortDirection=DESC&sortCondition=id"
+        )
+        batch = cast(list[dict], _request(url, delay=delay))
+        all_files.extend(batch)
+        if len(batch) < page_size:
+            break
+        page += 1
+    return all_files
