@@ -54,6 +54,7 @@ _AUDIT_COLS = (
     "files_fetch_failed",
     "is_unverifiable",
     "tier_logic_version",
+    "quant_tier",
 )
 
 # ---------------------------------------------------------------------------
@@ -110,7 +111,8 @@ CREATE TABLE IF NOT EXISTS audit (
     has_mztab           INTEGER,
     files_fetch_failed  INTEGER,
     is_unverifiable     INTEGER,
-    tier_logic_version  TEXT
+    tier_logic_version  TEXT,
+    quant_tier          TEXT
 );
 """
 
@@ -136,8 +138,8 @@ _INSERT_AUDIT = (
     "(accession, tier, has_title, has_organism, has_organism_id, has_instrument, "
     "has_result_files, has_psi_results, has_open_spectra, has_organism_part, "
     "has_publication, has_tabular_quant, has_quant_metadata, "
-    "has_sdrf, has_mztab, files_fetch_failed, is_unverifiable, tier_logic_version) "
-    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    "has_sdrf, has_mztab, files_fetch_failed, is_unverifiable, tier_logic_version, quant_tier) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
 
 # ---------------------------------------------------------------------------
@@ -240,6 +242,9 @@ def migrate_audit_v2(conn: sqlite3.Connection) -> None:
     ):
         if col not in existing_audit:
             conn.execute(f"ALTER TABLE audit ADD COLUMN {col} INTEGER")  # noqa: S608
+
+    if "quant_tier" not in existing_audit:
+        conn.execute("ALTER TABLE audit ADD COLUMN quant_tier TEXT")  # noqa: S608
 
     existing_study = {row[1] for row in conn.execute("PRAGMA table_info(study)")}
     if "submission_type" not in existing_study:

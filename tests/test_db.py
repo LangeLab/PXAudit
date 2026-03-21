@@ -53,6 +53,7 @@ _AUDIT_DATA: dict = {
     "files_fetch_failed": 0,
     "is_unverifiable": 0,
     "tier_logic_version": "v0.2.0",
+    "quant_tier": "No Quant",
 }
 
 
@@ -292,6 +293,7 @@ def test_insert_audit_roundtrip(conn: sqlite3.Connection) -> None:
         files_fetch_failed,
         is_unverifiable,
         tier_logic_version,
+        quant_tier,
     ) = row
     assert accession == "PXD000001"
     assert tier == "Gold"
@@ -311,6 +313,7 @@ def test_insert_audit_roundtrip(conn: sqlite3.Connection) -> None:
     assert files_fetch_failed == 0
     assert is_unverifiable == 0
     assert tier_logic_version == "v0.2.0"
+    assert quant_tier == "No Quant"
 
 
 def test_insert_audit_upsert_overwrites(conn: sqlite3.Connection) -> None:
@@ -397,6 +400,7 @@ def test_migrate_audit_v2_adds_new_audit_columns(conn: sqlite3.Connection) -> No
         "has_publication",
         "has_tabular_quant",
         "has_quant_metadata",
+        "quant_tier",
     ):
         assert expected in cols, f"column '{expected}' not added by migrate_audit_v2"
     v1_conn.close()

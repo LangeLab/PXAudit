@@ -127,6 +127,7 @@ class AuditResult:
     files_fetch_failed: bool = False
     is_unverifiable: bool = False
     tier_logic_version: str = _TIER_LOGIC_VERSION
+    quant_tier: str = "No Quant"
 
 
 # ---------------------------------------------------------------------------
@@ -188,6 +189,7 @@ def compute_audit(
             has_mztab=False,
             files_fetch_failed=files_fetch_failed,
             is_unverifiable=True,
+            quant_tier="Unverifiable",
         )
 
     # ------------------------------------------------------------------
@@ -306,6 +308,20 @@ def compute_audit(
     else:
         tier = "Diamond"
 
+    # ------------------------------------------------------------------
+    # 7.  Quant-tier derivation  (secondary scoring axis; see C09)
+    # ------------------------------------------------------------------
+    if not has_psi_results and not has_tabular_quant:
+        quant_tier = "No Quant"
+    elif not has_psi_results and has_tabular_quant:
+        quant_tier = "Partial"  # tool-native tables only, no PSI standard
+    elif has_psi_results and not has_tabular_quant:
+        quant_tier = "Partial"  # PSI IDs present but no quant table
+    elif not has_quant_metadata:
+        quant_tier = "Quant-Ready"  # PSI + quant table but metadata missing
+    else:
+        quant_tier = "Quant-Complete"  # PSI + quant table + metadata
+
     return AuditResult(
         accession=accession,
         tier=tier,
@@ -324,4 +340,5 @@ def compute_audit(
         has_mztab=has_mztab,
         files_fetch_failed=files_fetch_failed,
         is_unverifiable=False,
+        quant_tier=quant_tier,
     )

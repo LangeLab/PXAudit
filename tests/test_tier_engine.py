@@ -717,3 +717,69 @@ def test_partial_submission_id_list_counts_as_result() -> None:
     files = [_file("evidence.txt", "OTHER")]  # ID_LIST, no RESULT or SEARCH
     r = compute_audit("PXD000001", project, files)
     assert r.has_result_files is True
+
+
+# ---------------------------------------------------------------------------
+# 14. quant_tier secondary scoring axis (C09)
+# ---------------------------------------------------------------------------
+
+
+def test_quant_tier_no_quant_when_no_psi_and_no_tabular() -> None:
+    """No PSI results and no tabular quant → quant_tier = 'No Quant'."""
+    files = [_file("run1.raw", "RAW")]
+    r = compute_audit("PXD000001", _project(), files)
+    assert r.quant_tier == "No Quant"
+
+
+def test_quant_tier_partial_tool_native_only() -> None:
+    """Tabular quant present but no PSI file → 'Partial' (tool-native tables only)."""
+    # proteinGroups.txt → FileClass.QUANT_MATRIX; no RESULT/SEARCH file
+    project = {**_project(), "submissionType": "PARTIAL"}
+    files = [_file("proteinGroups.txt", "OTHER")]
+    r = compute_audit("PXD000001", project, files)
+    assert r.has_psi_results is False
+    assert r.has_tabular_quant is True
+    assert r.quant_tier == "Partial"
+
+
+def test_quant_tier_partial_psi_only() -> None:
+    """PSI file present but no tabular quant → 'Partial' (PSI IDs, no quant table)."""
+    files = [_file("results.mzid", "RESULT")]  # RESULT only, no quant matrix
+    r = compute_audit("PXD000001", _project(), files)
+    assert r.has_psi_results is True
+    assert r.has_tabular_quant is False
+    assert r.quant_tier == "Partial"
+
+
+def test_quant_tier_quant_ready_psi_and_tabular_no_metadata() -> None:
+    """PSI + tabular quant present but no quantificationMethods → 'Quant-Ready'."""
+    files = [
+        _file("results.mzid", "RESULT"),
+        _file("proteinGroups.txt", "OTHER"),
+    ]
+    r = compute_audit("PXD000001", _project(), files)
+    assert r.has_psi_results is True
+    assert r.has_tabular_quant is True
+    assert r.has_quant_metadata is False
+    assert r.quant_tier == "Quant-Ready"
+
+
+def test_quant_tier_quant_complete_all_three_present() -> None:
+    """PSI + tabular quant + quantificationMethods → 'Quant-Complete'."""
+    project = {**_project(), "quantificationMethods": [{"name": "iTRAQ"}]}
+    files = [
+        _file("results.mzid", "RESULT"),
+        _file("proteinGroups.txt", "OTHER"),
+    ]
+    r = compute_audit("PXD000001", project, files)
+    assert r.has_psi_results is True
+    assert r.has_tabular_quant is True
+    assert r.has_quant_metadata is True
+    assert r.quant_tier == "Quant-Complete"
+
+
+def test_quant_tier_unverifiable_for_non_pxd_accession() -> None:
+    """Non-PXD accession takes the early-return path → quant_tier = 'Unverifiable'."""
+    r = compute_audit("MSV000079514", {}, [])
+    assert r.is_unverifiable is True
+    assert r.quant_tier == "Unverifiable"
