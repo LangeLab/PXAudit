@@ -14,7 +14,7 @@ from pathlib import Path
 
 _log = logging.getLogger(__name__)
 
-_DEFAULT_CACHE_DIR = Path(".pxaudit_cache")
+_DEFAULT_CACHE_DIR = Path.home() / ".pxaudit_cache"
 
 
 def read_cache(

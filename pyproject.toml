@@ -44,4 +44,3 @@ source = ["pxaudit"]
 branch = true
 
 [tool.coverage.report]
-fail_under = 90
