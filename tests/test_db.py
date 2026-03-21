@@ -155,6 +155,14 @@ def test_insert_study_missing_pk_raises(conn: sqlite3.Connection) -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_insert_study_files_fk_violation_raises(conn: sqlite3.Connection) -> None:
+    # PRAGMA foreign_keys = ON is set by the fixture.
+    # Inserting a study_files row whose accession is not in study must raise.
+    df = _make_files_df("PXD_ORPHAN", 1)
+    with pytest.raises(sqlite3.IntegrityError):
+        insert_study_files(conn, "PXD_ORPHAN", df)
+
+
 def test_insert_study_files_zero_rows(conn: sqlite3.Connection) -> None:
     insert_study(conn, _STUDY_DATA)
     empty_df = pd.DataFrame(
