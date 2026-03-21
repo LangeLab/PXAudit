@@ -383,7 +383,10 @@ def test_mztab_extension_matching(file_name: str, expected: bool) -> None:
     ],
 )
 def test_file_category_matching(category_value: str, expected: bool) -> None:
-    files = [_file("data.raw", category_value)]
+    # Use an unrecognised filename so the PRIDE category fallback (step 7 of the
+    # classifier) is the deciding factor.  A vendor .raw file would be classified
+    # as FileClass.RAW by extension regardless of the PRIDE category string.
+    files = [_file("unknown.bin", category_value)]
     r = compute_audit("PXD000001", _project(), files)
     assert r.has_result_files is expected
 
@@ -526,3 +529,125 @@ def test_gold_all_flags_true() -> None:
     assert r.has_sdrf is True
     assert r.is_unverifiable is False
     assert r.files_fetch_failed is False
+
+
+# ---------------------------------------------------------------------------
+# 11. New project-level flags (C06)
+# ---------------------------------------------------------------------------
+
+
+def test_has_organism_part_true_when_organism_parts_non_empty() -> None:
+    project = {**_project(), "organismParts": [{"name": "brain"}]}
+    r = compute_audit("PXD000001", project, [])
+    assert r.has_organism_part is True
+
+
+def test_has_organism_part_false_when_absent() -> None:
+    r = compute_audit("PXD000001", _project(), [])
+    assert r.has_organism_part is False
+
+
+def test_has_quant_metadata_true_when_quant_methods_non_empty() -> None:
+    project = {**_project(), "quantificationMethods": [{"name": "iTRAQ"}]}
+    r = compute_audit("PXD000001", project, [])
+    assert r.has_quant_metadata is True
+
+
+@pytest.mark.parametrize(
+    "pubmed_value, expected",
+    [
+        (12345, True),  # valid integer pubmedID
+        (0, False),  # zero — PRIDE sentinel for unpublished
+        (None, False),  # None — older API responses; safe_pubmed_id handles TypeError
+        ("", False),  # empty string — safe_pubmed_id handles ValueError
+    ],
+    ids=["valid-int", "zero", "none", "empty-str"],
+)
+def test_has_publication_from_pubmed_id(pubmed_value: object, expected: bool) -> None:
+    project = {**_project(), "references": [{"pubmedID": pubmed_value}]}
+    r = compute_audit("PXD000001", project, [])
+    assert r.has_publication is expected
+
+
+def test_has_publication_false_when_references_empty() -> None:
+    project = {**_project(), "references": []}
+    r = compute_audit("PXD000001", project, [])
+    assert r.has_publication is False
+
+
+# ---------------------------------------------------------------------------
+# 12. FileTypeClassifier-derived file flags (C06)
+# ---------------------------------------------------------------------------
+
+
+def test_has_psi_results_true_for_mzid_file() -> None:
+    files = [_file("results.mzid", "RESULT")]
+    r = compute_audit("PXD000001", _project(), files)
+    assert r.has_psi_results is True
+
+
+def test_has_psi_results_false_for_raw_only() -> None:
+    files = [_file("run1.raw", "RAW")]
+    r = compute_audit("PXD000001", _project(), files)
+    assert r.has_psi_results is False
+
+
+def test_has_open_spectra_true_for_mzml_file() -> None:
+    files = [_file("run1.mzML", "PEAK"), _file("results.mzid", "RESULT")]
+    r = compute_audit("PXD000001", _project(), files)
+    assert r.has_open_spectra is True
+
+
+def test_has_open_spectra_false_for_raw_only() -> None:
+    files = [_file("run1.raw", "RAW")]
+    r = compute_audit("PXD000001", _project(), files)
+    assert r.has_open_spectra is False
+
+
+def test_has_tabular_quant_true_for_quant_matrix() -> None:
+    # proteinGroups.txt — MaxQuant fixed stem → FileClass.QUANT_MATRIX
+    files = [_file("proteinGroups.txt", "OTHER"), _file("results.mzid", "RESULT")]
+    r = compute_audit("PXD000001", _project(), files)
+    assert r.has_tabular_quant is True
+
+
+def test_has_tabular_quant_true_for_id_list() -> None:
+    # evidence.txt — MaxQuant fixed stem → FileClass.ID_LIST
+    files = [_file("evidence.txt", "OTHER"), _file("results.mzid", "RESULT")]
+    r = compute_audit("PXD000001", _project(), files)
+    assert r.has_tabular_quant is True
+
+
+def test_has_tabular_quant_false_for_raw_only() -> None:
+    files = [_file("run1.raw", "RAW")]
+    r = compute_audit("PXD000001", _project(), files)
+    assert r.has_tabular_quant is False
+
+
+# ---------------------------------------------------------------------------
+# 13. Submission-type-aware result gate (C06)
+# ---------------------------------------------------------------------------
+
+
+def test_partial_submission_counts_quant_matrix_as_result() -> None:
+    """PARTIAL: a MaxQuant proteinGroups.txt satisfies has_result_files."""
+    project = {**_project(), "submissionType": "PARTIAL"}
+    files = [_file("proteinGroups.txt", "OTHER")]  # no RESULT or SEARCH file
+    r = compute_audit("PXD000001", project, files)
+    assert r.has_result_files is True
+
+
+def test_complete_submission_does_not_count_quant_matrix_as_result() -> None:
+    """COMPLETE: only RESULT/SEARCH count; QUANT_MATRIX alone is not enough."""
+    project = {**_project(), "submissionType": "COMPLETE"}
+    files = [_file("proteinGroups.txt", "OTHER")]  # no RESULT or SEARCH file
+    r = compute_audit("PXD000001", project, files)
+    assert r.has_result_files is False
+
+
+def test_partial_submission_id_list_counts_as_result() -> None:
+    """PARTIAL: an ID_LIST file (evidence.txt) also satisfies has_result_files."""
+    project = {**_project(), "submissionType": "PARTIAL"}
+    files = [_file("evidence.txt", "OTHER")]  # ID_LIST, no RESULT or SEARCH
+    r = compute_audit("PXD000001", project, files)
+    assert r.has_result_files is True

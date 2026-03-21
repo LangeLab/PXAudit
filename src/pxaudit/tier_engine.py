@@ -5,8 +5,15 @@ Public API
 compute_audit(accession, project_data, files_data, *, files_fetch_failed)
     → AuditResult
 
-All flag computation is vectorized (pandas).  No row-level Python loops over
-the files list.  The tier derivation mirrors the SQL CASE expression in
+Flag computation mixes two strategies:
+- Project-level flags are derived directly from the ``project_data`` dict.
+- File-level flags are derived in two stages: ``FileTypeClassifier`` classifies
+  every file into a ``FileClass`` (one Python call per file), and then set
+  membership tests derive the Boolean flags.  SDRF and mzTab detection remain
+  as vectorized pandas operations because they require pattern matching across
+  all filenames simultaneously.
+
+The tier derivation mirrors the SQL CASE expression in
 plan/database_schema.md exactly.
 """
 
@@ -18,6 +25,7 @@ from dataclasses import dataclass
 import pandas as pd
 
 from pxaudit import __version__
+from pxaudit.file_classifier import FileClass, FileTypeClassifier
 
 # ---------------------------------------------------------------------------
 # Module-level constants
@@ -27,11 +35,6 @@ _TIER_LOGIC_VERSION: str = f"v{__version__}"  # → "v0.1.0"
 
 # Only PXD accessions are hosted by PRIDE and can be fully audited.
 _PRIDE_PREFIX = "PXD"
-
-# fileCategory.value strings that count as result/search evidence.
-# Source: PRIDE CV — "Result file URI" → value "RESULT",
-#         "Search engine output file URI" → value "SEARCH".
-_RESULT_CATEGORIES: frozenset[str] = frozenset({"result", "search"})
 
 # ---------------------------------------------------------------------------
 # SDRF detection
@@ -62,6 +65,27 @@ _SDRF_FALLBACK_RE: re.Pattern[str] = re.compile(
     r"(?<![a-zA-Z])sdrf(?![a-zA-Z]).*\.(?:tsv|txt|csv)(?:\.(?:gz|zip|bz2|7z))?$",
     re.IGNORECASE,
 )
+
+# Module-level classifier instance — stateless after construction; safe to share.
+_classifier: FileTypeClassifier = FileTypeClassifier()
+
+
+# ---------------------------------------------------------------------------
+# Private helpers
+# ---------------------------------------------------------------------------
+
+
+def _safe_pubmed_id(value: object) -> int:
+    """Convert a PRIDE ``pubmedID`` field to int, returning 0 on any parse failure.
+
+    PRIDE returns ``pubmedID`` as an integer or ``0`` for unpublished entries.
+    Older API responses occasionally carry ``None`` or an empty string; this
+    guard prevents ``ValueError`` / ``TypeError`` from propagating to the caller.
+    """
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0
 
 
 # ---------------------------------------------------------------------------
@@ -185,9 +209,23 @@ def compute_audit(
     instruments: list[dict] = project_data.get("instruments") or []
     has_instrument = bool(instruments and instruments[0].get("name"))
 
+    submission_type: str = project_data.get("submissionType") or ""
+
+    organism_parts: list = project_data.get("organismParts") or []
+    references: list = project_data.get("references") or []
+    quant_methods: list = project_data.get("quantificationMethods") or []
+
+    has_organism_part = bool(organism_parts)
+    has_quant_metadata = bool(quant_methods)
+    has_publication = any(_safe_pubmed_id(r.get("pubmedID")) != 0 for r in references)
+
     # ------------------------------------------------------------------
-    # 5.  File-level flags (vectorized)
+    # 5.  File-level flags
     # ------------------------------------------------------------------
+    has_psi_results = False
+    has_open_spectra = False
+    has_tabular_quant = False
+
     if files_fetch_failed or not files_data:
         has_result_files = False
         has_sdrf = False
@@ -203,7 +241,30 @@ def compute_audit(
             dtype="object",
         )
 
-        has_result_files = bool(file_cats.str.casefold().isin(_RESULT_CATEGORIES).any())
+        # Classify each file via FileTypeClassifier (one call per file; not vectorizable).
+        # A set collapses duplicates so all membership tests are O(1).
+        file_classes: set[FileClass] = {
+            _classifier.classify(
+                f.get("fileName") or "",
+                (f.get("fileCategory") or {}).get("value"),
+            )
+            for f in files_data
+        }
+
+        has_psi_results = FileClass.RESULT in file_classes
+        has_open_spectra = FileClass.PEAK in file_classes
+        has_tabular_quant = bool(file_classes & {FileClass.QUANT_MATRIX, FileClass.ID_LIST})
+
+        # Submission-type-aware result gate (Audit Issue 3):
+        # PARTIAL submissions may lack PSI-standard result files; a quant table
+        # (QUANT_MATRIX or ID_LIST) is accepted as evidence of processed results.
+        if submission_type.upper() == "PARTIAL":
+            result_gate: frozenset[FileClass] = frozenset(
+                {FileClass.RESULT, FileClass.SEARCH, FileClass.QUANT_MATRIX, FileClass.ID_LIST}
+            )
+        else:
+            result_gate = frozenset({FileClass.RESULT, FileClass.SEARCH})
+        has_result_files = bool(file_classes & result_gate)
 
         # Two-stage SDRF detection — see module-level constants for rationale.
         # Primary: authoritative EXPERIMENTAL DESIGN category + "sdrf" in filename.
@@ -240,6 +301,12 @@ def compute_audit(
         has_organism_id=has_organism_id,
         has_instrument=has_instrument,
         has_result_files=has_result_files,
+        has_psi_results=has_psi_results,
+        has_open_spectra=has_open_spectra,
+        has_organism_part=has_organism_part,
+        has_publication=has_publication,
+        has_tabular_quant=has_tabular_quant,
+        has_quant_metadata=has_quant_metadata,
         has_sdrf=has_sdrf,
         has_mztab=has_mztab,
         files_fetch_failed=files_fetch_failed,
