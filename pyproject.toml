@@ -1,0 +1,47 @@
+[project]
+name = "pxaudit"
+version = "0.1.0"
+description = "Proteomics Exchange metadata audit tool"
+authors = [
+    { name = "eneskemalergin", email = "eneskemalergin@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "click>=8.3.1",
+    "pandas>=3.0",
+    "requests>=2.32.5",
+]
+
+[project.scripts]
+pxaudit = "pxaudit.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.10.6,<0.11.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.5.1",
+    "pytest>=9.0.2",
+    "pytest-cov>=7.0.0",
+    "ruff>=0.15.7",
+]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+addopts = "--strict-markers --tb=short --cov=pxaudit --cov-report=term-missing"
+markers = [
+    "integration: marks tests as integration tests requiring live PRIDE API access",
+]
+
+[tool.coverage.run]
+source = ["pxaudit"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 90

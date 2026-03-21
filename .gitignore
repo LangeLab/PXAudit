@@ -1,0 +1,25 @@
+# Planning documents
+plan/
+
+# uv / virtualenv
+.venv/
+
+# pxaudit runtime artifacts
+.pxaudit_cache/
+*.db
+
+# Python byte-code and caches
+__pycache__/
+*.py[cod]
+*.pyo
+.ruff_cache/
+
+# Test / coverage output
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Build / dist
+*.egg-info/
+dist/
+build/
