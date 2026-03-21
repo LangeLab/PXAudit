@@ -202,14 +202,14 @@ def test_check_project_api_failure_message_on_stderr(
 
 
 def test_check_files_api_failure_exits_zero(mocks: dict, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Files endpoint failure is not fatal — exit 0 with Bronze tier."""
+    """Files endpoint failure is not fatal — exit 0 with Raw tier (no result files)."""
     monkeypatch.setattr(
         "pxaudit.cli.fetch_files", MagicMock(side_effect=PrideAPIError("files down"))
     )
     runner = CliRunner()
     result = runner.invoke(main, ["check", "PXD000001"])
     assert result.exit_code == 0
-    assert "Bronze" in result.output
+    assert "Raw" in result.output
 
 
 def test_check_files_api_failure_prints_warning(

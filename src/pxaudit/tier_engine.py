@@ -24,14 +24,13 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from pxaudit import __version__
 from pxaudit.file_classifier import FileClass, FileTypeClassifier
 
 # ---------------------------------------------------------------------------
 # Module-level constants
 # ---------------------------------------------------------------------------
 
-_TIER_LOGIC_VERSION: str = f"v{__version__}"  # → "v0.1.0"
+_TIER_LOGIC_VERSION: str = "v2.0"  # bumped from v{__version__} at 7-tier redesign (C07)
 
 # Only PXD accessions are hosted by PRIDE and can be fully audited.
 _PRIDE_PREFIX = "PXD"
@@ -284,14 +283,28 @@ def compute_audit(
     # ------------------------------------------------------------------
     # 6.  Tier derivation  (mirrors SQL CASE in plan/database_schema.md)
     # ------------------------------------------------------------------
+    # 7-tier FAIR ladder (C07).  Each tier adds one more requirement:
+    #   None     — missing basic metadata (title / organism / instrument)
+    #   Raw      — has metadata but no processed result files at all
+    #   Bronze   — has result files but none are PSI-standard (mzIdentML / mzTab)
+    #   Silver   — PSI results present but no SDRF experimental-design file
+    #   Gold     — SDRF present but missing open spectra OR organism part annotation
+    #   Platinum — open spectra + organism part present but no linked publication
+    #   Diamond  — all FAIR criteria met
     if not has_title or not has_organism or not has_instrument:
         tier = "None"
-    elif not has_organism_id or not has_result_files:
+    elif not has_result_files:
+        tier = "Raw"
+    elif not has_psi_results:
         tier = "Bronze"
     elif not has_sdrf:
         tier = "Silver"
-    else:
+    elif not has_open_spectra or not has_organism_part:
         tier = "Gold"
+    elif not has_publication:
+        tier = "Platinum"
+    else:
+        tier = "Diamond"
 
     return AuditResult(
         accession=accession,

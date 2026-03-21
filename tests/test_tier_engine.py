@@ -147,23 +147,24 @@ def test_non_pxd_all_flags_false() -> None:
             _gold_files(),
             "Gold",
         ),
-        # Silver: everything except SDRF
+        # Silver: everything except SDRF (organism_id present, result present, no SDRF)
         (
             _project(),
             _result_files(),
             "Silver",
         ),
-        # Bronze case 1: organism_id missing, but result files present
+        # Silver: organism_id missing — 7-tier dropped organism_id from gate;
+        # result files present → Bronze (no PSI)? No — mzid IS PSI → Silver
         (
             _project(organism_id=None),
             _result_files(),
-            "Bronze",
+            "Silver",
         ),
-        # Bronze case 2: organism_id present but no result/search category files
+        # Raw: organism_id present but no result/search/quant files at all
         (
             _project(),
             [_file("raw.raw", "RAW")],
-            "Bronze",
+            "Raw",
         ),
         # None case 1: title missing
         (
@@ -187,8 +188,8 @@ def test_non_pxd_all_flags_false() -> None:
     ids=[
         "Gold",
         "Silver",
-        "Bronze-no-organism_id",
-        "Bronze-no-result",
+        "Silver-no-organism_id",
+        "Raw-no-result",
         "None-no-title",
         "None-no-organism",
         "None-no-instrument",
@@ -208,12 +209,11 @@ def test_silver_has_result_files_but_no_sdrf() -> None:
     assert r.has_sdrf is False
 
 
-# Bronze explicitly excludes Silver/Gold.
-def test_bronze_has_no_result_files() -> None:
+# Raw explicitly excludes Bronze+: no result files means Raw in 7-tier.
+def test_raw_has_no_result_files() -> None:
     r = compute_audit("PXD000001", _project(), [_file("raw.raw", "RAW")])
-    assert r.tier == "Bronze"
+    assert r.tier == "Raw"
     assert r.has_result_files is False
-    # Tier is Bronze — result_files is the single missing element.
     assert r.has_organism_id is True
 
 
@@ -224,15 +224,81 @@ def test_none_tier_empty_string_title() -> None:
     assert r.tier == "None"
 
 
+# 3b. New 7-tier levels — Platinum and Diamond
+# ---------------------------------------------------------------------------
+
+
+def _platinum_project() -> dict:
+    """Project with organism_part and no publication — enables Platinum/Diamond tests."""
+    return {**_project(), "organismParts": [{"name": "brain"}], "references": []}
+
+
+def _platinum_files() -> list[dict]:
+    """Files that satisfy all flags up to Platinum: result + SDRF + open spectra."""
+    return [
+        _file("run1.mzML", "PEAK"),
+        _file("results.mzid", "RESULT"),
+        _file("sdrf.tsv", "OTHER"),
+    ]
+
+
+def test_bronze_tier_with_search_only_no_psi() -> None:
+    """result files present (SEARCH) but none are PSI-standard → Bronze."""
+    files = [_file("results.dat", "SEARCH")]  # .dat → FileClass.SEARCH, not RESULT
+    r = compute_audit("PXD000001", _project(), files)
+    assert r.tier == "Bronze"
+    assert r.has_result_files is True
+    assert r.has_psi_results is False
+
+
+def test_gold_tier_missing_open_spectra() -> None:
+    """PSI results + SDRF but no open spectra → Gold."""
+    files = [_file("results.mzid", "RESULT"), _file("sdrf.tsv", "OTHER")]
+    r = compute_audit("PXD000001", {**_project(), "organismParts": [{"name": "brain"}]}, files)
+    assert r.tier == "Gold"
+    assert r.has_psi_results is True
+    assert r.has_sdrf is True
+    assert r.has_open_spectra is False
+
+
+def test_gold_tier_missing_organism_part() -> None:
+    """PSI results + SDRF + open spectra but no organism part → Gold."""
+    files = _platinum_files()
+    r = compute_audit("PXD000001", _project(), files)  # _project() has no organismParts
+    assert r.tier == "Gold"
+    assert r.has_open_spectra is True
+    assert r.has_organism_part is False
+
+
+def test_platinum_tier_sdrf_open_spectra_org_part_no_pub() -> None:
+    """All file flags met + organism_part but no publication → Platinum."""
+    r = compute_audit("PXD000001", _platinum_project(), _platinum_files())
+    assert r.tier == "Platinum"
+    assert r.has_open_spectra is True
+    assert r.has_organism_part is True
+    assert r.has_publication is False
+
+
+def test_diamond_tier_all_flags_met() -> None:
+    """All FAIR criteria met → Diamond."""
+    project = {
+        **_platinum_project(),
+        "references": [{"pubmedID": 12345}],
+    }
+    r = compute_audit("PXD000001", project, _platinum_files())
+    assert r.tier == "Diamond"
+    assert r.has_publication is True
+
+
 # ---------------------------------------------------------------------------
 # 4. files_fetch_failed override
 # ---------------------------------------------------------------------------
 
 
-def test_files_fetch_failed_caps_tier_at_bronze() -> None:
-    """All metadata present, files_fetch_failed=True → tier must be Bronze."""
+def test_files_fetch_failed_caps_tier_at_raw() -> None:
+    """All metadata present, files_fetch_failed=True → has_result_files=False → tier Raw."""
     r = compute_audit("PXD000001", _project(), [], files_fetch_failed=True)
-    assert r.tier == "Bronze"
+    assert r.tier == "Raw"
     assert r.files_fetch_failed is True
 
 
@@ -246,11 +312,11 @@ def test_files_fetch_failed_sets_file_flags_false() -> None:
     assert r.tier not in ("Silver", "Gold")
 
 
-def test_files_fetch_failed_false_with_empty_files_still_bronze() -> None:
-    """files_fetch_failed=False but empty files list → file flags False, tier Bronze."""
+def test_files_fetch_failed_false_with_empty_files_still_raw() -> None:
+    """files_fetch_failed=False but empty files list → file flags False, tier Raw."""
     r = compute_audit("PXD000001", _project(), [], files_fetch_failed=False)
     assert r.has_result_files is False
-    assert r.tier == "Bronze"
+    assert r.tier == "Raw"
     assert r.files_fetch_failed is False
 
 
@@ -470,7 +536,7 @@ def test_empty_files_list_gives_all_file_flags_false() -> None:
     assert r.has_result_files is False
     assert r.has_sdrf is False
     assert r.has_mztab is False
-    assert r.tier == "Bronze"  # organism_id is present but result_files is not
+    assert r.tier == "Raw"  # no result files → Raw in 7-tier
 
 
 def test_file_with_none_file_name_handled_gracefully() -> None:

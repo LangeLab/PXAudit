@@ -333,7 +333,7 @@ def test_pipeline_silver_audit_row(
 def test_pipeline_files_fetch_failed_bronze_in_db(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, pride_project_gold: dict
 ) -> None:
-    """Files endpoint failure: audit row must have tier=Bronze, files_fetch_failed=1."""
+    """Files endpoint failure: audit row must have tier=Raw, files_fetch_failed=1."""
     monkeypatch.setattr("pxaudit.cli.read_cache", MagicMock(return_value=None))
     monkeypatch.setattr("pxaudit.cli.write_cache", MagicMock())
     monkeypatch.setattr("pxaudit.cli.fetch_project", MagicMock(return_value=pride_project_gold))
@@ -344,7 +344,7 @@ def test_pipeline_files_fetch_failed_bronze_in_db(
     assert res.exit_code == 0
 
     row = _read_audit(db)
-    assert row["tier"] == "Bronze"
+    assert row["tier"] == "Raw"  # 7-tier: no result files → Raw
     assert row["files_fetch_failed"] == 1
     assert row["has_result_files"] == 0
     assert row["has_sdrf"] == 0
