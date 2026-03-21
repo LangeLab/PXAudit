@@ -115,6 +115,9 @@ def test_compression_exts_ordered_longest_first() -> None:
         ("waters.mih", FileClass.RAW),
         ("sciex.iff", FileClass.RAW),
         ("abi.t2d", FileClass.RAW),
+        ("bruker.yep", FileClass.RAW),  # Bruker older format
+        ("bruker.fid", FileClass.RAW),  # Bruker FID signal
+        ("sample.uimf", FileClass.RAW),  # PNNL ion-mobility
         # PEAK
         ("run.mzML", FileClass.PEAK),
         ("run.mzXML", FileClass.PEAK),
@@ -125,10 +128,13 @@ def test_compression_exts_ordered_longest_first() -> None:
         ("run.dta", FileClass.PEAK),
         ("run.apl", FileClass.PEAK),
         ("run.ms1", FileClass.PEAK),
+        ("run.cms2", FileClass.PEAK),  # Crux/SEQUEST MS2 variant
         # PSI RESULT
         ("res.mzIdentML", FileClass.RESULT),
         ("res.mzid", FileClass.RESULT),
         ("res.mztab", FileClass.RESULT),
+        ("ids.idxml", FileClass.RESULT),  # OpenMS ID format
+        ("qc.mzqc", FileClass.RESULT),  # PSI QC format
         # SEARCH
         ("mascot.dat", FileClass.SEARCH),
         ("pd.msf", FileClass.SEARCH),
@@ -140,11 +146,16 @@ def test_compression_exts_ordered_longest_first() -> None:
         ("flat.pepxml", FileClass.SEARCH),
         ("flat.protxml", FileClass.SEARCH),
         ("idpicker.idpdb", FileClass.SEARCH),
+        ("percolator.pin", FileClass.SEARCH),  # Percolator input
+        ("percolator.pout", FileClass.SEARCH),  # Percolator output
         # FASTA
         ("human.fasta", FileClass.FASTA),
         ("human.fa", FileClass.FASTA),
         ("human.fas", FileClass.FASTA),
         ("human.faa", FileClass.FASTA),
+        ("genome.fna", FileClass.FASTA),  # nucleotide FASTA
+        # SDRF bare extension
+        ("experiment.sdrf", FileClass.SDRF),
         # ID_LIST via extension
         ("features.featurexml", FileClass.ID_LIST),
     ],
@@ -350,6 +361,8 @@ def test_quant_matrix_compressed(filename: str = "report.tsv.gz") -> None:
     "filename, expected",
     [
         ("psm.tsv", FileClass.ID_LIST),
+        ("psm.txt", FileClass.ID_LIST),
+        ("psms.txt", FileClass.ID_LIST),
         ("combined_ion.tsv", FileClass.ID_LIST),
     ],
 )

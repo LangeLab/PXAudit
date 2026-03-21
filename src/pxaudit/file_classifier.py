@@ -42,7 +42,10 @@ class FileClass(StrEnum):
     RAW = "RAW"  # Vendor-proprietary raw spectra
     PEAK = "PEAK"  # Open-format spectra (mzML, mzXML, MGF …)
     RESULT = "RESULT"  # PSI-standard identification results (mzIdentML, mzTab)
-    SEARCH = "SEARCH"  # Proprietary search-engine output (.dat, .msf …)
+    SEARCH = "SEARCH"  # Proprietary / non-standard analysis results (.dat, .msf, Skyline, TPP…)
+    # Note: semantically this bucket covers "non-standard processed results", not only raw
+    # search-engine output.  Skyline (.sky.zip), TPP XML (.pep.xml/.prot.xml), and Percolator
+    # files belong here because they are PRIDE-SEARCH-compatible but not PSI-standard.
     SDRF = "SDRF"  # FAIR experimental-design file
     FASTA = "FASTA"  # Sequence database
     QUANT_MATRIX = "QUANT_MATRIX"  # Protein/peptide-level intensity summary table
@@ -121,6 +124,9 @@ _EXTENSION_TO_CLASS: dict[str, FileClass] = {
     ".mih": FileClass.RAW,  # Waters MassLynx header
     ".iff": FileClass.RAW,  # ABI/Sciex IDA
     ".t2d": FileClass.RAW,  # ABI 4700/4800
+    ".yep": FileClass.RAW,  # Bruker (older; pre-compact format)
+    ".fid": FileClass.RAW,  # Bruker raw FID signal file
+    ".uimf": FileClass.RAW,  # PNNL ion-mobility raw format (SLIM/IMS)
     # ── Open-format spectra (PEAK) ───────────────────────────────────────────────────────────
     ".mzml": FileClass.PEAK,  # HUPO-PSI; gold-standard open format
     ".mzxml": FileClass.PEAK,  # ProteoWizard legacy; widely supported
@@ -131,11 +137,17 @@ _EXTENSION_TO_CLASS: dict[str, FileClass] = {
     ".dta": FileClass.PEAK,  # Sequest per-scan DTA format
     ".apl": FileClass.PEAK,  # Andromeda peak list (MaxQuant input)
     ".ms1": FileClass.PEAK,  # MS1 spectrum file
+    ".cms2": FileClass.PEAK,  # Crux/SEQUEST MS2 variant (newer)
     # ── PSI-standard identification results (RESULT) ─────────────────────────────────────────
     ".mzidentml": FileClass.RESULT,  # PSI mzIdentML; canonical open-standard
     ".mzid": FileClass.RESULT,  # alias for .mzidentml
     ".mztab": FileClass.RESULT,  # PSI mzTab; quant + identification (tabular)
     ".mztab-m": FileClass.RESULT,  # mzTab-M (metabolomics; rare in proteomics)
+    # Note: mzTab is a container format: it can hold IDs, quant, and metadata.  The
+    # classification to RESULT is correct for PRIDE compatibility; downstream tier logic
+    # should use quantificationMethods[] to distinguish quant-capable mzTab files.
+    ".idxml": FileClass.RESULT,  # OpenMS peptide identification format
+    ".mzqc": FileClass.RESULT,  # PSI mzQC quality-control format
     # Note: .xml is intentionally absent — too broad (workflow.xml, parameters.xml).
     # PRIDE XML (pride_exp_complete/partial) is caught via _PSI_BASENAME_PATTERNS.
     # ── Proprietary search-engine output (SEARCH) ────────────────────────────────────────────
@@ -152,15 +164,25 @@ _EXTENSION_TO_CLASS: dict[str, FileClass] = {
     ".omx": FileClass.SEARCH,  # OMSSA output
     ".mzrt": FileClass.SEARCH,  # Progenesis
     ".sky.zip": FileClass.SEARCH,  # Skyline document archive (DIA results)
+    ".pin": FileClass.SEARCH,  # Percolator input (post-search feature table)
+    ".pout": FileClass.SEARCH,  # Percolator output (re-scored PSMs)
     # ── Sequence databases (FASTA) ───────────────────────────────────────────────────────────
     ".fasta": FileClass.FASTA,
     ".fa": FileClass.FASTA,
     ".fas": FileClass.FASTA,
     ".faa": FileClass.FASTA,  # protein FASTA (NCBI convention)
+    ".fna": FileClass.FASTA,  # nucleotide FASTA (NCBI convention; rare in proteomics)
     # ── OpenMS feature file (ID_LIST) ────────────────────────────────────────────────────────
     # Placed in the extension registry (not in _ID_LIST_PATTERNS) so that compressed
     # variants like .featurexml.gz are correctly handled via Step 1 after compression strip.
+    # Classification note: featureXML stores LC-MS feature detections (precursor-level), not
+    # strictly PSM-level IDs.  A case can be made for QUANT_MATRIX, but until a FEATURE
+    # category is introduced in the tier model, ID_LIST is the closest semantic bucket.
     ".featurexml": FileClass.ID_LIST,
+    # ── SDRF (bare extension) ─────────────────────────────────────────────────────────────────
+    # Covers files named e.g. 'experiment.sdrf'.  The more common '.sdrf.tsv' / '.sdrf.txt'
+    # compound forms are handled upstream in classify() Step 3 (substring + tabular guard).
+    ".sdrf": FileClass.SDRF,
 }
 
 
@@ -213,6 +235,8 @@ _QUANT_MATRIX_PATTERNS: re.Pattern[str] = re.compile(
 # PSM / scan-level identification lists (granular, without quant summary).
 _ID_LIST_PATTERNS: re.Pattern[str] = re.compile(
     r"psm\.tsv$"  # general PSM table (FragPipe and others)
+    r"|psm\.txt$"  # PSM table — .txt variant (some tools output .txt)
+    r"|psms\.txt$"  # PSM table — plural .txt variant
     r"|combined_ion\.tsv$",  # FragPipe ion-level table
     re.IGNORECASE,
 )
