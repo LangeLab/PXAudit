@@ -5,8 +5,15 @@ Public API
 compute_audit(accession, project_data, files_data, *, files_fetch_failed)
     → AuditResult
 
-All flag computation is vectorized (pandas).  No row-level Python loops over
-the files list.  The tier derivation mirrors the SQL CASE expression in
+Flag computation mixes two strategies:
+- Project-level flags are derived directly from the ``project_data`` dict.
+- File-level flags are derived in two stages: ``FileTypeClassifier`` classifies
+  every file into a ``FileClass`` (one Python call per file), and then set
+  membership tests derive the Boolean flags.  SDRF and mzTab detection remain
+  as vectorized pandas operations because they require pattern matching across
+  all filenames simultaneously.
+
+The tier derivation mirrors the SQL CASE expression in
 plan/database_schema.md exactly.
 """
 
@@ -17,26 +24,67 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from pxaudit import __version__
+from pxaudit.file_classifier import FileClass, FileTypeClassifier
 
 # ---------------------------------------------------------------------------
 # Module-level constants
 # ---------------------------------------------------------------------------
 
-_TIER_LOGIC_VERSION: str = f"v{__version__}"  # → "v0.1.0"
+_TIER_LOGIC_VERSION: str = "v2.0"  # bumped from v{__version__} at 7-tier redesign (C07)
 
 # Only PXD accessions are hosted by PRIDE and can be fully audited.
 _PRIDE_PREFIX = "PXD"
 
-# fileCategory.value strings that count as result/search evidence.
-# Source: PRIDE CV — "Result file URI" → value "RESULT",
-#         "Search engine output file URI" → value "SEARCH".
-_RESULT_CATEGORIES: frozenset[str] = frozenset({"result", "search"})
+# ---------------------------------------------------------------------------
+# SDRF detection
+# ---------------------------------------------------------------------------
 
-# SDRF token regex: "sdrf" as a complete alphabetic token.
-# Matches: sdrf.tsv, SDRF.tsv, my_sdrf_file.txt, experimental_design.sdrf.tsv
-# Rejects: sdrfile.txt  (immediately followed by another letter)
-_SDRF_PATTERN: re.Pattern[str] = re.compile(r"(?<![a-zA-Z])sdrf(?![a-zA-Z])", re.IGNORECASE)
+# Primary path: PRIDE applies this category to all SDRF files in well-annotated
+# submissions.  We require the filename to ALSO contain "sdrf" because the category
+# can be applied to any experimental-design document (Excel, plain text) that is
+# not an SDRF.
+_SDRF_CATEGORY: str = "experimental design"
+
+# Fallback path: pre-category-era submissions where the SDRF exists but was not
+# tagged with the EXPERIMENTAL DESIGN category.
+#
+# Two requirements to avoid false positives:
+#   1. The word-boundary lookbehind/lookahead (?<![a-zA-Z])sdrf(?![a-zA-Z]) ensures
+#      that "sdrfile.txt", "asdrf.tsv", "prefixsdrfsuffix" are NOT matched.  Note:
+#      underscores and digits are NOT letters, so "_sdrf_.tsv" and "123sdrf456.tsv"
+#      still match — that is intentional and matches the token-boundary test suite.
+#   2. The tabular extension guard \.(tsv|txt|csv) ensures "sdrf_instructions.pdf"
+#      and "sdrf_template.docx" are NOT matched.  An SDRF must be a tab/comma-
+#      delimited text file; the extension is the authoritative discriminator.
+#   3. An optional compression suffix allows "PXD073444.sdrf.tsv.gz" to match.
+#
+# Spec note: the original draft proposed r"sdrf.*\.(tsv|txt|csv)...", which lacks
+# the word-boundary guard and regresses sdrfile.txt / asdrf.tsv / sdrfdata.tsv.
+_SDRF_FALLBACK_RE: re.Pattern[str] = re.compile(
+    r"(?<![a-zA-Z])sdrf(?![a-zA-Z]).*\.(?:tsv|txt|csv)(?:\.(?:gz|zip|bz2|7z))?$",
+    re.IGNORECASE,
+)
+
+# Module-level classifier instance — stateless after construction; safe to share.
+_classifier: FileTypeClassifier = FileTypeClassifier()
+
+
+# ---------------------------------------------------------------------------
+# Private helpers
+# ---------------------------------------------------------------------------
+
+
+def _safe_pubmed_id(value: object) -> int:
+    """Convert a PRIDE ``pubmedID`` field to int, returning 0 on any parse failure.
+
+    PRIDE returns ``pubmedID`` as an integer or ``0`` for unpublished entries.
+    Older API responses occasionally carry ``None`` or an empty string; this
+    guard prevents ``ValueError`` / ``TypeError`` from propagating to the caller.
+    """
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0
 
 
 # ---------------------------------------------------------------------------
@@ -51,20 +99,35 @@ class AuditResult:
     Boolean flags map directly to the ``audit`` table columns.  The DB layer
     stores them as SQLite integers (0/1); Python ``bool`` is a subclass of
     ``int`` so no explicit conversion is needed.
+
+    Field order must match ``pxaudit.db._AUDIT_COLS`` exactly — the
+    schema-contract test ``test_audit_result_field_names_match_audit_cols_exactly``
+    enforces this.
     """
 
+    # ── Identifying (required) fields ─────────────────────────────────────────
     accession: str
     tier: str
-    has_title: bool
-    has_organism: bool
-    has_organism_id: bool
-    has_instrument: bool
-    has_result_files: bool
-    has_sdrf: bool
-    has_mztab: bool
-    files_fetch_failed: bool
-    is_unverifiable: bool
+    # ── Existing metadata flags ────────────────────────────────────────────────
+    has_title: bool = False
+    has_organism: bool = False
+    has_organism_id: bool = False
+    has_instrument: bool = False
+    has_result_files: bool = False
+    # ── v2 flags (C03 / C06) ──────────────────────────────────────────────────
+    has_psi_results: bool = False  # FileClass.RESULT found (mzIdentML / mzTab)
+    has_open_spectra: bool = False  # FileClass.PEAK found
+    has_organism_part: bool = False  # len(project["organismParts"]) > 0
+    has_publication: bool = False  # pubmedID present, non-null, != 0
+    has_tabular_quant: bool = False  # FileClass.QUANT_MATRIX or ID_LIST found
+    has_quant_metadata: bool = False  # quantificationMethods[] non-empty
+    # ── Legacy flags (kept for backward compat) ───────────────────────────────
+    has_sdrf: bool = False
+    has_mztab: bool = False
+    files_fetch_failed: bool = False
+    is_unverifiable: bool = False
     tier_logic_version: str = _TIER_LOGIC_VERSION
+    quant_tier: str = "No Quant"
 
 
 # ---------------------------------------------------------------------------
@@ -126,6 +189,7 @@ def compute_audit(
             has_mztab=False,
             files_fetch_failed=files_fetch_failed,
             is_unverifiable=True,
+            quant_tier="Unverifiable",
         )
 
     # ------------------------------------------------------------------
@@ -146,9 +210,23 @@ def compute_audit(
     instruments: list[dict] = project_data.get("instruments") or []
     has_instrument = bool(instruments and instruments[0].get("name"))
 
+    submission_type: str = project_data.get("submissionType") or ""
+
+    organism_parts: list = project_data.get("organismParts") or []
+    references: list = project_data.get("references") or []
+    quant_methods: list = project_data.get("quantificationMethods") or []
+
+    has_organism_part = bool(organism_parts)
+    has_quant_metadata = bool(quant_methods)
+    has_publication = any(_safe_pubmed_id(r.get("pubmedID")) != 0 for r in references)
+
     # ------------------------------------------------------------------
-    # 5.  File-level flags (vectorized)
+    # 5.  File-level flags
     # ------------------------------------------------------------------
+    has_psi_results = False
+    has_open_spectra = False
+    has_tabular_quant = False
+
     if files_fetch_failed or not files_data:
         has_result_files = False
         has_sdrf = False
@@ -164,21 +242,85 @@ def compute_audit(
             dtype="object",
         )
 
-        has_result_files = bool(file_cats.str.casefold().isin(_RESULT_CATEGORIES).any())
-        has_sdrf = bool(file_names.str.contains(_SDRF_PATTERN).any())
+        # Classify each file via FileTypeClassifier (one call per file; not vectorizable).
+        # A set collapses duplicates so all membership tests are O(1).
+        file_classes: set[FileClass] = {
+            _classifier.classify(
+                f.get("fileName") or "",
+                (f.get("fileCategory") or {}).get("value"),
+            )
+            for f in files_data
+        }
+
+        has_psi_results = FileClass.RESULT in file_classes
+        has_open_spectra = FileClass.PEAK in file_classes
+        has_tabular_quant = bool(file_classes & {FileClass.QUANT_MATRIX, FileClass.ID_LIST})
+
+        # Submission-type-aware result gate (Audit Issue 3):
+        # PARTIAL submissions may lack PSI-standard result files; a quant table
+        # (QUANT_MATRIX or ID_LIST) is accepted as evidence of processed results.
+        if submission_type.upper() == "PARTIAL":
+            result_gate: frozenset[FileClass] = frozenset(
+                {FileClass.RESULT, FileClass.SEARCH, FileClass.QUANT_MATRIX, FileClass.ID_LIST}
+            )
+        else:
+            result_gate = frozenset({FileClass.RESULT, FileClass.SEARCH})
+        has_result_files = bool(file_classes & result_gate)
+
+        # Two-stage SDRF detection — see module-level constants for rationale.
+        # Primary: authoritative EXPERIMENTAL DESIGN category + "sdrf" in filename.
+        experimental_design_mask = file_cats.str.casefold() == _SDRF_CATEGORY
+        primary_sdrf = bool(
+            experimental_design_mask.any()
+            and file_names[experimental_design_mask]
+            .str.contains(r"sdrf", case=False, na=False)
+            .any()
+        )
+        # Fallback: filename pattern only (for pre-category-era submissions).
+        fallback_sdrf = bool(file_names.str.contains(_SDRF_FALLBACK_RE, na=False).any())
+        has_sdrf = primary_sdrf or fallback_sdrf
+
         has_mztab = bool(file_names.str.casefold().str.endswith(".mztab").any())
 
     # ------------------------------------------------------------------
     # 6.  Tier derivation  (mirrors SQL CASE in plan/database_schema.md)
     # ------------------------------------------------------------------
+    # 7-tier FAIR ladder (C07).  Each tier adds one more requirement:
+    #   None     — missing basic metadata (title / organism / instrument)
+    #   Raw      — has metadata but no processed result files at all
+    #   Bronze   — has result files but none are PSI-standard (mzIdentML / mzTab)
+    #   Silver   — PSI results present but no SDRF experimental-design file
+    #   Gold     — SDRF present but missing open spectra OR organism part annotation
+    #   Platinum — open spectra + organism part present but no linked publication
+    #   Diamond  — all FAIR criteria met
     if not has_title or not has_organism or not has_instrument:
         tier = "None"
-    elif not has_organism_id or not has_result_files:
+    elif not has_result_files:
+        tier = "Raw"
+    elif not has_psi_results:
         tier = "Bronze"
     elif not has_sdrf:
         tier = "Silver"
-    else:
+    elif not has_open_spectra or not has_organism_part:
         tier = "Gold"
+    elif not has_publication:
+        tier = "Platinum"
+    else:
+        tier = "Diamond"
+
+    # ------------------------------------------------------------------
+    # 7.  Quant-tier derivation  (secondary scoring axis; see C09)
+    # ------------------------------------------------------------------
+    if not has_psi_results and not has_tabular_quant:
+        quant_tier = "No Quant"
+    elif not has_psi_results and has_tabular_quant:
+        quant_tier = "Partial"  # tool-native tables only, no PSI standard
+    elif has_psi_results and not has_tabular_quant:
+        quant_tier = "Partial"  # PSI IDs present but no quant table
+    elif not has_quant_metadata:
+        quant_tier = "Quant-Ready"  # PSI + quant table but metadata missing
+    else:
+        quant_tier = "Quant-Complete"  # PSI + quant table + metadata
 
     return AuditResult(
         accession=accession,
@@ -188,8 +330,15 @@ def compute_audit(
         has_organism_id=has_organism_id,
         has_instrument=has_instrument,
         has_result_files=has_result_files,
+        has_psi_results=has_psi_results,
+        has_open_spectra=has_open_spectra,
+        has_organism_part=has_organism_part,
+        has_publication=has_publication,
+        has_tabular_quant=has_tabular_quant,
+        has_quant_metadata=has_quant_metadata,
         has_sdrf=has_sdrf,
         has_mztab=has_mztab,
         files_fetch_failed=files_fetch_failed,
         is_unverifiable=False,
+        quant_tier=quant_tier,
     )

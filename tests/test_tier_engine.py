@@ -147,23 +147,24 @@ def test_non_pxd_all_flags_false() -> None:
             _gold_files(),
             "Gold",
         ),
-        # Silver: everything except SDRF
+        # Silver: everything except SDRF (organism_id present, result present, no SDRF)
         (
             _project(),
             _result_files(),
             "Silver",
         ),
-        # Bronze case 1: organism_id missing, but result files present
+        # Silver: organism_id missing — 7-tier dropped organism_id from gate;
+        # result files present → Bronze (no PSI)? No — mzid IS PSI → Silver
         (
             _project(organism_id=None),
             _result_files(),
-            "Bronze",
+            "Silver",
         ),
-        # Bronze case 2: organism_id present but no result/search category files
+        # Raw: organism_id present but no result/search/quant files at all
         (
             _project(),
             [_file("raw.raw", "RAW")],
-            "Bronze",
+            "Raw",
         ),
         # None case 1: title missing
         (
@@ -187,8 +188,8 @@ def test_non_pxd_all_flags_false() -> None:
     ids=[
         "Gold",
         "Silver",
-        "Bronze-no-organism_id",
-        "Bronze-no-result",
+        "Silver-no-organism_id",
+        "Raw-no-result",
         "None-no-title",
         "None-no-organism",
         "None-no-instrument",
@@ -208,12 +209,11 @@ def test_silver_has_result_files_but_no_sdrf() -> None:
     assert r.has_sdrf is False
 
 
-# Bronze explicitly excludes Silver/Gold.
-def test_bronze_has_no_result_files() -> None:
+# Raw explicitly excludes Bronze+: no result files means Raw in 7-tier.
+def test_raw_has_no_result_files() -> None:
     r = compute_audit("PXD000001", _project(), [_file("raw.raw", "RAW")])
-    assert r.tier == "Bronze"
+    assert r.tier == "Raw"
     assert r.has_result_files is False
-    # Tier is Bronze — result_files is the single missing element.
     assert r.has_organism_id is True
 
 
@@ -224,15 +224,81 @@ def test_none_tier_empty_string_title() -> None:
     assert r.tier == "None"
 
 
+# 3b. New 7-tier levels — Platinum and Diamond
+# ---------------------------------------------------------------------------
+
+
+def _platinum_project() -> dict:
+    """Project with organism_part and no publication — enables Platinum/Diamond tests."""
+    return {**_project(), "organismParts": [{"name": "brain"}], "references": []}
+
+
+def _platinum_files() -> list[dict]:
+    """Files that satisfy all flags up to Platinum: result + SDRF + open spectra."""
+    return [
+        _file("run1.mzML", "PEAK"),
+        _file("results.mzid", "RESULT"),
+        _file("sdrf.tsv", "OTHER"),
+    ]
+
+
+def test_bronze_tier_with_search_only_no_psi() -> None:
+    """result files present (SEARCH) but none are PSI-standard → Bronze."""
+    files = [_file("results.dat", "SEARCH")]  # .dat → FileClass.SEARCH, not RESULT
+    r = compute_audit("PXD000001", _project(), files)
+    assert r.tier == "Bronze"
+    assert r.has_result_files is True
+    assert r.has_psi_results is False
+
+
+def test_gold_tier_missing_open_spectra() -> None:
+    """PSI results + SDRF but no open spectra → Gold."""
+    files = [_file("results.mzid", "RESULT"), _file("sdrf.tsv", "OTHER")]
+    r = compute_audit("PXD000001", {**_project(), "organismParts": [{"name": "brain"}]}, files)
+    assert r.tier == "Gold"
+    assert r.has_psi_results is True
+    assert r.has_sdrf is True
+    assert r.has_open_spectra is False
+
+
+def test_gold_tier_missing_organism_part() -> None:
+    """PSI results + SDRF + open spectra but no organism part → Gold."""
+    files = _platinum_files()
+    r = compute_audit("PXD000001", _project(), files)  # _project() has no organismParts
+    assert r.tier == "Gold"
+    assert r.has_open_spectra is True
+    assert r.has_organism_part is False
+
+
+def test_platinum_tier_sdrf_open_spectra_org_part_no_pub() -> None:
+    """All file flags met + organism_part but no publication → Platinum."""
+    r = compute_audit("PXD000001", _platinum_project(), _platinum_files())
+    assert r.tier == "Platinum"
+    assert r.has_open_spectra is True
+    assert r.has_organism_part is True
+    assert r.has_publication is False
+
+
+def test_diamond_tier_all_flags_met() -> None:
+    """All FAIR criteria met → Diamond."""
+    project = {
+        **_platinum_project(),
+        "references": [{"pubmedID": 12345}],
+    }
+    r = compute_audit("PXD000001", project, _platinum_files())
+    assert r.tier == "Diamond"
+    assert r.has_publication is True
+
+
 # ---------------------------------------------------------------------------
 # 4. files_fetch_failed override
 # ---------------------------------------------------------------------------
 
 
-def test_files_fetch_failed_caps_tier_at_bronze() -> None:
-    """All metadata present, files_fetch_failed=True → tier must be Bronze."""
+def test_files_fetch_failed_caps_tier_at_raw() -> None:
+    """All metadata present, files_fetch_failed=True → has_result_files=False → tier Raw."""
     r = compute_audit("PXD000001", _project(), [], files_fetch_failed=True)
-    assert r.tier == "Bronze"
+    assert r.tier == "Raw"
     assert r.files_fetch_failed is True
 
 
@@ -246,11 +312,11 @@ def test_files_fetch_failed_sets_file_flags_false() -> None:
     assert r.tier not in ("Silver", "Gold")
 
 
-def test_files_fetch_failed_false_with_empty_files_still_bronze() -> None:
-    """files_fetch_failed=False but empty files list → file flags False, tier Bronze."""
+def test_files_fetch_failed_false_with_empty_files_still_raw() -> None:
+    """files_fetch_failed=False but empty files list → file flags False, tier Raw."""
     r = compute_audit("PXD000001", _project(), [], files_fetch_failed=False)
     assert r.has_result_files is False
-    assert r.tier == "Bronze"
+    assert r.tier == "Raw"
     assert r.files_fetch_failed is False
 
 
@@ -270,6 +336,8 @@ def test_files_fetch_failed_false_with_empty_files_still_bronze() -> None:
         ("sdrfile.txt", False),  # sdrf immediately followed by a letter
         ("sdrfdata.tsv", False),  # same
         ("not_related.tsv", False),
+        ("sdrf_instructions.pdf", False),  # tabular-ext guard: .pdf must NOT match
+        ("PXD073444.sdrf.tsv.gz", True),  # compressed SDRF — .tsv.gz suffix allowed
     ],
     ids=[
         "lowercase",
@@ -280,11 +348,44 @@ def test_files_fetch_failed_false_with_empty_files_still_bronze() -> None:
         "sdrfile-no-match",
         "sdrfdata-no-match",
         "unrelated",
+        "sdrf-pdf-no-match",
+        "compressed-sdrf",
     ],
 )
 def test_sdrf_pattern_matching(file_name: str, expected: bool) -> None:
     files = [
         _file(file_name, "RESULT"),  # result so tier would be Silver, not None
+        _file("result.mzid", "RESULT"),
+    ]
+    r = compute_audit("PXD000001", _project(), files)
+    assert r.has_sdrf is expected
+
+
+# ---------------------------------------------------------------------------
+# 5b. SDRF primary path — EXPERIMENTAL DESIGN category
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "file_name, category, expected",
+    [
+        ("sdrf_sample.tsv", "EXPERIMENTAL DESIGN", True),  # canonical PRIDE casing
+        ("experimental_design.sdrf.tsv", "Experimental Design", True),  # mixed casing
+        ("SDRF_data.tsv", "experimental design", True),  # all-lowercase category
+        ("isa_metadata.tsv", "EXPERIMENTAL DESIGN", False),  # category OK, no sdrf in name
+        ("sdrf.tsv", "OTHER", True),  # category mismatch → falls back to filename match
+    ],
+    ids=[
+        "primary-canonical",
+        "primary-mixed-case-cat",
+        "primary-lowercase-cat",
+        "primary-no-sdrf-in-name",
+        "fallback-other-category",
+    ],
+)
+def test_sdrf_primary_path(file_name: str, category: str, expected: bool) -> None:
+    files = [
+        _file(file_name, category),
         _file("result.mzid", "RESULT"),
     ]
     r = compute_audit("PXD000001", _project(), files)
@@ -348,7 +449,10 @@ def test_mztab_extension_matching(file_name: str, expected: bool) -> None:
     ],
 )
 def test_file_category_matching(category_value: str, expected: bool) -> None:
-    files = [_file("data.raw", category_value)]
+    # Use an unrecognised filename so the PRIDE category fallback (step 7 of the
+    # classifier) is the deciding factor.  A vendor .raw file would be classified
+    # as FileClass.RAW by extension regardless of the PRIDE category string.
+    files = [_file("unknown.bin", category_value)]
     r = compute_audit("PXD000001", _project(), files)
     assert r.has_result_files is expected
 
@@ -432,7 +536,7 @@ def test_empty_files_list_gives_all_file_flags_false() -> None:
     assert r.has_result_files is False
     assert r.has_sdrf is False
     assert r.has_mztab is False
-    assert r.tier == "Bronze"  # organism_id is present but result_files is not
+    assert r.tier == "Raw"  # no result files → Raw in 7-tier
 
 
 def test_file_with_none_file_name_handled_gracefully() -> None:
@@ -491,3 +595,191 @@ def test_gold_all_flags_true() -> None:
     assert r.has_sdrf is True
     assert r.is_unverifiable is False
     assert r.files_fetch_failed is False
+
+
+# ---------------------------------------------------------------------------
+# 11. New project-level flags (C06)
+# ---------------------------------------------------------------------------
+
+
+def test_has_organism_part_true_when_organism_parts_non_empty() -> None:
+    project = {**_project(), "organismParts": [{"name": "brain"}]}
+    r = compute_audit("PXD000001", project, [])
+    assert r.has_organism_part is True
+
+
+def test_has_organism_part_false_when_absent() -> None:
+    r = compute_audit("PXD000001", _project(), [])
+    assert r.has_organism_part is False
+
+
+def test_has_quant_metadata_true_when_quant_methods_non_empty() -> None:
+    project = {**_project(), "quantificationMethods": [{"name": "iTRAQ"}]}
+    r = compute_audit("PXD000001", project, [])
+    assert r.has_quant_metadata is True
+
+
+@pytest.mark.parametrize(
+    "pubmed_value, expected",
+    [
+        (12345, True),  # valid integer pubmedID
+        (0, False),  # zero — PRIDE sentinel for unpublished
+        (None, False),  # None — older API responses; safe_pubmed_id handles TypeError
+        ("", False),  # empty string — safe_pubmed_id handles ValueError
+    ],
+    ids=["valid-int", "zero", "none", "empty-str"],
+)
+def test_has_publication_from_pubmed_id(pubmed_value: object, expected: bool) -> None:
+    project = {**_project(), "references": [{"pubmedID": pubmed_value}]}
+    r = compute_audit("PXD000001", project, [])
+    assert r.has_publication is expected
+
+
+def test_has_publication_false_when_references_empty() -> None:
+    project = {**_project(), "references": []}
+    r = compute_audit("PXD000001", project, [])
+    assert r.has_publication is False
+
+
+# ---------------------------------------------------------------------------
+# 12. FileTypeClassifier-derived file flags (C06)
+# ---------------------------------------------------------------------------
+
+
+def test_has_psi_results_true_for_mzid_file() -> None:
+    files = [_file("results.mzid", "RESULT")]
+    r = compute_audit("PXD000001", _project(), files)
+    assert r.has_psi_results is True
+
+
+def test_has_psi_results_false_for_raw_only() -> None:
+    files = [_file("run1.raw", "RAW")]
+    r = compute_audit("PXD000001", _project(), files)
+    assert r.has_psi_results is False
+
+
+def test_has_open_spectra_true_for_mzml_file() -> None:
+    files = [_file("run1.mzML", "PEAK"), _file("results.mzid", "RESULT")]
+    r = compute_audit("PXD000001", _project(), files)
+    assert r.has_open_spectra is True
+
+
+def test_has_open_spectra_false_for_raw_only() -> None:
+    files = [_file("run1.raw", "RAW")]
+    r = compute_audit("PXD000001", _project(), files)
+    assert r.has_open_spectra is False
+
+
+def test_has_tabular_quant_true_for_quant_matrix() -> None:
+    # proteinGroups.txt — MaxQuant fixed stem → FileClass.QUANT_MATRIX
+    files = [_file("proteinGroups.txt", "OTHER"), _file("results.mzid", "RESULT")]
+    r = compute_audit("PXD000001", _project(), files)
+    assert r.has_tabular_quant is True
+
+
+def test_has_tabular_quant_true_for_id_list() -> None:
+    # evidence.txt — MaxQuant fixed stem → FileClass.ID_LIST
+    files = [_file("evidence.txt", "OTHER"), _file("results.mzid", "RESULT")]
+    r = compute_audit("PXD000001", _project(), files)
+    assert r.has_tabular_quant is True
+
+
+def test_has_tabular_quant_false_for_raw_only() -> None:
+    files = [_file("run1.raw", "RAW")]
+    r = compute_audit("PXD000001", _project(), files)
+    assert r.has_tabular_quant is False
+
+
+# ---------------------------------------------------------------------------
+# 13. Submission-type-aware result gate (C06)
+# ---------------------------------------------------------------------------
+
+
+def test_partial_submission_counts_quant_matrix_as_result() -> None:
+    """PARTIAL: a MaxQuant proteinGroups.txt satisfies has_result_files."""
+    project = {**_project(), "submissionType": "PARTIAL"}
+    files = [_file("proteinGroups.txt", "OTHER")]  # no RESULT or SEARCH file
+    r = compute_audit("PXD000001", project, files)
+    assert r.has_result_files is True
+
+
+def test_complete_submission_does_not_count_quant_matrix_as_result() -> None:
+    """COMPLETE: only RESULT/SEARCH count; QUANT_MATRIX alone is not enough."""
+    project = {**_project(), "submissionType": "COMPLETE"}
+    files = [_file("proteinGroups.txt", "OTHER")]  # no RESULT or SEARCH file
+    r = compute_audit("PXD000001", project, files)
+    assert r.has_result_files is False
+
+
+def test_partial_submission_id_list_counts_as_result() -> None:
+    """PARTIAL: an ID_LIST file (evidence.txt) also satisfies has_result_files."""
+    project = {**_project(), "submissionType": "PARTIAL"}
+    files = [_file("evidence.txt", "OTHER")]  # ID_LIST, no RESULT or SEARCH
+    r = compute_audit("PXD000001", project, files)
+    assert r.has_result_files is True
+
+
+# ---------------------------------------------------------------------------
+# 14. quant_tier secondary scoring axis (C09)
+# ---------------------------------------------------------------------------
+
+
+def test_quant_tier_no_quant_when_no_psi_and_no_tabular() -> None:
+    """No PSI results and no tabular quant → quant_tier = 'No Quant'."""
+    files = [_file("run1.raw", "RAW")]
+    r = compute_audit("PXD000001", _project(), files)
+    assert r.quant_tier == "No Quant"
+
+
+def test_quant_tier_partial_tool_native_only() -> None:
+    """Tabular quant present but no PSI file → 'Partial' (tool-native tables only)."""
+    # proteinGroups.txt → FileClass.QUANT_MATRIX; no RESULT/SEARCH file
+    project = {**_project(), "submissionType": "PARTIAL"}
+    files = [_file("proteinGroups.txt", "OTHER")]
+    r = compute_audit("PXD000001", project, files)
+    assert r.has_psi_results is False
+    assert r.has_tabular_quant is True
+    assert r.quant_tier == "Partial"
+
+
+def test_quant_tier_partial_psi_only() -> None:
+    """PSI file present but no tabular quant → 'Partial' (PSI IDs, no quant table)."""
+    files = [_file("results.mzid", "RESULT")]  # RESULT only, no quant matrix
+    r = compute_audit("PXD000001", _project(), files)
+    assert r.has_psi_results is True
+    assert r.has_tabular_quant is False
+    assert r.quant_tier == "Partial"
+
+
+def test_quant_tier_quant_ready_psi_and_tabular_no_metadata() -> None:
+    """PSI + tabular quant present but no quantificationMethods → 'Quant-Ready'."""
+    files = [
+        _file("results.mzid", "RESULT"),
+        _file("proteinGroups.txt", "OTHER"),
+    ]
+    r = compute_audit("PXD000001", _project(), files)
+    assert r.has_psi_results is True
+    assert r.has_tabular_quant is True
+    assert r.has_quant_metadata is False
+    assert r.quant_tier == "Quant-Ready"
+
+
+def test_quant_tier_quant_complete_all_three_present() -> None:
+    """PSI + tabular quant + quantificationMethods → 'Quant-Complete'."""
+    project = {**_project(), "quantificationMethods": [{"name": "iTRAQ"}]}
+    files = [
+        _file("results.mzid", "RESULT"),
+        _file("proteinGroups.txt", "OTHER"),
+    ]
+    r = compute_audit("PXD000001", project, files)
+    assert r.has_psi_results is True
+    assert r.has_tabular_quant is True
+    assert r.has_quant_metadata is True
+    assert r.quant_tier == "Quant-Complete"
+
+
+def test_quant_tier_unverifiable_for_non_pxd_accession() -> None:
+    """Non-PXD accession takes the early-return path → quant_tier = 'Unverifiable'."""
+    r = compute_audit("MSV000079514", {}, [])
+    assert r.is_unverifiable is True
+    assert r.quant_tier == "Unverifiable"

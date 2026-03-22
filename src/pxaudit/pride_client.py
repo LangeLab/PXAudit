@@ -50,7 +50,12 @@ class PrideRateLimitError(PrideAPIError):
 # ---------------------------------------------------------------------------
 
 
-def _request(url: str, *, delay: float = 0.5) -> dict | list:
+def _request(
+    url: str,
+    *,
+    delay: float = 0.5,
+    session: requests.Session | None = None,
+) -> dict | list:
     """Issue a GET request to *url* with retry/backoff logic.
 
     Parameters
@@ -61,6 +66,11 @@ def _request(url: str, *, delay: float = 0.5) -> dict | list:
         Seconds to sleep before the first attempt (API politeness delay).
         Passed through from ``fetch_project`` / ``fetch_files``; set to ``0``
         to disable (e.g. in integration tests).
+    session:
+        An existing ``requests.Session`` to reuse.  If ``None`` (default) a new
+        session is created for this request only.  Pass an explicit session from
+        a pagination loop (e.g. ``fetch_files``) to avoid creating a new TCP
+        connection pool on every page.
 
     Returns
     -------
@@ -78,8 +88,9 @@ def _request(url: str, *, delay: float = 0.5) -> dict | list:
     """
     time.sleep(delay)
 
-    session = requests.Session()
-    session.headers["User-Agent"] = _USER_AGENT
+    if session is None:
+        session = requests.Session()
+        session.headers["User-Agent"] = _USER_AGENT
 
     last_exc: Exception | None = None
 
@@ -125,10 +136,33 @@ def fetch_project(accession: str, *, delay: float = 0.5) -> dict:
 
 
 def fetch_files(accession: str, *, delay: float = 0.5) -> list[dict]:
-    """Fetch the file list from ``/projects/{accession}/files``.
+    """Fetch **all** files from ``/projects/{accession}/files``, paginating until exhausted.
 
-    Returns the raw JSON list. Each element is a file object dict; the
-    ``fileCategory`` field is a nested CvParam dict, not a plain string.
+    ISS-004 fix: the original implementation made a single un-paginated request.
+    PRIDE's API caps its default page at 100 files; datasets with >100 files were
+    silently truncated, causing file-level flags (``has_open_spectra``, etc.) to be
+    derived from an incomplete file list and tier scores to be understated.
+
+    The loop requests successive pages of 100 rows until a page returns fewer than
+    100 rows, which signals the final (possibly empty) page has been reached.
+
+    Note: No early exit keyed on ``fileCategory`` is used.  Stopping on
+    RESULT/EXPERIMENTAL DESIGN categories can skip PEAK files on later pages and
+    cause a Platinum/Diamond dataset to be mis-scored as Gold (Audit Issue 1).
     """
-    url = f"{_BASE_URL}/projects/{accession}/files"
-    return cast(list[dict], _request(url, delay=delay))
+    all_files: list[dict] = []
+    page = 0
+    page_size = 100
+    session = requests.Session()
+    session.headers["User-Agent"] = _USER_AGENT
+    while True:
+        url = (
+            f"{_BASE_URL}/projects/{accession}/files"
+            f"?page={page}&pageSize={page_size}&sortDirection=DESC&sortCondition=id"
+        )
+        batch = cast(list[dict], _request(url, delay=delay, session=session))
+        all_files.extend(batch)
+        if len(batch) < page_size:
+            break
+        page += 1
+    return all_files

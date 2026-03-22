@@ -41,6 +41,7 @@ def _extract_study(accession: str, project: dict, fetched_at: str) -> dict:
         "organism_id": organisms[0].get("accession") if organisms else None,
         "instrument": instruments[0].get("name") if instruments else None,
         "submission_year": int(date_str[:4]) if date_str else None,
+        "submission_type": project.get("submissionType") or None,
         "keywords": ", ".join(keywords) if keywords else None,
         "repository": "PRIDE",
         "fetched_at": fetched_at,
@@ -95,23 +96,30 @@ def _print_result(result: AuditResult, study: dict, file_count: int) -> None:
 
     click.echo(f"Accession : {result.accession}")
     click.echo(f"Tier      : {result.tier}")
-    click.echo("-" * 42)
+    click.echo(f"Quant Tier: {result.quant_tier}")
+    click.echo("-" * 48)
     click.echo("Metadata")
     title = (study.get("title") or "")[:60]
-    click.echo(f"  {flag(result.has_title)} Title      {title}")
+    click.echo(f"  {flag(result.has_title)} Title         {title}")
     organism = study.get("organism") or ""
     organism_id = study.get("organism_id") or ""
     org_str = f"{organism} ({organism_id})" if organism_id else organism
-    click.echo(f"  {flag(result.has_organism)} Organism   {org_str}")
-    click.echo(f"  {flag(result.has_instrument)} Instrument {study.get('instrument') or ''}")
-    click.echo("-" * 42)
+    click.echo(f"  {flag(result.has_organism)} Organism      {org_str}")
+    click.echo(f"  {flag(result.has_instrument)} Instrument    {study.get('instrument') or ''}")
+    click.echo(f"  {flag(result.has_organism_part)} Organism part annotated")
+    click.echo(f"  {flag(result.has_publication)} Publication   linked")
+    click.echo(f"  {flag(result.has_quant_metadata)} Quant metadata (CV methods)")
+    click.echo("-" * 48)
     click.echo(f"Files ({file_count} total)")
     click.echo(f"  {flag(result.has_result_files)} Result/Search files present")
+    click.echo(f"  {flag(result.has_psi_results)} PSI-standard results (mzIdentML / mzTab-ID)")
+    click.echo(f"  {flag(result.has_open_spectra)} Open spectra (mzML / MGF)")
     click.echo(f"  {flag(result.has_sdrf)} SDRF file present")
-    click.echo(f"  {flag(result.has_mztab)} mzTab file present")
+    click.echo(f"  {flag(result.has_mztab)} mzTab summary present")
+    click.echo(f"  {flag(result.has_tabular_quant)} Tabular quant table (proteinGroups / evidence)")
     if result.files_fetch_failed:
         click.echo("  ! Files endpoint failed — file flags are unreliable")
-    click.echo("-" * 42)
+    click.echo("-" * 48)
 
 
 # ---------------------------------------------------------------------------

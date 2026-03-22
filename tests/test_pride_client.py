@@ -94,7 +94,8 @@ def test_fetch_files_calls_correct_url(mock_time: Mock, MockSession: Mock) -> No
     inst = _setup_session(MockSession, responses=[_ok_response([{"fileName": "f.raw"}])])
     fetch_files("PXD000001", delay=0)
     inst.get.assert_called_once_with(
-        f"{_BASE_URL}/projects/PXD000001/files",
+        f"{_BASE_URL}/projects/PXD000001/files"
+        "?page=0&pageSize=100&sortDirection=DESC&sortCondition=id",
         timeout=_EXPECTED_TIMEOUT,
     )
 
@@ -339,3 +340,97 @@ def test_fetch_files_500_retries_three_times(mock_time: Mock, MockSession: Mock)
     with pytest.raises(PrideAPIError):
         fetch_files("PXD000001", delay=0)
     assert inst.get.call_count == _MAX_RETRIES + 1
+
+
+# ---------------------------------------------------------------------------
+# 10. fetch_files pagination (ISS-004)
+# ---------------------------------------------------------------------------
+
+_PAGE_SIZE = 100  # must match the constant inside fetch_files
+
+
+def _make_page(n: int, offset: int = 0) -> list[dict]:
+    """Return a list of *n* minimal file dicts, with unique file names."""
+    return [{"fileName": f"file_{offset + i}.raw"} for i in range(n)]
+
+
+@patch("pxaudit.pride_client.requests.Session")
+@patch("pxaudit.pride_client.time")
+def test_fetch_files_single_page_returns_all_items(mock_time: Mock, MockSession: Mock) -> None:
+    """A single page with fewer than page_size items → one request, correct count."""
+    payload = _make_page(3)
+    inst = _setup_session(MockSession, responses=[_ok_response(payload)])
+    result = fetch_files("PXD000001", delay=0)
+    assert inst.get.call_count == 1
+    assert result == payload
+
+
+@patch("pxaudit.pride_client.requests.Session")
+@patch("pxaudit.pride_client.time")
+def test_fetch_files_two_pages_concatenated(mock_time: Mock, MockSession: Mock) -> None:
+    """Full first page (100) + partial second page → both batches accumulated."""
+    page0 = _make_page(_PAGE_SIZE, offset=0)
+    page1 = _make_page(7, offset=_PAGE_SIZE)
+    inst = _setup_session(MockSession, responses=[_ok_response(page0), _ok_response(page1)])
+    result = fetch_files("PXD000001", delay=0)
+    assert inst.get.call_count == 2
+    assert len(result) == _PAGE_SIZE + 7
+    assert result == page0 + page1
+
+
+@patch("pxaudit.pride_client.requests.Session")
+@patch("pxaudit.pride_client.time")
+def test_fetch_files_three_pages_concatenated(mock_time: Mock, MockSession: Mock) -> None:
+    """Two full pages + one final partial page → three requests, correct total."""
+    page0 = _make_page(_PAGE_SIZE, offset=0)
+    page1 = _make_page(_PAGE_SIZE, offset=_PAGE_SIZE)
+    page2 = _make_page(1, offset=2 * _PAGE_SIZE)
+    inst = _setup_session(
+        MockSession,
+        responses=[_ok_response(page0), _ok_response(page1), _ok_response(page2)],
+    )
+    result = fetch_files("PXD000001", delay=0)
+    assert inst.get.call_count == 3
+    assert len(result) == 2 * _PAGE_SIZE + 1
+
+
+@patch("pxaudit.pride_client.requests.Session")
+@patch("pxaudit.pride_client.time")
+def test_fetch_files_empty_first_page_returns_empty_list(
+    mock_time: Mock, MockSession: Mock
+) -> None:
+    """A project with no files returns [], makes exactly one request."""
+    inst = _setup_session(MockSession, responses=[_ok_response([])])
+    result = fetch_files("PXD000001", delay=0)
+    assert inst.get.call_count == 1
+    assert result == []
+
+
+@patch("pxaudit.pride_client.requests.Session")
+@patch("pxaudit.pride_client.time")
+def test_fetch_files_page_url_increments(mock_time: Mock, MockSession: Mock) -> None:
+    """Consecutive pages must use page=0 then page=1 in the URL."""
+    page0 = _make_page(_PAGE_SIZE)
+    page1 = _make_page(1, offset=_PAGE_SIZE)
+    inst = _setup_session(MockSession, responses=[_ok_response(page0), _ok_response(page1)])
+    fetch_files("PXD000001", delay=0)
+    urls_called = [c.args[0] for c in inst.get.call_args_list]
+    assert "page=0" in urls_called[0]
+    assert "page=1" in urls_called[1]
+    assert "pageSize=100" in urls_called[0]
+    assert "pageSize=100" in urls_called[1]
+
+
+@patch("pxaudit.pride_client.requests.Session")
+@patch("pxaudit.pride_client.time")
+def test_fetch_files_delay_passed_per_page(mock_time: Mock, MockSession: Mock) -> None:
+    """The politeness delay is forwarded to _request for every page."""
+    from unittest.mock import call
+
+    page0 = _make_page(_PAGE_SIZE)
+    page1 = _make_page(1, offset=_PAGE_SIZE)
+    _setup_session(MockSession, responses=[_ok_response(page0), _ok_response(page1)])
+    fetch_files("PXD000001", delay=0.25)
+    # time.sleep(0.25) called once per page (inside _request before each attempt)
+    sleep_calls = mock_time.sleep.call_args_list
+    assert sleep_calls.count(call(0.25)) == 2
