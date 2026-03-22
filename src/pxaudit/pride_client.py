@@ -50,7 +50,12 @@ class PrideRateLimitError(PrideAPIError):
 # ---------------------------------------------------------------------------
 
 
-def _request(url: str, *, delay: float = 0.5) -> dict | list:
+def _request(
+    url: str,
+    *,
+    delay: float = 0.5,
+    session: requests.Session | None = None,
+) -> dict | list:
     """Issue a GET request to *url* with retry/backoff logic.
 
     Parameters
@@ -61,6 +66,11 @@ def _request(url: str, *, delay: float = 0.5) -> dict | list:
         Seconds to sleep before the first attempt (API politeness delay).
         Passed through from ``fetch_project`` / ``fetch_files``; set to ``0``
         to disable (e.g. in integration tests).
+    session:
+        An existing ``requests.Session`` to reuse.  If ``None`` (default) a new
+        session is created for this request only.  Pass an explicit session from
+        a pagination loop (e.g. ``fetch_files``) to avoid creating a new TCP
+        connection pool on every page.
 
     Returns
     -------
@@ -78,8 +88,9 @@ def _request(url: str, *, delay: float = 0.5) -> dict | list:
     """
     time.sleep(delay)
 
-    session = requests.Session()
-    session.headers["User-Agent"] = _USER_AGENT
+    if session is None:
+        session = requests.Session()
+        session.headers["User-Agent"] = _USER_AGENT
 
     last_exc: Exception | None = None
 
@@ -142,12 +153,14 @@ def fetch_files(accession: str, *, delay: float = 0.5) -> list[dict]:
     all_files: list[dict] = []
     page = 0
     page_size = 100
+    session = requests.Session()
+    session.headers["User-Agent"] = _USER_AGENT
     while True:
         url = (
             f"{_BASE_URL}/projects/{accession}/files"
             f"?page={page}&pageSize={page_size}&sortDirection=DESC&sortCondition=id"
         )
-        batch = cast(list[dict], _request(url, delay=delay))
+        batch = cast(list[dict], _request(url, delay=delay, session=session))
         all_files.extend(batch)
         if len(batch) < page_size:
             break

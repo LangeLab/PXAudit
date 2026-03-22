@@ -116,7 +116,7 @@ def _print_result(result: AuditResult, study: dict, file_count: int) -> None:
     click.echo(f"  {flag(result.has_open_spectra)} Open spectra (mzML / MGF)")
     click.echo(f"  {flag(result.has_sdrf)} SDRF file present")
     click.echo(f"  {flag(result.has_mztab)} mzTab summary present")
-    click.echo(f"  {flag(result.has_tabular_quant)} Tabular quant table (proteinGroups / mzTab-Q)")
+    click.echo(f"  {flag(result.has_tabular_quant)} Tabular quant table (proteinGroups / evidence)")
     if result.files_fetch_failed:
         click.echo("  ! Files endpoint failed — file flags are unreliable")
     click.echo("-" * 48)
