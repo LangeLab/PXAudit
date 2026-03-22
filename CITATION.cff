@@ -1,0 +1,28 @@
+cff-version: 1.2.0
+message: "If you use PXAudit in your research, please cite it as below."
+title: "PXAudit: A command-line tool for auditing Proteomics Exchange study metadata"
+version: 0.1.0
+date-released: "2026-03-21"
+license: MIT
+repository-code: "https://github.com/LangeLab/PXAudit"
+authors:
+  - family-names: Ergin
+    given-names: Enes Kemal
+    orcid: "https://orcid.org/0000-0001-9810-7399"
+keywords:
+  - proteomics
+  - FAIR data
+  - metadata
+  - PRIDE
+  - ProteomicsXchange
+  - data quality
+  - bioinformatics
+abstract: >
+  PXAudit is a command-line tool that audits Proteomics Exchange (PRIDE)
+  study metadata against a 7-tier FAIR data ladder. It fetches project
+  metadata and file listings from the PRIDE REST API, classifies every
+  file with a deterministic FileTypeClassifier, and assigns two orthogonal
+  quality scores: a FAIR tier (None → Raw → Bronze → Silver → Gold →
+  Platinum → Diamond) and a quantification-readiness tier. Results are
+  persisted to a local SQLite database for longitudinal tracking and
+  cross-study comparison.

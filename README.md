@@ -2,10 +2,10 @@
 
 **Audit Proteomics Exchange (PRIDE) study metadata from the command line.**
 
-PXAudit fetches a PRIDE dataset's project metadata and file list, classifies every file with a deterministic `FileTypeClassifier`, then assigns two orthogonal quality scores:
+PXAudit fetches a [PRIDE](https://www.ebi.ac.uk/pride/) dataset's project metadata and file list, classifies every file with a deterministic `FileTypeClassifier`, then assigns two orthogonal quality scores:
 
-- **Tier** — a 7-level FAIR ladder from *Raw* through *Diamond*, based on metadata completeness and open-data practices.
-- **Quant Tier** — a secondary axis for quantification readiness, from *No Quant* through *Quant-Complete*.
+- **Tier** — a 7-level [FAIR](https://doi.org/10.1038/sdata.2016.18) ladder from _None_ through _Diamond_, based on metadata completeness and open-data practices.
+- **Quant Tier** — a secondary axis for quantification readiness, from _No Quant_ through _Quant-Complete_.
 
 Results are written to a local SQLite database so you can query, compare, and track scores over time.
 
@@ -44,7 +44,7 @@ On first run, PXAudit fetches project metadata and file lists from the PRIDE RES
 
 ### `pxaudit check`
 
-```
+```bash
 Usage: pxaudit check [OPTIONS] ACCESSION
 
   Audit a single Proteomics Exchange accession.
@@ -55,7 +55,7 @@ Options:
   --help            Show this message and exit.
 ```
 
-**Examples**
+#### Examples
 
 ```bash
 # Audit a single dataset
@@ -68,7 +68,7 @@ uv run pxaudit check PXD004683 --no-cache
 uv run pxaudit check PXD004683 --db ~/audits/lab.db
 ```
 
-Non-PRIDE accessions (e.g. `MSV`, `JPST`, `IPX`) are accepted without error and assigned the *Unverifiable* tier — PXAudit only has access to the PRIDE REST API.
+Non-PRIDE accessions (e.g. `MSV`, `JPST`, `IPX`) are accepted without error and assigned the _Unverifiable_ tier — PXAudit only has access to the PRIDE REST API.
 
 ---
 
@@ -103,15 +103,15 @@ Files (142 total)
 
 PXAudit scores each dataset on a **7-tier FAIR ladder**. Every tier adds one FAIR requirement to the previous; a dataset must satisfy all criteria up to and including the tier it claims.
 
-| Tier | Requirements |
-|------|-------------|
-| **None** | Missing a mandatory metadata field (title, organism, or instrument). |
-| **Raw** | Mandatory metadata present; no processed result files found. |
-| **Bronze** | Result/search files present, but none are PSI-standard (mzIdentML / mzTab). |
-| **Silver** | PSI-standard results present; no SDRF experimental-design file. |
-| **Gold** | SDRF present; open spectra (mzML / MGF) **or** organism-part annotation missing. |
-| **Platinum** | Open spectra + organism-part annotation present; no linked PubMed publication. |
-| **Diamond** | All FAIR criteria met: PSI results, SDRF, open spectra, organism part, and a publication. |
+| Tier         | Requirements                                                                              |
+| ------------ | ----------------------------------------------------------------------------------------- |
+| **None**     | Missing a mandatory metadata field (title, organism, or instrument).                      |
+| **Raw**      | Mandatory metadata present; no processed result files found.                              |
+| **Bronze**   | Result/search files present, but none are PSI-standard (mzIdentML / mzTab).               |
+| **Silver**   | PSI-standard results present; no SDRF experimental-design file.                           |
+| **Gold**     | SDRF present; open spectra (mzML / MGF) **or** organism-part annotation missing.          |
+| **Platinum** | Open spectra + organism-part annotation present; no linked PubMed publication.            |
+| **Diamond**  | All FAIR criteria met: PSI results, SDRF, open spectra, organism part, and a publication. |
 
 > Tier logic is version-stamped (`tier_logic_version = "v2.0"`) and stored in the database so that re-scoring after a logic update can be detected.
 
@@ -119,24 +119,26 @@ PXAudit scores each dataset on a **7-tier FAIR ladder**. Every tier adds one FAI
 
 The quant tier is independent of the FAIR tier and indicates quantification readiness.
 
-| Quant Tier | Meaning |
-|-----------|---------|
-| **Unverifiable** | Non-PRIDE accession; cannot be evaluated. |
-| **No Quant** | No PSI-standard results and no tabular quant files. |
-| **Partial** | Either PSI-standard IDs **or** a quant table — but not both. |
-| **Quant-Ready** | PSI IDs + tabular quant table present; CV-term quantification metadata missing. |
-| **Quant-Complete** | PSI IDs + tabular quant table + CV-term method metadata — fully described. |
+| Quant Tier         | Meaning                                                                         |
+| ------------------ | ------------------------------------------------------------------------------- |
+| **Unverifiable**   | Non-PRIDE accession; cannot be evaluated.                                       |
+| **No Quant**       | No PSI-standard results and no tabular quant files.                             |
+| **Partial**        | Either PSI-standard IDs **or** a quant table — but not both.                    |
+| **Quant-Ready**    | PSI IDs + tabular quant table present; CV-term quantification metadata missing. |
+| **Quant-Complete** | PSI IDs + tabular quant table + CV-term method metadata — fully described.      |
 
-### Validated Results (PRIDE API, 2026-03-21)
+### Validated Results
 
-| Accession | Tier | Quant Tier |
-|-----------|------|------------|
-| PXD057701 | Raw | No Quant |
-| PXD002244 | Bronze | No Quant |
-| PXD000001 | Silver | Partial |
-| PXD073444 | Platinum | Partial |
-| PXD075811 | Platinum | Partial |
-| PXD004683 | Diamond | Partial |
+The following scores were produced by running `pxaudit check` against the live PRIDE REST API on 2026-03-21 and are included in the integration test suite.
+
+| Accession | Tier     | Quant Tier |
+| --------- | -------- | ---------- |
+| PXD057701 | Raw      | No Quant   |
+| PXD002244 | Bronze   | No Quant   |
+| PXD000001 | Silver   | Partial    |
+| PXD073444 | Platinum | Partial    |
+| PXD075811 | Platinum | Partial    |
+| PXD004683 | Diamond  | Partial    |
 
 ---
 
@@ -144,11 +146,11 @@ The quant tier is independent of the FAIR tier and indicates quantification read
 
 Every `check` run upserts three tables in the SQLite database:
 
-| Table | Description |
-|-------|-------------|
-| `study` | One row per accession — title, organism, instrument, submission year and type, keywords. |
-| `study_files` | One row per file — name, PRIDE category, extension, FTP URL, size in bytes. |
-| `audit` | One row per accession — computed tier, quant tier, all 13 Boolean flags, and `tier_logic_version`. |
+| Table         | Description                                                                                                                                     |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `study`       | One row per accession — title, organism, instrument, submission year and type, keywords.                                                        |
+| `study_files` | One row per file — name, PRIDE category, extension, FTP URL, size in bytes.                                                                     |
+| `audit`       | One row per accession — computed tier, quant tier, 13 `has_*` quality flags, `files_fetch_failed`, `is_unverifiable`, and `tier_logic_version`. |
 
 **Example queries**
 
@@ -233,6 +235,25 @@ v0.1.0 covers single-study auditing. Planned work beyond this release:
 - **Multi-repository** — plugin adapters for MassIVE, jPOST, and iProX so non-PRIDE accessions are audited rather than marked Unverifiable.
 
 Contributions and issue reports are welcome.
+
+---
+
+## Citation
+
+If you use PXAudit in your research, please cite it as:
+
+```bibtex
+@software{ergin_pxaudit_2026,
+  author   = {Ergin, Enes Kemal},
+  title    = {{PXAudit}: A command-line tool for auditing {Proteomics Exchange} study metadata},
+  year     = {2026},
+  version  = {0.1.0},
+  url      = {https://github.com/LangeLab/PXAudit},
+  license  = {MIT},
+}
+```
+
+A `CITATION.cff` file is included in the repository root for tools that parse it automatically (e.g. GitHub's _Cite this repository_ button, Zenodo).
 
 ---
 
