@@ -165,7 +165,7 @@ Every `check` run upserts three tables in the SQLite database:
 | `study_files` | One row per file: name, PRIDE category, extension, FTP URL, size in bytes. |
 | `audit` | One row per accession: computed tier, quant tier, 13 `has_*` quality flags, `files_fetch_failed`, `is_unverifiable`, and `tier_logic_version`. |
 
-#### Example queries
+> **Example queries**
 
 ```sql
 -- Tier distribution across all audited datasets

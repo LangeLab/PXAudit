@@ -10,18 +10,19 @@ Test organisation
 4.  Files API failure → exit 0, Bronze, files_fetch_failed warning printed
 5.  Cache hit paths — project and/or files already cached → fetches skipped
 6.  --no-cache flag — read_cache never called; write_cache still called
-7.  --db flag — correct path forwarded to get_or_create_db
-8.  Non-PXD prefix — Unverifiable result, no API calls, exit 0
-9.  Output content — tier, accession, flag symbols present in stdout
-10. _extract_study unit tests — all field mappings and null branches
-11. _extract_files_df unit tests — FTP extraction, extension, empty input
+7.  --refresh flag — same semantics as --no-cache for reads; still fetches and writes
+8.  --db flag — correct path forwarded to get_or_create_db
+9.  Non-PXD prefix — Unverifiable result, no API calls, exit 0
+10. Output content — tier, accession, flag symbols present in stdout
+11. _extract_study unit tests — all field mappings and null branches
+12. _extract_files_df unit tests — FTP extraction, extension, empty input
 
 Branch map (cli.py)
 -------------------
 check()
   ├── A: not accession or not accession[0].isalpha()  → True/False
   ├── B: accession.upper().startswith("PXD")          → True/False
-  ├── C: if not no_cache                              → True/False
+  ├── C: if use_cache (i.e. not (no_cache or refresh)) → True/False
   ├── D: if project_data is None                      → True/False
   ├── E: try fetch_project / except PrideAPIError     → normal/exception
   ├── F: if files_data is None                        → True/False
@@ -378,7 +379,43 @@ def test_check_no_cache_still_fetches_and_writes(mocks: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 7. --db flag
+# 7. --refresh flag  (branch C-False via refresh)
+# ---------------------------------------------------------------------------
+
+# Rationale: --refresh is semantically "re-fetch, update cache".  It shares
+# the same read-skip behaviour as --no-cache but differs in intent.  The
+# implementation sets use_cache = not (no_cache or refresh), so both flags
+# exercise the same branch-C-false path.
+
+
+def test_check_refresh_skips_read_cache(mocks: dict) -> None:
+    """--refresh must not call read_cache.  (branch C-False via refresh)."""
+    runner = CliRunner()
+    runner.invoke(main, ["check", "PXD000001", "--refresh"])
+    mocks["read_cache"].assert_not_called()
+
+
+def test_check_refresh_still_fetches_and_writes(mocks: dict) -> None:
+    """--refresh skips reads but still fetches from API and writes to cache."""
+    runner = CliRunner()
+    runner.invoke(main, ["check", "PXD000001", "--refresh"])
+    mocks["fetch_project"].assert_called_once()
+    mocks["fetch_files"].assert_called_once()
+    assert mocks["write_cache"].call_count == 2
+
+
+def test_check_refresh_with_no_cache_combined(mocks: dict) -> None:
+    """--refresh combined with --no-cache must still behave (read skip, fetch, write)."""
+    runner = CliRunner()
+    runner.invoke(main, ["check", "PXD000001", "--refresh", "--no-cache"])
+    mocks["read_cache"].assert_not_called()
+    mocks["fetch_project"].assert_called_once()
+    mocks["fetch_files"].assert_called_once()
+    assert mocks["write_cache"].call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# 8. --db flag
 # ---------------------------------------------------------------------------
 
 
@@ -400,7 +437,7 @@ def test_check_conn_closed_after_inserts(mocks: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 8. Non-PXD prefix  (branch B-False)
+# 9. Non-PXD prefix  (branch B-False)
 # ---------------------------------------------------------------------------
 
 
@@ -422,7 +459,7 @@ def test_check_non_pxd_makes_no_api_calls(mocks: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 9. _extract_study unit tests  (branches I, J, K, L)
+# 10. _extract_study unit tests  (branches I, J, K, L)
 # ---------------------------------------------------------------------------
 
 
@@ -498,7 +535,7 @@ def test_extract_study_missing_submission_type_gives_none() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 10. _extract_files_df unit tests  (branches M, N)
+# 11. _extract_files_df unit tests  (branches M, N)
 # ---------------------------------------------------------------------------
 
 

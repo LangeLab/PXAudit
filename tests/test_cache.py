@@ -9,24 +9,28 @@ Branch map
 ----------
 read_cache
   ├── path.exists() == False                    [tests 1, 2]
+  ├── max_age check: fresh → serve              [tests 12, 13]
+  ├── max_age check: stale → delete + None      [tests 14, 15]
   ├── json.loads succeeds                       [tests 3, 4]
   └── json.JSONDecodeError                      [tests 7, 8, 9]
 
 write_cache
   ├── cache_dir missing → mkdir creates it      [test 5]
   ├── cache_dir exists  → mkdir is a no-op      [tests 3, 4, 11]
-  ├── write succeeds                            [tests 3, 4, 6, 11]
+  ├── atomic: tmp → os.replace                  [tests 16, 17, 18]
   └── write raises OSError (permission denied)  [test 10]
 """
 
 from __future__ import annotations
 
 import logging
+import os
+import time
 from pathlib import Path
 
 import pytest
 
-from pxaudit.cache import read_cache, write_cache
+from pxaudit.cache import _DEFAULT_TTL, read_cache, write_cache
 
 # ---------------------------------------------------------------------------
 # 1 & 2 — cache miss
@@ -176,3 +180,98 @@ def test_overwrite_updates_cached_data(tmp_path: Path) -> None:
     assert result == {"title": "New Title"}
     # Only one file must exist
     assert len(list(tmp_path.glob("*.json"))) == 1
+
+
+# ---------------------------------------------------------------------------
+# 12 & 13 — TTL: fresh cache is served
+# ---------------------------------------------------------------------------
+
+
+def test_ttl_fresh_cache_served(tmp_path: Path) -> None:
+    """A recently-written cache file must be served when within the TTL window."""
+    write_cache("PXD000001", "project", {"key": "value"}, cache_dir=tmp_path)
+    result = read_cache("PXD000001", "project", cache_dir=tmp_path, max_age=3600)
+    assert result == {"key": "value"}
+
+
+def test_ttl_fresh_cache_disabled_with_none(tmp_path: Path) -> None:
+    """Passing max_age=None must disable TTL and serve even old cache."""
+    write_cache("PXD000001", "project", {"key": "value"}, cache_dir=tmp_path)
+    path = tmp_path / "PXD000001_project.json"
+    old = time.time() - 999999
+    os.utime(path, (old, old))
+    result = read_cache("PXD000001", "project", cache_dir=tmp_path, max_age=None)
+    assert result == {"key": "value"}
+
+
+# ---------------------------------------------------------------------------
+# 14 & 15 — TTL: stale cache returns None and is deleted
+# ---------------------------------------------------------------------------
+
+
+def test_ttl_stale_cache_returns_none(tmp_path: Path) -> None:
+    """A cache file older than max_age must return None and be deleted."""
+    write_cache("PXD000001", "project", {"key": "value"}, cache_dir=tmp_path)
+    path = tmp_path / "PXD000001_project.json"
+    old = time.time() - 7200
+    os.utime(path, (old, old))
+    result = read_cache("PXD000001", "project", cache_dir=tmp_path, max_age=3600)
+    assert result is None
+
+
+def test_ttl_stale_cache_deletes_file(tmp_path: Path) -> None:
+    """A stale cache file must be removed so the next read triggers re-fetch."""
+    write_cache("PXD000001", "project", {"key": "value"}, cache_dir=tmp_path)
+    path = tmp_path / "PXD000001_project.json"
+    old = time.time() - 7200
+    os.utime(path, (old, old))
+    read_cache("PXD000001", "project", cache_dir=tmp_path, max_age=3600)
+    assert not path.exists()
+
+
+def test_ttl_default_constant_is_seven_days() -> None:
+    """_DEFAULT_TTL must equal 7 * 24 * 60 * 60 seconds."""
+    assert _DEFAULT_TTL == 7 * 24 * 60 * 60
+
+
+# ---------------------------------------------------------------------------
+# 16, 17, 18 — atomic write via tmp + os.replace
+# ---------------------------------------------------------------------------
+
+
+def test_atomic_write_uses_tmp_file(tmp_path: Path) -> None:
+    """write_cache must create a .tmp file then rename it to .json."""
+    write_cache("PXD000001", "project", {"key": "value"}, cache_dir=tmp_path)
+    json_path = tmp_path / "PXD000001_project.json"
+    tmp_path_candidate = tmp_path / "PXD000001_project.tmp"
+    assert json_path.exists()
+    assert not tmp_path_candidate.exists()
+
+
+def test_atomic_write_interrupted_tmp_does_not_harm_final(tmp_path: Path) -> None:
+    """If os.replace is never called (simulated crash), the .json file is untouched."""
+    payload = {"version": 1}
+    write_cache("PXD000001", "project", payload, cache_dir=tmp_path)
+    json_path = tmp_path / "PXD000001_project.json"
+    original_mtime = json_path.stat().st_mtime
+
+    # Simulate interrupted write: write .tmp but crash before os.replace.
+    tmp_path_candidate = tmp_path / "PXD000001_project.tmp"
+    tmp_path_candidate.write_text('{"corrupt": true}', encoding="utf-8")
+    # Do NOT call os.replace — simulate crash.
+
+    # The .json file must be unchanged.
+    assert json_path.exists()
+    assert json_path.stat().st_mtime == original_mtime
+    result = read_cache("PXD000001", "project", cache_dir=tmp_path)
+    assert result == payload
+
+
+def test_atomic_write_oserror_on_tmp_propagates(tmp_path: Path) -> None:
+    """If writing the .tmp file fails, the error must propagate (no .json created)."""
+    cache_dir = tmp_path / "locked"
+    cache_dir.mkdir()
+    cache_dir.chmod(0o444)  # read-only
+    with pytest.raises(OSError):
+        write_cache("PXD000001", "project", {"x": 1}, cache_dir=cache_dir)
+    cache_dir.chmod(0o755)

@@ -129,6 +129,7 @@ def _print_result(result: AuditResult, study: dict, file_count: int) -> None:
 
 @main.command("check")
 @click.argument("accession")
+@click.option("--refresh", is_flag=True, default=False, help="Force re-fetch, updating cache.")
 @click.option("--no-cache", "no_cache", is_flag=True, default=False, help="Skip cache reads.")
 @click.option(
     "--db",
@@ -137,7 +138,7 @@ def _print_result(result: AuditResult, study: dict, file_count: int) -> None:
     show_default=True,
     help="SQLite output path.",
 )
-def check(accession: str, no_cache: bool, db_path: str) -> None:
+def check(accession: str, refresh: bool, no_cache: bool, db_path: str) -> None:
     """Audit a single Proteomics Exchange accession."""
     # ------------------------------------------------------------------
     # 1.  Validate accession
@@ -154,8 +155,9 @@ def check(accession: str, no_cache: bool, db_path: str) -> None:
     # ------------------------------------------------------------------
     # 2.  Fetch data (PRIDE only; non-PXD are Unverifiable by prefix)
     # ------------------------------------------------------------------
+    use_cache = not (no_cache or refresh)
     if accession.upper().startswith(_PRIDE_PREFIX):
-        if not no_cache:
+        if use_cache:
             project_data = read_cache(accession, "project")
             files_data = read_cache(accession, "files")
 
