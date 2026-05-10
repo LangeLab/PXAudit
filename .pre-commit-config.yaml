@@ -5,11 +5,4 @@ repos:
       - id: ruff
         args: [--fix]
       - id: ruff-format
-  - repo: local
-    hooks:
-      - id: restage-formatted
-        name: Re-stage formatter changes
-        language: system
-        entry: git add
-        pass_filenames: true
-        stages: [pre-commit]
+

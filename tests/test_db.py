@@ -174,6 +174,25 @@ def test_insert_study_files_fk_violation_raises(conn: sqlite3.Connection) -> Non
         insert_study_files(conn, "PXD_ORPHAN", df)
 
 
+def test_insert_study_files_fk_enforced_even_without_manual_pragma() -> None:
+    """Write functions enforce PRAGMA foreign_keys even on raw connections.
+
+    Regression test for ISS-001: a connection that does *not* manually set
+    ``PRAGMA foreign_keys = ON`` should still get FK enforcement because
+    every write function sets it internally.
+    """
+    raw = sqlite3.connect(":memory:", isolation_level=None)
+    create_tables(raw)
+    # Intentionally do NOT set PRAGMA foreign_keys = ON on raw.
+    # insert_study must still succeed (no FK to violate yet).
+    insert_study(raw, _STUDY_DATA)
+    # insert_study_files with a non-existent accession must raise.
+    orphan_df = _make_files_df("PXD_MISSING", 1)
+    with pytest.raises(sqlite3.IntegrityError):
+        insert_study_files(raw, "PXD_MISSING", orphan_df)
+    raw.close()
+
+
 def test_insert_study_files_zero_rows(conn: sqlite3.Connection) -> None:
     insert_study(conn, _STUDY_DATA)
     empty_df = pd.DataFrame(

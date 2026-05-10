@@ -173,6 +173,7 @@ def insert_study(conn: sqlite3.Connection, data: dict) -> None:
 
     Missing keys in *data* are treated as NULL.
     """
+    conn.execute("PRAGMA foreign_keys = ON")
     row = tuple(data.get(c) for c in _STUDY_COLS)
     conn.execute("BEGIN")
     try:
@@ -193,6 +194,7 @@ def insert_study_files(conn: sqlite3.Connection, accession: str, files_df: pd.Da
 
     Any pandas NA / float NaN in the DataFrame is written as SQL NULL.
     """
+    conn.execute("PRAGMA foreign_keys = ON")
     df_sub = files_df[list(_STUDY_FILES_COLS)]
     # Convert to object dtype so numpy can hold Python None instead of float NaN,
     # which sqlite3 would interpret as REAL rather than NULL.
@@ -213,6 +215,7 @@ def insert_audit(conn: sqlite3.Connection, data: dict) -> None:
 
     Missing keys in *data* are treated as NULL.
     """
+    conn.execute("PRAGMA foreign_keys = ON")
     row = tuple(data.get(c) for c in _AUDIT_COLS)
     conn.execute("BEGIN")
     try:
@@ -231,6 +234,7 @@ def migrate_audit_v2(conn: sqlite3.Connection) -> None:
     present.  Safe to run multiple times (idempotent: uses ``PRAGMA table_info``
     to guard each ``ALTER TABLE ADD COLUMN``).
     """
+    conn.execute("PRAGMA foreign_keys = ON")
     existing_audit = {row[1] for row in conn.execute("PRAGMA table_info(audit)")}
     for col in (
         "has_psi_results",
