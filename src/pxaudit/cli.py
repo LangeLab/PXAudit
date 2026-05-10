@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.metadata
 import sys
 from dataclasses import asdict
 from datetime import UTC, datetime
@@ -19,6 +20,7 @@ _PRIDE_PREFIX = "PXD"
 
 
 @click.group()
+@click.version_option(importlib.metadata.version("pxaudit"))
 def main() -> None:
     """Audit Proteomics Exchange study metadata."""
 
