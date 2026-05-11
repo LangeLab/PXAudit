@@ -160,11 +160,15 @@ def get_or_create_db(path: str | Path) -> sqlite3.Connection:
 
     The connection is opened with ``isolation_level=None`` (autocommit) so that
     every insert function manages its own ``BEGIN`` / ``COMMIT`` explicitly.
+
+    ``migrate_audit_v2`` is called after schema creation so that databases
+    created by a pre-v0.1.0 version are transparently upgraded on first use.
     """
     conn = sqlite3.connect(str(Path(path)), isolation_level=None)
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
     create_tables(conn)
+    migrate_audit_v2(conn)
     return conn
 
 

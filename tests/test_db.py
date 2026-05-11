@@ -377,6 +377,29 @@ def test_get_or_create_db_idempotent(tmp_path: Path) -> None:
     c2.close()
 
 
+def test_get_or_create_db_upgrades_v1_to_v2(tmp_path: Path) -> None:
+    """get_or_create_db must transparently upgrade a v1 database to v2."""
+    path = tmp_path / "v1_upgrade.db"
+    v1 = sqlite3.connect(str(path), isolation_level=None)
+    _create_v1_schema(v1)
+    v1.close()
+    conn = get_or_create_db(path)
+    audit_cols = {row[1] for row in conn.execute("PRAGMA table_info(audit)")}
+    for expected in (
+        "has_psi_results",
+        "has_open_spectra",
+        "has_organism_part",
+        "has_publication",
+        "has_tabular_quant",
+        "has_quant_metadata",
+        "quant_tier",
+    ):
+        assert expected in audit_cols, f"v2 column '{expected}' missing after get_or_create_db"
+    study_cols = {row[1] for row in conn.execute("PRAGMA table_info(study)")}
+    assert "submission_type" in study_cols
+    conn.close()
+
+
 # ---------------------------------------------------------------------------
 # migrate_audit_v2
 # ---------------------------------------------------------------------------
