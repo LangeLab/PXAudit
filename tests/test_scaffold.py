@@ -9,7 +9,9 @@ import pxaudit.tier_engine
 
 
 def test_version() -> None:
-    assert pxaudit.__version__ == "0.1.1"
+    from importlib.metadata import version
+
+    assert pxaudit.__version__ == version("pxaudit")
 
 
 def test_all_modules_importable() -> None:

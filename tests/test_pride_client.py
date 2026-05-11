@@ -313,9 +313,9 @@ def test_user_agent_header_is_set_on_session(mock_time: Mock, MockSession: Mock)
 @patch("pxaudit.pride_client.requests.Session")
 @patch("pxaudit.pride_client.time")
 def test_user_agent_contains_version_and_repo(mock_time: Mock, MockSession: Mock) -> None:
-    _setup_session(MockSession, responses=[_ok_response({})])
-    fetch_project("PXD000001", delay=0)
-    assert "0.1.1" in _USER_AGENT
+    from pxaudit import __version__
+
+    assert __version__ in _USER_AGENT
     assert "LangeLab/PXAudit" in _USER_AGENT
     assert _USER_AGENT.startswith("pxaudit/")
 
