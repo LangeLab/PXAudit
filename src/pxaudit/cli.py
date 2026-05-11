@@ -153,55 +153,59 @@ def check(accession: str, refresh: bool, no_cache: bool, db_path: str) -> None:
     files_data: list[dict] | None = None
     files_fetch_failed = False
 
-    # ------------------------------------------------------------------
-    # 2.  Fetch data (PRIDE only; non-PXD are Unverifiable by prefix)
-    # ------------------------------------------------------------------
-    use_cache = not (no_cache or refresh)
-    if accession.upper().startswith(_PRIDE_PREFIX):
-        if use_cache:
-            project_data = read_cache(accession, "project")
-            files_data = read_cache(accession, "files")
-
-        if project_data is None:
-            try:
-                project_data = fetch_project(accession)
-                write_cache(accession, "project", project_data)
-            except PrideAPIError as exc:
-                click.echo(f"Error: {exc}", err=True)
-                sys.exit(1)
-
-        if files_data is None:
-            try:
-                files_data = fetch_files(accession)
-                write_cache(accession, "files", files_data)
-            except PrideAPIError:
-                files_fetch_failed = True
-                files_data = []
-
-    project_data = project_data or {}
-    files_data = files_data or []
-
-    # ------------------------------------------------------------------
-    # 3.  Compute audit
-    # ------------------------------------------------------------------
-    result = compute_audit(
-        accession, project_data, files_data, files_fetch_failed=files_fetch_failed
-    )
-
-    # ------------------------------------------------------------------
-    # 4.  Persist to SQLite
-    # ------------------------------------------------------------------
-    study = _extract_study(accession, project_data, fetched_at)
-    files_df = _extract_files_df(accession, files_data)
-    conn = get_or_create_db(db_path)
     try:
-        insert_study(conn, study)
-        insert_study_files(conn, accession, files_df)
-        insert_audit(conn, asdict(result))
-    finally:
-        conn.close()
+        # ------------------------------------------------------------------
+        # 2.  Fetch data (PRIDE only; non-PXD are Unverifiable by prefix)
+        # ------------------------------------------------------------------
+        use_cache = not (no_cache or refresh)
+        if accession.upper().startswith(_PRIDE_PREFIX):
+            if use_cache:
+                project_data = read_cache(accession, "project")
+                files_data = read_cache(accession, "files")
 
-    # ------------------------------------------------------------------
-    # 5.  Print
-    # ------------------------------------------------------------------
-    _print_result(result, study, len(files_data))
+            if project_data is None:
+                try:
+                    project_data = fetch_project(accession)
+                    write_cache(accession, "project", project_data)
+                except PrideAPIError as exc:
+                    click.echo(f"Error: {exc}", err=True)
+                    sys.exit(1)
+
+            if files_data is None:
+                try:
+                    files_data = fetch_files(accession)
+                    write_cache(accession, "files", files_data)
+                except PrideAPIError:
+                    files_fetch_failed = True
+                    files_data = []
+
+        project_data = project_data or {}
+        files_data = files_data or []
+
+        # ------------------------------------------------------------------
+        # 3.  Compute audit
+        # ------------------------------------------------------------------
+        result = compute_audit(
+            accession, project_data, files_data, files_fetch_failed=files_fetch_failed
+        )
+
+        # ------------------------------------------------------------------
+        # 4.  Persist to SQLite
+        # ------------------------------------------------------------------
+        study = _extract_study(accession, project_data, fetched_at)
+        files_df = _extract_files_df(accession, files_data)
+        conn = get_or_create_db(db_path)
+        try:
+            insert_study(conn, study)
+            insert_study_files(conn, accession, files_df)
+            insert_audit(conn, asdict(result))
+        finally:
+            conn.close()
+
+        # ------------------------------------------------------------------
+        # 5.  Print
+        # ------------------------------------------------------------------
+        _print_result(result, study, len(files_data))
+    except KeyboardInterrupt:
+        click.echo("\nInterrupted.")
+        sys.exit(130)

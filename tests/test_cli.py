@@ -16,9 +16,10 @@ Test organisation
 10. Output content — tier, accession, flag symbols present in stdout
 11. _extract_study unit tests — all field mappings and null branches
 12. _extract_files_df unit tests — FTP extraction, extension, empty input
+13. KeyboardInterrupt handling — clean exit 130, conn.close still called
 
 Branch map (cli.py)
--------------------
+------------------
 check()
   ├── A: not accession or not accession[0].isalpha()  → True/False
   ├── B: accession.upper().startswith("PXD")          → True/False
@@ -26,7 +27,8 @@ check()
   ├── D: if project_data is None                      → True/False
   ├── E: try fetch_project / except PrideAPIError     → normal/exception
   ├── F: if files_data is None                        → True/False
-  └── G: try fetch_files / except PrideAPIError       → normal/exception
+  ├── G: try fetch_files / except PrideAPIError       → normal/exception
+  └── H: try main body / except KeyboardInterrupt     → normal/exception
 
 _print_result()
   └── H: if result.files_fetch_failed                 → True/False
@@ -615,3 +617,38 @@ def test_extract_files_df_missing_filename_gives_empty_name() -> None:
 def test_extract_files_df_accession_column_correct() -> None:
     df = _extract_files_df("PXD999999", _GOLD_FILES)
     assert (df["accession"] == "PXD999999").all()
+
+
+# ---------------------------------------------------------------------------
+# 12. KeyboardInterrupt handling  (branch #13)
+# ---------------------------------------------------------------------------
+
+
+def test_check_keyboard_interrupt_during_fetch_exits_130(
+    mocks: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ctrl+C during fetch_project must print 'Interrupted.' and exit 130."""
+    monkeypatch.setattr(
+        "pxaudit.cli.fetch_project",
+        MagicMock(side_effect=KeyboardInterrupt),
+    )
+    runner = CliRunner()
+    result = runner.invoke(main, ["check", "PXD000001"])
+    assert result.exit_code == 130
+    assert "Interrupted." in result.output
+
+
+def test_check_keyboard_interrupt_before_db_clean_close(
+    mocks: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ctrl+C before DB insert still calls conn.close via finally."""
+
+    def _interrupt(*args: object) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("pxaudit.cli.insert_study", _interrupt)
+    runner = CliRunner()
+    result = runner.invoke(main, ["check", "PXD000001"])
+    assert result.exit_code == 130
+    assert "Interrupted." in result.output
+    mocks["get_or_create_db"].return_value.close.assert_called_once()
