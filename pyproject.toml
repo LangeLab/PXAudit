@@ -1,6 +1,6 @@
 [project]
 name = "pxaudit"
-version = "0.1.0"
+version = "0.1.1"
 description = "Proteomics Exchange metadata audit tool"
 authors = [
     { name = "eneskemalergin", email = "eneskemalergin@gmail.com" }

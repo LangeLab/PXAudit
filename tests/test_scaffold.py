@@ -9,7 +9,7 @@ import pxaudit.tier_engine
 
 
 def test_version() -> None:
-    assert pxaudit.__version__ == "0.1.0"
+    assert pxaudit.__version__ == "0.1.1"
 
 
 def test_all_modules_importable() -> None:

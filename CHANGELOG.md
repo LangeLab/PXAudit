@@ -1,3 +1,5 @@
+<!-- markdownlint-disable MD024 -->
+
 # Changelog
 
 All notable changes to PXAudit are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project follows [Semantic Versioning](https://semver.org/).
@@ -9,8 +11,33 @@ All notable changes to PXAudit are documented here. The format follows [Keep a C
 ### Planned
 
 - Bulk audit via `pxaudit bulk-audit --input accessions.txt` with rate-limited batch processing and TSV/JSON export.
-- Cache hardening: atomic writes (#3), TTL with `--refresh` (#7).
-- `--version` flag (#6).
+
+---
+
+## [0.1.1] - 2026-05-10
+
+Cache hardening, bug fixes, and doc improvements.
+
+### Added
+
+- Cache TTL: `read_cache()` compares `st_mtime` against configurable `max_age` (default 7 days). Stale entries are deleted and trigger re-fetch (#8).
+- `--refresh` flag on `check`: force re-fetch even from fresh cache, still writes result.
+- `--version` flag: `pxaudit --version` prints installed version (#7).
+- KeyboardInterrupt handler: Ctrl+C prints clean `"Interrupted."` and exits 130 (#13).
+- TTL boundary tests (at / ±1s), `max_age=0` bypass at cache layer, v1-to-v2 upgrade test.
+
+### Fixed
+
+- `write_cache` now atomic: writes to `.tmp` then `os.replace()` — no corrupt files on crash (#3).
+- `PRAGMA foreign_keys = ON` enforced inside every write function — works on raw connections (#1).
+- `migrate_audit_v2(conn)` now called in `get_or_create_db()` — v1 databases are transparently upgraded (#10).
+- Cache docstring now matches actual `~/.pxaudit_cache/` default (#12).
+- `_PRIDE_PREFIX` deduplicated into `pxaudit/__init__.py` (#11).
+
+### Changed
+
+- `None` tier documented as reserved for non-PRIDE repositories in `tier_engine.py` docstring (#5).
+- `has_organism_id` column annotated in SQL and `database_schema.md` as tracked but not tier-gating (#9).
 
 ---
 
@@ -36,9 +63,3 @@ First tagged release. Single-study auditing with a 7-tier FAIR ladder and quanti
 
 - Cache dir resolved relative to CWD; now uses absolute `~/.pxaudit_cache/` (#2).
 - `fetch_files` fetched only the first 100 files; added pagination loop (#4).
-
-### Known Issues
-
-- #1: FK constraints unenforced on raw `sqlite3` connections.
-- #3: `write_cache` not atomic; interrupted write leaves corrupt file.
-- #5: `None` tier unreachable for live PXD accessions (PRIDE enforces mandatory fields).
