@@ -98,7 +98,7 @@ CREATE TABLE IF NOT EXISTS audit (
     tier                TEXT,
     has_title           INTEGER,
     has_organism        INTEGER,
-    has_organism_id     INTEGER,
+    has_organism_id     INTEGER,  -- tracked; not tier-gating (reserved for Phase 2)
     has_instrument      INTEGER,
     has_result_files    INTEGER,
     has_psi_results     INTEGER,

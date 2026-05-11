@@ -15,6 +15,12 @@ Flag computation mixes two strategies:
 
 The tier derivation mirrors the SQL CASE expression in
 plan/database_schema.md exactly.
+
+The ``None`` tier is reserved for non-PRIDE repositories (MassIVE, jPOST,
+iProX) where mandatory fields may not be enforced at submission time.
+For live PRIDE accessions, all mandatory fields are guaranteed by the
+repository so the ``None`` branch is dead code — it is exercised only
+by synthetic test payloads.
 """
 
 from __future__ import annotations
