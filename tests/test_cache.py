@@ -9,8 +9,11 @@ Branch map
 ----------
 read_cache
   ├── path.exists() == False                    [tests 1, 2]
-  ├── max_age check: fresh → serve              [tests 12, 13]
-  ├── max_age check: stale → delete + None      [tests 14, 15]
+  ├── max_age is None → skip TTL check          [test 13]
+  ├── max_age check: age < max_age → serve      [tests 12, 19, 20]
+  ├── max_age check: age == max_age → serve     [test 19]
+  ├── max_age check: age > max_age → delete + None  [tests 14, 15, 21]
+  ├── max_age=0 forces stale on any cache       [test 22]
   ├── json.loads succeeds                       [tests 3, 4]
   └── json.JSONDecodeError                      [tests 7, 8, 9]
 
@@ -27,6 +30,7 @@ import logging
 import os
 import time
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -232,6 +236,71 @@ def test_ttl_stale_cache_deletes_file(tmp_path: Path) -> None:
 def test_ttl_default_constant_is_seven_days() -> None:
     """_DEFAULT_TTL must equal 7 * 24 * 60 * 60 seconds."""
     assert _DEFAULT_TTL == 7 * 24 * 60 * 60
+
+
+# ---------------------------------------------------------------------------
+# TTL boundary tests — st_mtime at / before / after threshold
+# ---------------------------------------------------------------------------
+
+
+@patch("time.time")
+def test_ttl_boundary_exactly_at_max_age_is_fresh(mock_time: MagicMock, tmp_path: Path) -> None:
+    """age == max_age is served (code uses strict >, not >=).
+
+    ``time.time`` is patched to return a fixed timestamp so the age
+    calculation in ``read_cache`` is deterministic.
+    """
+    fixed_mtime = 1_000_000.0
+    write_cache("PXD000001", "project", {"key": "value"}, cache_dir=tmp_path)
+    path = tmp_path / "PXD000001_project.json"
+    os.utime(path, (fixed_mtime, fixed_mtime))
+    mock_time.return_value = fixed_mtime + 3600  # age == max_age exactly
+    result = read_cache("PXD000001", "project", cache_dir=tmp_path, max_age=3600)
+    assert result == {"key": "value"}
+
+
+@patch("time.time")
+def test_ttl_boundary_one_second_before_is_fresh(mock_time: MagicMock, tmp_path: Path) -> None:
+    """age == max_age - 1 is still within TTL and served."""
+    fixed_mtime = 1_000_000.0
+    write_cache("PXD000001", "project", {"key": "value"}, cache_dir=tmp_path)
+    path = tmp_path / "PXD000001_project.json"
+    os.utime(path, (fixed_mtime, fixed_mtime))
+    mock_time.return_value = fixed_mtime + 3599  # age == max_age - 1
+    result = read_cache("PXD000001", "project", cache_dir=tmp_path, max_age=3600)
+    assert result == {"key": "value"}
+
+
+@patch("time.time")
+def test_ttl_boundary_one_second_after_is_stale(mock_time: MagicMock, tmp_path: Path) -> None:
+    """age == max_age + 1 is stale — returns None and deletes file."""
+    fixed_mtime = 1_000_000.0
+    write_cache("PXD000001", "project", {"key": "value"}, cache_dir=tmp_path)
+    path = tmp_path / "PXD000001_project.json"
+    os.utime(path, (fixed_mtime, fixed_mtime))
+    mock_time.return_value = fixed_mtime + 3601  # age == max_age + 1
+    result = read_cache("PXD000001", "project", cache_dir=tmp_path, max_age=3600)
+    assert result is None
+    assert not path.exists()
+
+
+# ---------------------------------------------------------------------------
+# Refresh bypass — max_age=0 forces stale on any cache
+# ---------------------------------------------------------------------------
+
+
+def test_ttl_zero_max_age_bypasses_fresh_cache(tmp_path: Path) -> None:
+    """max_age=0 treats any cache as stale (equivalent to --refresh at CLI)."""
+    write_cache("PXD000001", "project", {"key": "value"}, cache_dir=tmp_path)
+    path = tmp_path / "PXD000001_project.json"
+    assert path.exists()
+    result = read_cache("PXD000001", "project", cache_dir=tmp_path, max_age=0)
+    assert result is None
+    assert not path.exists()
+    # Fresh write after bypass must succeed
+    write_cache("PXD000001", "project", {"new": "data"}, cache_dir=tmp_path)
+    result = read_cache("PXD000001", "project", cache_dir=tmp_path)
+    assert result == {"new": "data"}
 
 
 # ---------------------------------------------------------------------------
