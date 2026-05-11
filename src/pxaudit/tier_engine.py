@@ -30,6 +30,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+from pxaudit import _PRIDE_PREFIX
 from pxaudit.file_classifier import FileClass, FileTypeClassifier
 
 # ---------------------------------------------------------------------------
@@ -37,9 +38,6 @@ from pxaudit.file_classifier import FileClass, FileTypeClassifier
 # ---------------------------------------------------------------------------
 
 _TIER_LOGIC_VERSION: str = "v2.0"  # bumped from v{__version__} at 7-tier redesign (C07)
-
-# Only PXD accessions are hosted by PRIDE and can be fully audited.
-_PRIDE_PREFIX = "PXD"
 
 # ---------------------------------------------------------------------------
 # SDRF detection

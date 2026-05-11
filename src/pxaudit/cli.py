@@ -11,12 +11,11 @@ from pathlib import Path
 import click
 import pandas as pd
 
+from pxaudit import _PRIDE_PREFIX
 from pxaudit.cache import read_cache, write_cache
 from pxaudit.db import get_or_create_db, insert_audit, insert_study, insert_study_files
 from pxaudit.pride_client import PrideAPIError, fetch_files, fetch_project
 from pxaudit.tier_engine import AuditResult, compute_audit
-
-_PRIDE_PREFIX = "PXD"
 
 
 @click.group()
