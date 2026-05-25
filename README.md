@@ -1,6 +1,6 @@
 <!-- markdownlint-disable MD010 MD033 MD036 MD041 -->
 <p align="center">
-  <h1 align="center">PXAudit</h1>
+  <img src="https://raw.githubusercontent.com/LangeLab/PXAudit/main/assets/banner.svg" alt="PXAudit" width="180">
 </p>
 
 <p align="center">
@@ -19,7 +19,7 @@
 <p align="center">
   <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/changelog-CHANGELOG-E05D44?style=flat-square" alt="Changelog"></a>
   <a href="CITATION.cff"><img src="https://img.shields.io/badge/cite-CITATION.cff-0066CC?style=flat-square" alt="Citation"></a>
-  <!-- <a href=""><img src="https://img.shields.io/badge/docs-Wiki-0F766E?style=flat-square" alt="Docs"></a> -->
+  <a href="https://github.com/LangeLab/PXAudit/wiki"><img src="https://img.shields.io/badge/docs-Wiki-0F766E?style=flat-square" alt="Docs"></a>
 </p>
 
 PXAudit fetches a [PRIDE](https://www.ebi.ac.uk/pride/) dataset's project metadata and file list, classifies every file with a deterministic `FileTypeClassifier`, then assigns a 7-tier [FAIR](https://doi.org/10.1038/sdata.2016.18) ladder and a quantification-readiness tier. Results are written to a local SQLite database.
@@ -144,9 +144,9 @@ The quant tier is independent of the FAIR tier and indicates quantification read
 | --- | --- |
 | **Unverifiable** | Non-PRIDE accession; cannot be evaluated. |
 | **No Quant** | No PSI-standard results and no tabular quant files. |
-| **Partial** | Either PSI-standard IDs **or** a quant table -- but not both. |
+| **Partial** | Either PSI-standard IDs **or** a quant table, but not both. |
 | **Quant-Ready** | PSI IDs + tabular quant table present; CV-term quantification metadata missing. |
-| **Quant-Complete** | PSI IDs + tabular quant table + CV-term method metadata -- fully described. |
+| **Quant-Complete** | PSI IDs + tabular quant table + CV-term method metadata are fully described. |
 
 ### Validated Results
 
@@ -201,7 +201,7 @@ uv sync
 uv run pre-commit install
 ```
 
-Pre-commit runs `ruff` (lint + format, line-length 100) and `mypy` (strict mode) on every commit.
+Pre-commit runs `ruff` (lint + format, line-length 100) and `mypy` (strict mode) on every commit. See the [wiki](https://github.com/LangeLab/PXAudit/wiki) for detailed reference documentation.
 
 ### Project Layout
 
@@ -220,7 +220,7 @@ src/pxaudit/
 ## Testing
 
 ```bash
-# Unit tests (default -- no network required)
+# Unit tests (default, no network required)
 uv run pytest
 
 # With coverage report
