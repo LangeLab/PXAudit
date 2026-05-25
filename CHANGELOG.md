@@ -10,7 +10,44 @@ All notable changes to PXAudit are documented here. The format follows [Keep a C
 
 ### Planned
 
-- Bulk audit via `pxaudit bulk-audit --input accessions.txt` with rate-limited batch processing and TSV/JSON export.
+- File manifest: extend `study_files` with per-file checksums, `fetched_at` timestamps, `manifest` command.
+- Reporting: `pxaudit report --db` generating tier distributions, trends, and exemplars as Quarto HTML.
+
+---
+
+## [0.2.0] - 2026-05-25 - [Tagged]
+
+CI/CD pipeline, type checking, bulk auditing, TSV/JSON/CSV export, and rate-limit backoff.
+
+### Added
+
+- `pxaudit bulk-audit --input accessions.txt` command: batch audit from a file or stdin (`-`).
+    - `--format tsv|json|csv` for flat-file export alongside SQLite.
+    - `--delay` configurable wait between API calls (default 1s).
+    - `--continue-on-error` to skip failed accessions and continue the batch.
+    - `--overwrite` to overwrite existing export files.
+    - Progress bar via `tqdm` with completed/failed/total summary and tier distribution.
+    - Deduplicates input accessions with a warning on duplicates.
+    - Graceful `KeyboardInterrupt`: writes partial results to the database.
+- `tqdm>=4.67.0` added to runtime dependencies.
+- HTTP 429 rate-limit handling: retries with exponential backoff instead of failing immediately.
+- GitHub Actions CI workflow: runs ruff lint + format check, mypy type check, and pytest with 100% coverage enforcement on push/PR. Matrix includes 3.12, 3.13, 3.14.
+- `_audit_single()` core pipeline extracted from `check`; shared by both `check` and `bulk-audit`.
+- mypy type checking with strict options (`disallow_untyped_defs`, `disallow_incomplete_defs`, `check_untyped_defs`).
+- mypy pre-commit hook (runs on `src/` and `tests/`).
+- `fail_under = 100` in `[tool.coverage.report]` to enforce full coverage in CI.
+- `mypy>=1.15.0` to dev dependencies.
+- 428 unit tests (+25 from v0.1.1), 100% branch coverage.
+- Bulk-audit integration test (live API): 3 real accessions verified against SQLite and TSV output.
+- Mixed PRIDE + non-PRIDE bulk-audit test: confirms Unverifiable rows for MassIVE accessions.
+
+### Fixed
+
+- Added missing type annotations in `tests/test_pride_client.py` (`_setup_session`).
+- Fixed generator return type annotation in `tests/test_db.py` (`conn` fixture).
+- Fixed `tmp_path` type annotation in `tests/test_cli.py` (`Path`, not `TempPathFactory`).
+- Fixed stale `# type: ignore[arg-type]` comment in `tier_engine.py` (now `call-overload`).
+- Added `# type: ignore[assignment]` in `cli.py` for `read_cache` calls that return a union.
 
 ---
 
@@ -28,9 +65,9 @@ Cache hardening, bug fixes, and doc improvements.
 
 ### Fixed
 
-- `write_cache` now atomic: writes to `.tmp` then `os.replace()` — no corrupt files on crash (#3).
-- `PRAGMA foreign_keys = ON` enforced inside every write function — works on raw connections (#1).
-- `migrate_audit_v2(conn)` now called in `get_or_create_db()` — v1 databases are transparently upgraded (#10).
+- `write_cache` now atomic: writes to `.tmp` then `os.replace()`; no corrupt files on crash (#3).
+- `PRAGMA foreign_keys = ON` enforced inside every write function; works on raw connections (#1).
+- `migrate_audit_v2(conn)` now called in `get_or_create_db()`; v1 databases are transparently upgraded (#10).
 - Cache docstring now matches actual `~/.pxaudit_cache/` default (#12).
 - `_PRIDE_PREFIX` deduplicated into `pxaudit/__init__.py` (#11).
 

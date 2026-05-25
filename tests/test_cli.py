@@ -4,19 +4,20 @@ Coverage target: 100% branch coverage on cli.py.
 
 Test organisation
 -----------------
-1.  Accession validation — empty / numeric → exit 2
-2.  Happy-path Gold run — all cache misses, all API success → exit 0
+1.  Accession validation : empty / numeric → exit 2
+2.  Happy-path Gold run : all cache misses, all API success → exit 0
 3.  Project API failure → exit 1
 4.  Files API failure → exit 0, Bronze, files_fetch_failed warning printed
-5.  Cache hit paths — project and/or files already cached → fetches skipped
-6.  --no-cache flag — read_cache never called; write_cache still called
-7.  --refresh flag — same semantics as --no-cache for reads; still fetches and writes
-8.  --db flag — correct path forwarded to get_or_create_db
-9.  Non-PXD prefix — Unverifiable result, no API calls, exit 0
-10. Output content — tier, accession, flag symbols present in stdout
-11. _extract_study unit tests — all field mappings and null branches
-12. _extract_files_df unit tests — FTP extraction, extension, empty input
-13. KeyboardInterrupt handling — clean exit 130, conn.close still called
+5.  Cache hit paths : project and/or files already cached → fetches skipped
+6.  --no-cache flag : read_cache never called; write_cache still called
+7.  --refresh flag : same semantics as --no-cache for reads; still fetches and writes
+8.  --db flag : correct path forwarded to get_or_create_db
+9.  Non-PXD prefix : Unverifiable result, no API calls, exit 0
+10. Output content : tier, accession, flag symbols present in stdout
+11. _extract_study unit tests : all field mappings and null branches
+12. _extract_files_df unit tests : FTP extraction, extension, empty input
+13. KeyboardInterrupt handling : clean exit 130, conn.close still called
+14. bulk-audit command : input, export, continue-on-error, stdin, empty, dedup, overwrite guard
 
 Branch map (cli.py)
 ------------------
@@ -42,17 +43,40 @@ _extract_study()
 _extract_files_df()
   ├── M: if not files                                 → True/False
   └── N: next() FTP match                             → found/not-found
+
+bulk_audit()
+  ├── O: FileNotFoundError on input                   → sys.exit(2)
+  ├── P: empty input                                  → exit 0 with warning
+  ├── Q: duplicate accession                          → warn, skip
+  ├── R: fmt None vs set                              → export/no export
+  ├── S: export_path exists && not overwrite           → exit 2
+  ├── T: PrideAPIError + continue_on_error             → warn, continue
+  ├── U: PrideAPIError + not continue_on_error         → exit 1, partial
+  └── V: KeyboardInterrupt                            → partial, no crash
 """
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 from click.testing import CliRunner
 
-from pxaudit.cli import _extract_files_df, _extract_study, main
+from pxaudit.cli import (
+    _default_export_path,
+    _export_csv,
+    _export_json,
+    _export_tsv,
+    _extract_files_df,
+    _extract_study,
+    _read_accessions,
+    _result_to_row,
+    main,
+)
 from pxaudit.pride_client import PrideAPIError
+from pxaudit.tier_engine import AuditResult
 
 # ---------------------------------------------------------------------------
 # Synthetic PRIDE API payloads
@@ -66,7 +90,7 @@ _GOLD_PROJECT: dict = {
     "instruments": [{"@type": "CvParam", "name": "Orbitrap Fusion"}],
 }
 
-# Diamond fixture: every flag True — used for "no ✘" output tests.
+# Diamond fixture: every flag True : used for "no ✘" output tests.
 _DIAMOND_PROJECT: dict = {
     "title": "Diamond study",
     "submissionDate": "2021-06-01",
@@ -213,7 +237,7 @@ def test_check_gold_stdout_contains_checkmarks(mocks: dict) -> None:
 
 
 def test_check_diamond_stdout_no_crossmarks(mocks: dict, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Diamond tier with all flags True — output must contain only ✔, no ✘."""
+    """Diamond tier with all flags True : output must contain only ✔, no ✘."""
     from unittest.mock import MagicMock
 
     monkeypatch.setattr("pxaudit.cli.fetch_project", MagicMock(return_value=_DIAMOND_PROJECT))
@@ -279,7 +303,7 @@ def test_check_project_api_failure_message_on_stderr(
 
 
 def test_check_files_api_failure_exits_zero(mocks: dict, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Files endpoint failure is not fatal — exit 0 with Raw tier (no result files)."""
+    """Files endpoint failure is not fatal : exit 0 with Raw tier (no result files)."""
     monkeypatch.setattr(
         "pxaudit.cli.fetch_files", MagicMock(side_effect=PrideAPIError("files down"))
     )
@@ -421,9 +445,7 @@ def test_check_refresh_with_no_cache_combined(mocks: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_check_db_path_forwarded_to_get_or_create_db(
-    mocks: dict, tmp_path: pytest.TempPathFactory
-) -> None:
+def test_check_db_path_forwarded_to_get_or_create_db(mocks: dict, tmp_path: Path) -> None:
     """--db value must be passed verbatim to get_or_create_db."""
     db_path = str(tmp_path / "audit.db")
     runner = CliRunner()
@@ -444,7 +466,7 @@ def test_check_conn_closed_after_inserts(mocks: dict) -> None:
 
 
 def test_check_non_pxd_exits_zero(mocks: dict) -> None:
-    """Non-PXD accessions are Unverifiable — exit 0."""
+    """Non-PXD accessions are Unverifiable : exit 0."""
     runner = CliRunner()
     result = runner.invoke(main, ["check", "MSV000001"])
     assert result.exit_code == 0
@@ -466,7 +488,7 @@ def test_check_non_pxd_makes_no_api_calls(mocks: dict) -> None:
 
 
 def test_extract_study_all_fields_populated() -> None:
-    """Full project dict — every field must be correctly extracted.  (I/J/K/L True)."""
+    """Full project dict : every field must be correctly extracted.  (I/J/K/L True)."""
     project = {
         "title": "Test study",
         "submissionDate": "2019-06-01",
@@ -652,3 +674,367 @@ def test_check_keyboard_interrupt_before_db_clean_close(
     assert result.exit_code == 130
     assert "Interrupted." in result.output
     mocks["get_or_create_db"].return_value.close.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# 13. bulk-audit helpers : unit tests
+# ---------------------------------------------------------------------------
+
+
+def test_default_export_path_tsv() -> None:
+    """Default export path has expected format for TSV."""
+    path = _default_export_path("tsv")
+    assert path.startswith("pxaudit_bulk_")
+    assert path.endswith(".tsv")
+    assert len(path) == len("pxaudit_bulk_20260525.tsv")
+
+
+def test_default_export_path_json() -> None:
+    path = _default_export_path("json")
+    assert path.endswith(".json")
+
+
+def test_read_accessions_file(tmp_path: Path) -> None:
+    """Read accessions from a file, skipping blanks and comments."""
+    f = tmp_path / "accessions.txt"
+    f.write_text("PXD000001\n\n# comment\nPXD000002\n  PXD000003  \n")
+    result = _read_accessions(str(f))
+    assert result == ["PXD000001", "PXD000002", "PXD000003"]
+
+
+def test_read_accessions_all_blank(tmp_path: Path) -> None:
+    f = tmp_path / "empty.txt"
+    f.write_text("# only comment\n\n  \n")
+    result = _read_accessions(str(f))
+    assert result == []
+
+
+def test_read_accessions_file_not_found(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError):
+        _read_accessions(str(tmp_path / "nope.txt"))
+
+
+def test_result_to_row_keys_match_export_cols() -> None:
+    from pxaudit.cli import _EXPORT_COLS
+
+    result = AuditResult(accession="PXD000001", tier="Diamond")
+    row = _result_to_row(result)
+    assert list(row.keys()) == list(_EXPORT_COLS)
+    assert row["accession"] == "PXD000001"
+    assert row["tier"] == "Diamond"
+
+
+def test_export_tsv(tmp_path: Path) -> None:
+    results = [
+        AuditResult(accession="PXD000001", tier="Gold", quant_tier="Partial"),
+        AuditResult(accession="PXD000002", tier="Diamond", quant_tier="Quant-Complete"),
+    ]
+    path = str(tmp_path / "out.tsv")
+    _export_tsv(results, path)
+    content = Path(path).read_text()
+    assert "PXD000001" in content
+    assert "PXD000002" in content
+    assert "Gold" in content
+    assert "Diamond" in content
+    lines = content.splitlines()
+    assert lines[0].startswith("accession")  # header
+
+
+def test_export_csv(tmp_path: Path) -> None:
+    results = [AuditResult(accession="PXD000001", tier="Raw")]
+    path = str(tmp_path / "out.csv")
+    _export_csv(results, path)
+    content = Path(path).read_text()
+    assert "PXD000001" in content
+    assert "," in content  # CSV delimiter
+
+
+def test_export_json(tmp_path: Path) -> None:
+    results = [AuditResult(accession="PXD000001", tier="Diamond")]
+    path = str(tmp_path / "out.json")
+    _export_json(results, path)
+    data = json.loads(Path(path).read_text())
+    assert len(data) == 1
+    assert data[0]["accession"] == "PXD000001"
+    assert data[0]["tier"] == "Diamond"
+
+
+# ---------------------------------------------------------------------------
+# 14. bulk-audit command : integration tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def bulk_mocks(monkeypatch: pytest.MonkeyPatch) -> dict:
+    """Patch _audit_single to skip real I/O during bulk-audit tests.
+
+    Returns results for two accessions: PXD000001 (Gold, Partial)
+    and PXD000002 (Diamond, Quant-Complete).
+    """
+    results = {
+        "PXD000001": AuditResult(accession="PXD000001", tier="Gold", quant_tier="Partial"),
+        "PXD000002": AuditResult(
+            accession="PXD000002", tier="Diamond", quant_tier="Quant-Complete"
+        ),
+    }
+
+    def fake_audit(accession: str, db_path: str, **kw: object) -> tuple:
+        if accession == "PXD000001":
+            r = results["PXD000001"]
+        elif accession == "PXD000002":
+            r = results["PXD000002"]
+        elif accession.upper().startswith("MSV"):
+            r = AuditResult(
+                accession=accession,
+                tier="Unverifiable",
+                is_unverifiable=True,
+                quant_tier="Unverifiable",
+            )
+        else:
+            raise PrideAPIError(f"unknown {accession}")
+        return r, {}, MagicMock(), [], "2026-01-01T00:00:00+00:00"
+
+    m: dict = {"_audit_single": MagicMock(side_effect=fake_audit)}
+    monkeypatch.setattr("pxaudit.cli._audit_single", m["_audit_single"])
+    return m
+
+
+def test_bulk_audit_happy_path_tsv(bulk_mocks: dict, tmp_path: Path) -> None:
+    """Two accessions, export TSV → exit 0, file written."""
+    acc_file = tmp_path / "ids.txt"
+    acc_file.write_text("PXD000001\nPXD000002\n")
+    out_path = tmp_path / "out.tsv"
+    runner = CliRunner()
+    result = runner.invoke(
+        main, ["bulk-audit", "--input", str(acc_file), "--format", "tsv", "--output", str(out_path)]
+    )
+    assert result.exit_code == 0
+    assert "Completed : 2" in result.output
+    assert "Failed    : 0" in result.output
+    assert out_path.exists()
+    content = out_path.read_text()
+    assert "PXD000001" in content
+    assert "PXD000002" in content
+
+
+def test_bulk_audit_happy_path_json(bulk_mocks: dict, tmp_path: Path) -> None:
+    """Export JSON format works."""
+    acc_file = tmp_path / "ids.txt"
+    acc_file.write_text("PXD000001\n")
+    out_path = tmp_path / "out.json"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["bulk-audit", "--input", str(acc_file), "--format", "json", "--output", str(out_path)],
+    )
+    assert result.exit_code == 0
+    data = json.loads(out_path.read_text())
+    assert len(data) == 1
+    assert data[0]["tier"] == "Gold"
+
+
+def test_bulk_audit_happy_path_csv(bulk_mocks: dict, tmp_path: Path) -> None:
+    """Export CSV format works."""
+    acc_file = tmp_path / "ids.txt"
+    acc_file.write_text("PXD000001\n")
+    out_path = tmp_path / "out.csv"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["bulk-audit", "--input", str(acc_file), "--format", "csv", "--output", str(out_path)],
+    )
+    assert result.exit_code == 0
+    content = out_path.read_text()
+    assert "PXD000001" in content
+    assert "," in content
+
+
+def test_bulk_audit_default_export_path(bulk_mocks: dict, tmp_path: Path) -> None:
+    """No --output given → default filename generated."""
+    acc_file = tmp_path / "ids.txt"
+    acc_file.write_text("PXD000001\n")
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        result = runner.invoke(
+            main,
+            ["bulk-audit", "--input", str(acc_file), "--format", "tsv"],
+        )
+    assert result.exit_code == 0
+    assert "pxaudit_bulk_" in result.output
+
+
+def test_bulk_audit_continue_on_error(bulk_mocks: dict, tmp_path: Path) -> None:
+    """--continue-on-error skips failures, includes them in summary."""
+    acc_file = tmp_path / "ids.txt"
+    acc_file.write_text("PXD000001\nUNKNOWN_ACC\nPXD000002\n")
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["bulk-audit", "--input", str(acc_file), "--continue-on-error"],
+    )
+    assert result.exit_code == 0
+    assert "Completed : 2" in result.output
+    assert "Failed    : 1" in result.output
+
+
+def test_bulk_audit_stop_on_error(bulk_mocks: dict, tmp_path: Path) -> None:
+    """Without --continue-on-error, first failure exits 1."""
+    acc_file = tmp_path / "ids.txt"
+    acc_file.write_text("UNKNOWN_ACC\nPXD000001\n")
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["bulk-audit", "--input", str(acc_file)],
+    )
+    assert result.exit_code == 1
+
+
+def test_bulk_audit_stop_on_error_with_partial_results(bulk_mocks: dict, tmp_path: Path) -> None:
+    """Without --continue-on-error, failure after some successes exits 1 and shows partial count."""
+    acc_file = tmp_path / "ids.txt"
+    acc_file.write_text("PXD000001\nUNKNOWN_ACC\nPXD000002\n")
+    # Swap order: PXD000001 first (succeeds), then UNKNOWN_ACC fails
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["bulk-audit", "--input", str(acc_file)],
+    )
+    assert result.exit_code == 1
+    assert "Partial results" in result.output
+
+
+def test_bulk_audit_stdin_input(bulk_mocks: dict, tmp_path: Path) -> None:
+    """--input - reads from stdin."""
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["bulk-audit", "--input", "-"],
+        input="PXD000001\nPXD000002\n",
+    )
+    assert result.exit_code == 0
+    assert "Completed : 2" in result.output
+
+
+def test_bulk_audit_empty_input(bulk_mocks: dict, tmp_path: Path) -> None:
+    """Empty input file → exit 0 with warning."""
+    acc_file = tmp_path / "empty.txt"
+    acc_file.write_text("# nothing\n")
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["bulk-audit", "--input", str(acc_file)],
+    )
+    assert result.exit_code == 0
+    assert "no accessions" in result.output
+
+
+def test_bulk_audit_missing_input_file() -> None:
+    """Non-existent input file → exit 2."""
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["bulk-audit", "--input", "/nonexistent/file.txt"],
+    )
+    assert result.exit_code == 2
+    assert "not found" in result.output
+
+
+def test_bulk_audit_duplicate_warning(bulk_mocks: dict, tmp_path: Path) -> None:
+    """Duplicate accessions produce a warning and are processed once."""
+    acc_file = tmp_path / "dups.txt"
+    acc_file.write_text("PXD000001\nPXD000001\nPXD000002\n")
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["bulk-audit", "--input", str(acc_file)],
+    )
+    assert result.exit_code == 0
+    assert "duplicate" in result.output
+    assert "Completed : 2" in result.output
+
+
+def test_bulk_audit_mixed_pride_and_non_pride(bulk_mocks: dict, tmp_path: Path) -> None:
+    """Mixed PRIDE and non-PRIDE accessions produce correct Unverifiable rows."""
+    acc_file = tmp_path / "mixed.txt"
+    acc_file.write_text("PXD000001\nMSV000001\nPXD000002\n")
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["bulk-audit", "--input", str(acc_file)],
+    )
+    assert result.exit_code == 0
+    assert "Completed : 3" in result.output
+    assert "Unverifiable" in result.output
+    assert "Gold" in result.output
+    assert "Diamond" in result.output
+
+
+def test_bulk_audit_overwrite_guard(bulk_mocks: dict, tmp_path: Path) -> None:
+    """Existing output file without --overwrite → exit 2."""
+    acc_file = tmp_path / "ids.txt"
+    acc_file.write_text("PXD000001\n")
+    out_path = tmp_path / "out.tsv"
+    out_path.touch()
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["bulk-audit", "--input", str(acc_file), "--format", "tsv", "--output", str(out_path)],
+    )
+    assert result.exit_code == 2
+    assert "already exists" in result.output
+
+
+def test_bulk_audit_overwrite_allowed(bulk_mocks: dict, tmp_path: Path) -> None:
+    """Existing output file with --overwrite succeeds."""
+    acc_file = tmp_path / "ids.txt"
+    acc_file.write_text("PXD000001\n")
+    out_path = tmp_path / "out.tsv"
+    out_path.write_text("old data\n")
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "bulk-audit",
+            "--input",
+            str(acc_file),
+            "--format",
+            "tsv",
+            "--output",
+            str(out_path),
+            "--overwrite",
+        ],
+    )
+    assert result.exit_code == 0
+    assert out_path.read_text().startswith("accession")
+
+
+def test_bulk_audit_tier_distribution_in_summary(bulk_mocks: dict, tmp_path: Path) -> None:
+    """Summary includes tier distribution."""
+    acc_file = tmp_path / "ids.txt"
+    acc_file.write_text("PXD000001\nPXD000002\n")
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["bulk-audit", "--input", str(acc_file)],
+    )
+    assert result.exit_code == 0
+    assert "Gold" in result.output
+    assert "Diamond" in result.output
+
+
+def test_bulk_audit_keyboard_interrupt(bulk_mocks: dict, tmp_path: Path) -> None:
+    """Ctrl+C interrupts the batch cleanly."""
+
+    def _interrupt(*args: object, **kw: object) -> object:
+        raise KeyboardInterrupt
+
+    bulk_mocks["_audit_single"].side_effect = _interrupt
+    acc_file = tmp_path / "ids.txt"
+    acc_file.write_text("PXD000001\nPXD000002\nPXD000003\n")
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["bulk-audit", "--input", str(acc_file)],
+    )
+    assert result.exit_code == 0
+    assert "Interrupted" in result.output

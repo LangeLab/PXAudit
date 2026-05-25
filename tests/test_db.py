@@ -1,8 +1,9 @@
-"""Tests for pxaudit.db — schema creation, upsert, batch inserts, constraints."""
+"""Tests for pxaudit.db : schema creation, upsert, batch inserts, constraints."""
 
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Generator
 from pathlib import Path
 
 import pandas as pd
@@ -72,7 +73,7 @@ def _make_files_df(accession: str, n: int = 1) -> pd.DataFrame:
 
 
 @pytest.fixture()
-def conn() -> sqlite3.Connection:
+def conn() -> Generator[sqlite3.Connection, None, None]:
     """In-memory SQLite connection with schema already applied."""
     c = sqlite3.connect(":memory:", isolation_level=None)
     c.execute("PRAGMA foreign_keys = ON")
@@ -146,7 +147,7 @@ def test_insert_study_upsert_overwrites(conn: sqlite3.Connection) -> None:
 
 
 def test_insert_study_nullable_fields_accepted(conn: sqlite3.Connection) -> None:
-    # organism_id is nullable — must not raise.
+    # organism_id is nullable : must not raise.
     data = {**_STUDY_DATA, "organism_id": None}
     insert_study(conn, data)
     (organism_id,) = conn.execute(
@@ -227,7 +228,7 @@ def test_insert_study_files_hundred_rows(conn: sqlite3.Connection) -> None:
 
 
 def test_insert_study_files_upsert_replaces(conn: sqlite3.Connection) -> None:
-    # Insert 3 rows, then re-insert 5 rows — old 3 must be gone.
+    # Insert 3 rows, then re-insert 5 rows : old 3 must be gone.
     insert_study(conn, _STUDY_DATA)
     insert_study_files(conn, "PXD000001", _make_files_df("PXD000001", 3))
     insert_study_files(conn, "PXD000001", _make_files_df("PXD000001", 5))
@@ -240,7 +241,7 @@ def test_insert_study_files_error_rolls_back(conn: sqlite3.Connection) -> None:
     insert_study(conn, _STUDY_DATA)
     insert_study_files(conn, "PXD000001", _make_files_df("PXD000001", 2))
 
-    # file_name has a NOT NULL constraint — None triggers IntegrityError mid-batch.
+    # file_name has a NOT NULL constraint : None triggers IntegrityError mid-batch.
     bad_df = pd.DataFrame(
         [
             {
@@ -256,7 +257,7 @@ def test_insert_study_files_error_rolls_back(conn: sqlite3.Connection) -> None:
     with pytest.raises(sqlite3.IntegrityError):
         insert_study_files(conn, "PXD000001", bad_df)
 
-    # ROLLBACK means the DELETE was also undone — original 2 rows must still be there.
+    # ROLLBACK means the DELETE was also undone : original 2 rows must still be there.
     (count,) = conn.execute("SELECT COUNT(*) FROM study_files").fetchone()
     assert count == 2
 
@@ -465,7 +466,7 @@ def test_migrate_audit_v2_is_idempotent(conn: sqlite3.Connection) -> None:
     v1_conn = sqlite3.connect(":memory:", isolation_level=None)
     _create_v1_schema(v1_conn)
     migrate_audit_v2(v1_conn)
-    migrate_audit_v2(v1_conn)  # second call — must be a no-op, not a failure
+    migrate_audit_v2(v1_conn)  # second call : must be a no-op, not a failure
     v1_conn.close()
 
 

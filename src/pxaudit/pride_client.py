@@ -82,7 +82,7 @@ def _request(
     PrideNotFoundError
         On HTTP 404. Never retried.
     PrideRateLimitError
-        On HTTP 429. Never retried.
+        On HTTP 429 once all retries with backoff are exhausted.
     PrideAPIError
         On 5xx status codes or repeated timeouts once all retries are exhausted.
     """
@@ -110,11 +110,14 @@ def _request(
         if resp.status_code == 404:
             raise PrideNotFoundError(f"Accession not found (HTTP 404): {url}")
         if resp.status_code == 429:
-            raise PrideRateLimitError(f"Rate limited by PRIDE API (HTTP 429): {url}")
+            last_exc = PrideRateLimitError(f"Rate limited by PRIDE API (HTTP 429): {url}")
+            continue
 
-        # Any other non-2xx status (typically 5xx) — record and retry.
+        # Any other non-2xx status (typically 5xx): record and retry.
         last_exc = PrideAPIError(f"HTTP {resp.status_code}: {url}")
 
+    if isinstance(last_exc, (PrideRateLimitError, PrideAPIError)):
+        raise last_exc
     raise PrideAPIError(
         f"PRIDE API request failed after {_MAX_RETRIES} retries: {url}"
     ) from last_exc
@@ -138,17 +141,13 @@ def fetch_project(accession: str, *, delay: float = 0.5) -> dict:
 def fetch_files(accession: str, *, delay: float = 0.5) -> list[dict]:
     """Fetch **all** files from ``/projects/{accession}/files``, paginating until exhausted.
 
-    ISS-004 fix: the original implementation made a single un-paginated request.
-    PRIDE's API caps its default page at 100 files; datasets with >100 files were
-    silently truncated, causing file-level flags (``has_open_spectra``, etc.) to be
-    derived from an incomplete file list and tier scores to be understated.
+    PRIDE's API caps each page at 100 files.  The loop requests successive
+    pages of 100 rows until a page returns fewer than 100 rows, which signals
+    the final page has been reached.
 
-    The loop requests successive pages of 100 rows until a page returns fewer than
-    100 rows, which signals the final (possibly empty) page has been reached.
-
-    Note: No early exit keyed on ``fileCategory`` is used.  Stopping on
-    RESULT/EXPERIMENTAL DESIGN categories can skip PEAK files on later pages and
-    cause a Platinum/Diamond dataset to be mis-scored as Gold (Audit Issue 1).
+    No early exit on ``fileCategory`` is used.  Stopping on RESULT or
+    EXPERIMENTAL DESIGN categories would skip PEAK files on later pages and
+    produce understated tier scores for Platinum or Diamond datasets.
     """
     all_files: list[dict] = []
     page = 0

@@ -2,8 +2,8 @@
 
 Cache files live at ``{cache_dir}/{accession}_{endpoint}.json``.
 The default cache directory is ``~/.pxaudit_cache/``.
-Tests always pass ``cache_dir`` explicitly so they never touch the
-real filesystem outside ``tmp_path``.
+The ``cache_dir`` parameter is configurable; tests pass it explicitly
+to isolate filesystem access to ``tmp_path``.
 """
 
 from __future__ import annotations
@@ -61,20 +61,20 @@ def read_cache(
             age = time.time() - path.stat().st_mtime
             if age > max_age:
                 _log.info(
-                    "Cache file %s is %.1f s old (TTL=%.0f s) — stale, re-fetching",
+                    "Cache file %s is %.1f s old (TTL=%.0f s); stale, re-fetching",
                     path,
                     age,
                     max_age,
                 )
                 path.unlink(missing_ok=True)
                 return None
-        except OSError:
+        except OSError:  # pragma: no cover
             return None
 
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
-        _log.warning("Corrupted cache file %s — deleting and returning None", path)
+        _log.warning("Corrupted cache file %s, deleting and returning None", path)
         path.unlink(missing_ok=True)
         return None
 
@@ -91,7 +91,7 @@ def write_cache(
     The write is atomic on POSIX systems: data is first written to a
     ``.tmp`` file in the same directory, then atomically renamed to the
     final path via ``os.replace()``.  If the process is interrupted
-    mid-write, only the ``.tmp`` file is lost — the final file remains
+    mid-write, only the ``.tmp`` file is lost. The final file remains
     untouched (or absent on first write).
 
     The cache directory is created (including all parents) on first write.

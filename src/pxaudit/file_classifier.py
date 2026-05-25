@@ -42,10 +42,10 @@ class FileClass(StrEnum):
     RAW = "RAW"  # Vendor-proprietary raw spectra
     PEAK = "PEAK"  # Open-format spectra (mzML, mzXML, MGF …)
     RESULT = "RESULT"  # PSI-standard identification results (mzIdentML, mzTab)
-    SEARCH = "SEARCH"  # Proprietary / non-standard analysis results (.dat, .msf, Skyline, TPP…)
-    # Note: semantically this bucket covers "non-standard processed results", not only raw
-    # search-engine output.  Skyline (.sky.zip), TPP XML (.pep.xml/.prot.xml), and Percolator
-    # files belong here because they are PRIDE-SEARCH-compatible but not PSI-standard.
+    SEARCH = "SEARCH"  # Non-standard processed results (.dat, .msf, Skyline, TPP, Percolator...)
+    # This bucket covers non-standard processed results, not only raw search-engine output.
+    # Skyline (.sky.zip), TPP XML (.pep.xml/.prot.xml), and Percolator files belong here;
+    # they are PRIDE-SEARCH-compatible but not PSI-standard.
     SDRF = "SDRF"  # FAIR experimental-design file
     FASTA = "FASTA"  # Sequence database
     QUANT_MATRIX = "QUANT_MATRIX"  # Protein/peptide-level intensity summary table
@@ -76,9 +76,8 @@ def strip_compression(filename: str) -> str:
 
     Uses a ``while`` loop so multi-layer archives (e.g. ``data.txt.zip.gz``) are
     fully unwrapped regardless of the order in which compression layers were applied.
-
-    Note: Audit fix (Issue 4) — the original ``for``-loop implementation stopped after
-    removing the outermost suffix and silently left inner layers in place.
+    A ``for`` loop would stop after removing the outermost suffix and leave inner
+    layers in place.
 
     Examples
     --------
@@ -110,7 +109,7 @@ def strip_compression(filename: str) -> str:
 # ---------------------------------------------------------------------------
 
 _EXTENSION_TO_CLASS: dict[str, FileClass] = {
-    # ── Vendor RAW (proprietary mass-spec native) ────────────────────────────────────────────
+    # -- Vendor RAW (proprietary mass-spec native) --------------------------------------------
     ".raw": FileClass.RAW,  # Thermo Fisher (Xcalibur)
     ".wiff": FileClass.RAW,  # Sciex
     ".wiff2": FileClass.RAW,  # Sciex (newer format)
@@ -127,7 +126,7 @@ _EXTENSION_TO_CLASS: dict[str, FileClass] = {
     ".yep": FileClass.RAW,  # Bruker (older; pre-compact format)
     ".fid": FileClass.RAW,  # Bruker raw FID signal file
     ".uimf": FileClass.RAW,  # PNNL ion-mobility raw format (SLIM/IMS)
-    # ── Open-format spectra (PEAK) ───────────────────────────────────────────────────────────
+    # -- Open-format spectra (PEAK) -----------------------------------------------------------
     ".mzml": FileClass.PEAK,  # HUPO-PSI; gold-standard open format
     ".mzxml": FileClass.PEAK,  # ProteoWizard legacy; widely supported
     ".mgf": FileClass.PEAK,  # Mascot Generic Format; text peak list
@@ -138,25 +137,25 @@ _EXTENSION_TO_CLASS: dict[str, FileClass] = {
     ".apl": FileClass.PEAK,  # Andromeda peak list (MaxQuant input)
     ".ms1": FileClass.PEAK,  # MS1 spectrum file
     ".cms2": FileClass.PEAK,  # Crux/SEQUEST MS2 variant (newer)
-    # ── PSI-standard identification results (RESULT) ─────────────────────────────────────────
+    # -- PSI-standard identification results (RESULT) -----------------------------------------
     ".mzidentml": FileClass.RESULT,  # PSI mzIdentML; canonical open-standard
     ".mzid": FileClass.RESULT,  # alias for .mzidentml
     ".mztab": FileClass.RESULT,  # PSI mzTab; quant + identification (tabular)
     ".mztab-m": FileClass.RESULT,  # mzTab-M (metabolomics; rare in proteomics)
-    # Note: mzTab is a container format: it can hold IDs, quant, and metadata.  The
+    # mzTab is a container format: it can hold IDs, quant, and metadata.  The
     # classification to RESULT is correct for PRIDE compatibility; downstream tier logic
     # should use quantificationMethods[] to distinguish quant-capable mzTab files.
     ".idxml": FileClass.RESULT,  # OpenMS peptide identification format
     ".mzqc": FileClass.RESULT,  # PSI mzQC quality-control format
-    # Note: .xml is intentionally absent — too broad (workflow.xml, parameters.xml).
+    # .xml is intentionally absent; too broad (workflow.xml, parameters.xml).
     # PRIDE XML (pride_exp_complete/partial) is caught via _PSI_BASENAME_PATTERNS.
-    # ── Proprietary search-engine output (SEARCH) ────────────────────────────────────────────
+    # Proprietary search-engine output (SEARCH)
     ".dat": FileClass.SEARCH,  # Mascot result file
     ".msf": FileClass.SEARCH,  # Thermo Proteome Discoverer
     ".pdresult": FileClass.SEARCH,  # PD 2.x result file
     ".tandem": FileClass.SEARCH,  # X!Tandem output
-    ".pep.xml": FileClass.SEARCH,  # Trans-Proteomic Pipeline — peptide level
-    ".prot.xml": FileClass.SEARCH,  # TPP — protein level
+    ".pep.xml": FileClass.SEARCH,  # Trans-Proteomic Pipeline: peptide level
+    ".prot.xml": FileClass.SEARCH,  # TPP: protein level
     ".pepxml": FileClass.SEARCH,  # pepXML alias (flat, no compound dot)
     ".protxml": FileClass.SEARCH,  # protXML alias
     ".idpdb": FileClass.SEARCH,  # IDPicker database
@@ -166,20 +165,19 @@ _EXTENSION_TO_CLASS: dict[str, FileClass] = {
     ".sky.zip": FileClass.SEARCH,  # Skyline document archive (DIA results)
     ".pin": FileClass.SEARCH,  # Percolator input (post-search feature table)
     ".pout": FileClass.SEARCH,  # Percolator output (re-scored PSMs)
-    # ── Sequence databases (FASTA) ───────────────────────────────────────────────────────────
+    # -- Sequence databases (FASTA) -----------------------------------------------------------
     ".fasta": FileClass.FASTA,
     ".fa": FileClass.FASTA,
     ".fas": FileClass.FASTA,
     ".faa": FileClass.FASTA,  # protein FASTA (NCBI convention)
     ".fna": FileClass.FASTA,  # nucleotide FASTA (NCBI convention; rare in proteomics)
-    # ── OpenMS feature file (ID_LIST) ────────────────────────────────────────────────────────
+    # -- OpenMS feature file (ID_LIST) --------------------------------------------------------
     # Placed in the extension registry (not in _ID_LIST_PATTERNS) so that compressed
     # variants like .featurexml.gz are correctly handled via Step 1 after compression strip.
-    # Classification note: featureXML stores LC-MS feature detections (precursor-level), not
-    # strictly PSM-level IDs.  A case can be made for QUANT_MATRIX, but until a FEATURE
-    # category is introduced in the tier model, ID_LIST is the closest semantic bucket.
+    # featureXML stores LC-MS feature detections (precursor-level), not strictly PSM-level IDs.
+    # ID_LIST is the closest semantic bucket in the current tier model.
     ".featurexml": FileClass.ID_LIST,
-    # ── SDRF (bare extension) ─────────────────────────────────────────────────────────────────
+    # -- SDRF (bare extension) -----------------------------------------------------------------
     # Covers files named e.g. 'experiment.sdrf'.  The more common '.sdrf.tsv' / '.sdrf.txt'
     # compound forms are handled upstream in classify() Step 3 (substring + tabular guard).
     ".sdrf": FileClass.SDRF,
@@ -191,15 +189,15 @@ _EXTENSION_TO_CLASS: dict[str, FileClass] = {
 # ---------------------------------------------------------------------------
 
 _EXACT_STEM_TO_CLASS: dict[str, FileClass] = {
-    # QUANT_MATRIX — protein/peptide-level aggregated quantification tables
+    # QUANT_MATRIX: protein/peptide-level aggregated quantification tables
     "proteingroups": FileClass.QUANT_MATRIX,
     "peptides": FileClass.QUANT_MATRIX,
-    # ID_LIST — per-PSM / per-scan identification tables (no quant summary)
+    # ID_LIST: per-PSM / per-scan identification tables (no quant summary)
     "evidence": FileClass.ID_LIST,
     "allpeptides": FileClass.ID_LIST,
     "msms": FileClass.ID_LIST,
     "modificationspecificpeptides": FileClass.ID_LIST,
-    # 'summary' and 'parameters' are intentionally absent — stems too generic.
+    # 'summary' and 'parameters' are intentionally absent: stems too generic.
 }
 
 
@@ -208,9 +206,8 @@ _EXACT_STEM_TO_CLASS: dict[str, FileClass] = {
 # ---------------------------------------------------------------------------
 
 # PSI-standard files identifiable only by name, not extension alone.
-# Checked BEFORE _QUANT_MATRIX_PATTERNS so mzTab-named files (e.g. ``-mztab.txt``,
-# ``.mztab.gz``) correctly route to FileClass.RESULT, not FileClass.QUANT_MATRIX.
-# Audit fix (Issue 2): mztab was previously in a RESULT_TOOL pattern; moved here.
+# Checked before _QUANT_MATRIX_PATTERNS so mzTab-named files (e.g. ``-mztab.txt``,
+# ``.mztab.gz``) route to FileClass.RESULT, not FileClass.QUANT_MATRIX.
 _PSI_BASENAME_PATTERNS: re.Pattern[str] = re.compile(
     r"mztab|pride_exp_complete|pride_exp_partial",
     re.IGNORECASE,
@@ -235,8 +232,8 @@ _QUANT_MATRIX_PATTERNS: re.Pattern[str] = re.compile(
 # PSM / scan-level identification lists (granular, without quant summary).
 _ID_LIST_PATTERNS: re.Pattern[str] = re.compile(
     r"psm\.tsv$"  # general PSM table (FragPipe and others)
-    r"|psm\.txt$"  # PSM table — .txt variant (some tools output .txt)
-    r"|psms\.txt$"  # PSM table — plural .txt variant
+    r"|psm\.txt$"  # PSM table: .txt variant (some tools output .txt)
+    r"|psms\.txt$"  # PSM table: plural .txt variant
     r"|combined_ion\.tsv$",  # FragPipe ion-level table
     re.IGNORECASE,
 )
@@ -308,7 +305,7 @@ class FileTypeClassifier:
         1b. Extension registry on the de-compressed filename
             (handles ``.mzml.gz``, ``.raw.gz``, ``.mzid.gz`` etc.)
         2.  Exact-stem map (MaxQuant fixed names + custom)
-        3.  SDRF check — ``"sdrf"`` in name **and** tabular extension (.tsv/.txt/.csv)
+        3.  SDRF check: ``"sdrf"`` in name **and** tabular extension (.tsv/.txt/.csv)
         4.  PSI basename patterns → FileClass.RESULT
             (mzTab name variants + PRIDE XML; must precede quant patterns)
         5.  Quant-matrix patterns → FileClass.QUANT_MATRIX
@@ -316,7 +313,7 @@ class FileTypeClassifier:
         7.  PRIDE fileCategory fallback
         8.  FileClass.OTHER
 
-        All pattern checks (steps 3–6) operate on the *de-compressed*, lower-case
+        All pattern checks (steps 3-6) operate on the *de-compressed*, lower-case
         base filename so that e.g. ``report.tsv.gz`` correctly matches step 5 after
         strip_compression() removes the ``.gz`` wrapper.
 
@@ -328,9 +325,9 @@ class FileTypeClassifier:
             Value of ``fileCategory.value`` from the PRIDE API (e.g. ``"RAW"``,
             ``"EXPERIMENTAL DESIGN"``).  Used only as a last-resort fallback.
         """
-        # Step 1a — Extension registry on the ORIGINAL filename.
+        # Step 1a: Extension registry on the ORIGINAL filename.
         # Must run before strip_compression so compound format extensions that happen
-        # to end with .zip (e.g. .sky.zip — Skyline native format) are recognised as
+        # to end with .zip (e.g. .sky.zip, Skyline native format) are recognised as
         # format identifiers before .zip is mistakenly stripped as a compression wrapper.
         lower_filename = filename.lower()
         ext = self._extract_ext(lower_filename)
@@ -341,39 +338,38 @@ class FileTypeClassifier:
         base = strip_compression(filename)
         lower_base = base.lower()
 
-        # Step 1b — Extension registry on the de-compressed filename (.mzml.gz, .raw.gz …).
+        # Step 1b: Extension registry on the de-compressed filename (.mzml.gz, .raw.gz …).
         ext = self._extract_ext(lower_base)
         if ext and ext in self._ext_map:
             return self._ext_map[ext]
 
-        # Step 2 — Exact stem (MaxQuant fixed-output filenames like proteinGroups.txt).
+        # Step 2: Exact stem (MaxQuant fixed-output filenames like proteinGroups.txt).
         stem = lower_base.rsplit(".", 1)[0] if "." in lower_base else lower_base
         if stem in self._stem_map:
             return self._stem_map[stem]
 
-        # Steps 3–6 all search on lower_base (de-compressed + lower-case).
+        # Steps 3-6 all search on lower_base (de-compressed + lower-case).
 
-        # Step 3 — SDRF: must contain "sdrf" AND end with a tabular extension.
-        # Audit fix (Issue 8): bare "sdrf" check matched sdrf_instructions.pdf;
-        # the endswith guard ensures only proper SDRF tabular files are accepted.
+        # Step 3: SDRF: must contain "sdrf" AND end with a tabular extension.
+        # The endswith guard ensures only proper SDRF tabular files are accepted.
         if "sdrf" in lower_base and lower_base.endswith((".tsv", ".txt", ".csv")):
             return FileClass.SDRF
 
-        # Step 4 — PSI basename patterns → RESULT.
-        # Audit fix (Issue 2): catches -mztab.txt, .mztab.gz (after strip), PRIDE XML.
+        # Step 4: PSI basename patterns -> RESULT.
+        # Catches -mztab.txt, .mztab.gz (after strip), PRIDE XML.
         # Runs before quant patterns so mzTab files are not mis-routed to QUANT_MATRIX.
         if _PSI_BASENAME_PATTERNS.search(lower_base):
             return FileClass.RESULT
 
-        # Step 5 — Quant-matrix patterns (protein/peptide-level summaries).
+        # Step 5: Quant-matrix patterns (protein/peptide-level summaries).
         if _QUANT_MATRIX_PATTERNS.search(lower_base):
             return FileClass.QUANT_MATRIX
 
-        # Step 6 — ID-list patterns (PSM / scan-level lists).
+        # Step 6: ID-list patterns (PSM / scan-level lists).
         if _ID_LIST_PATTERNS.search(lower_base):
             return FileClass.ID_LIST
 
-        # Step 7 — PRIDE fileCategory fallback (only for categories we can trust).
+        # Step 7: PRIDE fileCategory fallback (only for categories we can trust).
         if pride_category:
             mapped = _PRIDE_CATEGORY_MAP.get(pride_category.upper())
             if mapped is not None:

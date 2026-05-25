@@ -10,7 +10,7 @@ labels: bug
 
 ## Accession (if applicable)
 
-<!-- e.g. PXD004683 — paste the accession that triggered the issue. -->
+<!-- e.g. PXD004683 - paste the accession that triggered the issue. -->
 
 ## Command run
 

@@ -1,6 +1,6 @@
 [project]
 name = "pxaudit"
-version = "0.1.1"
+version = "0.2.0"
 description = "Proteomics Exchange metadata audit tool"
 authors = [
     { name = "eneskemalergin", email = "eneskemalergin@gmail.com" }
@@ -10,6 +10,7 @@ dependencies = [
     "click>=8.3.1",
     "pandas>=3.0",
     "requests>=2.32.5",
+    "tqdm>=4.67.0",
 ]
 
 [project.scripts]
@@ -21,6 +22,7 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "mypy>=1.15.0",
     "pre-commit>=4.5.1",
     "pytest>=9.0.2",
     "pytest-cov>=7.0.0",
@@ -44,3 +46,15 @@ source = ["pxaudit"]
 branch = true
 
 [tool.coverage.report]
+fail_under = 100
+
+[tool.mypy]
+python_version = "3.12"
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+strict_optional = true
+ignore_missing_imports = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true

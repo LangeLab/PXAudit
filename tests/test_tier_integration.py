@@ -6,11 +6,11 @@ exercised end-to-end without any network access.
 
 Test organisation
 -----------------
-1.  7-tier ladder parametrized — one known accession per tier
+1.  7-tier ladder parametrized : one known accession per tier
     (Raw, Bronze, Silver×2, Platinum×2)
-2.  Tier-ladder sequencing — confirms the ladder is strictly sequential
+2.  Tier-ladder sequencing : confirms the ladder is strictly sequential
     (publication + organism_part do NOT skip past Silver if SDRF is absent)
-3.  Submission-type gate — PARTIAL vs. COMPLETE result-file recognition
+3.  Submission-type gate : PARTIAL vs. COMPLETE result-file recognition
 
 Note: the "edge cases" listed in the C08 spec (MSV000001, pubmedID=0, SDRF
 compressed, mzTab basename, etc.) are already covered exhaustively in
@@ -25,7 +25,7 @@ import pytest
 from pxaudit.tier_engine import compute_audit
 
 # ---------------------------------------------------------------------------
-# Local helpers — minimal PRIDE v3 CvParam shapes
+# Local helpers : minimal PRIDE v3 CvParam shapes
 # ---------------------------------------------------------------------------
 
 # Redefine locally rather than importing from test_tier_engine to keep test
@@ -85,7 +85,7 @@ def _mk_file(filename: str, category: str = "OTHER") -> dict:
 # Each tuple: (label, accession, project_data, files_data, expected_tier)
 _INTEGRATION_CASES = [
     # -------------------------------------------------------------------
-    # PXD057701 — PARTIAL submission, only RAW + OTHER files.
+    # PXD057701 : PARTIAL submission, only RAW + OTHER files.
     # No RESULT/SEARCH/QUANT in the PARTIAL result gate → Raw.
     # -------------------------------------------------------------------
     (
@@ -99,7 +99,7 @@ _INTEGRATION_CASES = [
         "Raw",
     ),
     # -------------------------------------------------------------------
-    # PXD002244 — PARTIAL submission, MGF spectra + Mascot SEARCH file.
+    # PXD002244 : PARTIAL submission, MGF spectra + Mascot SEARCH file.
     # SEARCH is in the PARTIAL result gate → has_result_files=True.
     # No PSI-standard RESULT file → has_psi_results=False → Bronze.
     # -------------------------------------------------------------------
@@ -115,7 +115,7 @@ _INTEGRATION_CASES = [
         "Bronze",
     ),
     # -------------------------------------------------------------------
-    # PXD000001 — COMPLETE, full result suite but no SDRF → Silver.
+    # PXD000001 : COMPLETE, full result suite but no SDRF → Silver.
     # -------------------------------------------------------------------
     (
         "PXD000001-Silver",
@@ -137,7 +137,7 @@ _INTEGRATION_CASES = [
     # SDRF requirement is unmet.
     # Note: PXD000001 is re-used as the routing accession (it is genuinely
     # Silver in real data too, though for different reasons).  The mock
-    # payload is what drives the assertion — not the live API.
+    # payload is what drives the assertion : not the live API.
     # -------------------------------------------------------------------
     (
         "Silver-no-sdrf-despite-pub-and-orgpart",
@@ -156,7 +156,7 @@ _INTEGRATION_CASES = [
         "Silver",
     ),
     # -------------------------------------------------------------------
-    # PXD004683 — COMPLETE, real submission profile.  SDRF via authoritative
+    # PXD004683 : COMPLETE, real submission profile.  SDRF via authoritative
     # EXPERIMENTAL DESIGN category, open spectra (MGF), PSI results (mzid.gz
     # in a RESULT-category file), publication, organism_part → Diamond.
     # -------------------------------------------------------------------
@@ -177,7 +177,7 @@ _INTEGRATION_CASES = [
         "Diamond",
     ),
     # -------------------------------------------------------------------
-    # PXD073444 — COMPLETE, SDRF + open spectra + organism_part annotated,
+    # PXD073444 : COMPLETE, SDRF + open spectra + organism_part annotated,
     # but pubmedID=0 (PRIDE sentinel for unpublished) → Platinum.
     # -------------------------------------------------------------------
     (
@@ -198,7 +198,7 @@ _INTEGRATION_CASES = [
         "Platinum",
     ),
     # -------------------------------------------------------------------
-    # PXD075811 — COMPLETE, SDRF + open spectra + organism_part, no publication
+    # PXD075811 : COMPLETE, SDRF + open spectra + organism_part, no publication
     # at all (empty references list) → Platinum.
     # Note: organism_part is required to clear the Gold gate
     # (not has_open_spectra OR not has_organism_part).  Without it the tier
@@ -245,7 +245,7 @@ def test_known_tier_example(
 
 
 # ---------------------------------------------------------------------------
-# 2. Tier-ladder sequencing — explicit single-flag drop tests
+# 2. Tier-ladder sequencing : explicit single-flag drop tests
 # ---------------------------------------------------------------------------
 
 

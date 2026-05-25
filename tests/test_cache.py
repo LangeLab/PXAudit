@@ -37,7 +37,7 @@ import pytest
 from pxaudit.cache import _DEFAULT_TTL, read_cache, write_cache
 
 # ---------------------------------------------------------------------------
-# 1 & 2 — cache miss
+# 1 & 2 : cache miss
 # ---------------------------------------------------------------------------
 
 
@@ -57,7 +57,7 @@ def test_cache_miss_file_absent_returns_none(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 3 & 4 — successful roundtrip
+# 3 & 4 : successful roundtrip
 # ---------------------------------------------------------------------------
 
 
@@ -88,7 +88,7 @@ def test_write_then_read_list_returns_identical(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 5 — directory creation
+# 5 : directory creation
 # ---------------------------------------------------------------------------
 
 
@@ -102,7 +102,7 @@ def test_write_creates_missing_directory(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 6 — correct filename
+# 6 : correct filename
 # ---------------------------------------------------------------------------
 
 
@@ -117,7 +117,7 @@ def test_cache_file_named_correctly(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 7, 8, 9 — corruption recovery
+# 7, 8, 9 : corruption recovery
 # ---------------------------------------------------------------------------
 
 
@@ -155,7 +155,7 @@ def test_corrupted_json_logs_warning(tmp_path: Path, caplog: pytest.LogCaptureFi
 
 
 # ---------------------------------------------------------------------------
-# 10 — permission error
+# 10 : permission error
 # ---------------------------------------------------------------------------
 
 
@@ -163,7 +163,7 @@ def test_write_permission_error_raises(tmp_path: Path) -> None:
     """write_cache must propagate OSError when the cache dir is not writable."""
     cache_dir = tmp_path / "locked"
     cache_dir.mkdir()
-    cache_dir.chmod(0o555)  # r-xr-xr-x — no write bit
+    cache_dir.chmod(0o555)  # r-xr-xr-x : no write bit
     try:
         with pytest.raises(OSError):
             write_cache("PXD000001", "project", {"x": 1}, cache_dir=cache_dir)
@@ -172,12 +172,12 @@ def test_write_permission_error_raises(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 11 — overwrite
+# 11 : overwrite
 # ---------------------------------------------------------------------------
 
 
 def test_overwrite_updates_cached_data(tmp_path: Path) -> None:
-    """A second write_cache call must replace the first — no stale data."""
+    """A second write_cache call must replace the first : no stale data."""
     write_cache("PXD000001", "project", {"title": "Old Title"}, cache_dir=tmp_path)
     write_cache("PXD000001", "project", {"title": "New Title"}, cache_dir=tmp_path)
     result = read_cache("PXD000001", "project", cache_dir=tmp_path)
@@ -187,7 +187,7 @@ def test_overwrite_updates_cached_data(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 12 & 13 — TTL: fresh cache is served
+# 12 & 13 : TTL: fresh cache is served
 # ---------------------------------------------------------------------------
 
 
@@ -209,7 +209,7 @@ def test_ttl_fresh_cache_disabled_with_none(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 14 & 15 — TTL: stale cache returns None and is deleted
+# 14 & 15 : TTL: stale cache returns None and is deleted
 # ---------------------------------------------------------------------------
 
 
@@ -239,7 +239,7 @@ def test_ttl_default_constant_is_seven_days() -> None:
 
 
 # ---------------------------------------------------------------------------
-# TTL boundary tests — st_mtime at / before / after threshold
+# TTL boundary tests : st_mtime at / before / after threshold
 # ---------------------------------------------------------------------------
 
 
@@ -273,7 +273,7 @@ def test_ttl_boundary_one_second_before_is_fresh(mock_time: MagicMock, tmp_path:
 
 @patch("time.time")
 def test_ttl_boundary_one_second_after_is_stale(mock_time: MagicMock, tmp_path: Path) -> None:
-    """age == max_age + 1 is stale — returns None and deletes file."""
+    """age == max_age + 1 is stale : returns None and deletes file."""
     fixed_mtime = 1_000_000.0
     write_cache("PXD000001", "project", {"key": "value"}, cache_dir=tmp_path)
     path = tmp_path / "PXD000001_project.json"
@@ -285,7 +285,7 @@ def test_ttl_boundary_one_second_after_is_stale(mock_time: MagicMock, tmp_path: 
 
 
 # ---------------------------------------------------------------------------
-# Refresh bypass — max_age=0 forces stale on any cache
+# Refresh bypass : max_age=0 forces stale on any cache
 # ---------------------------------------------------------------------------
 
 
@@ -304,7 +304,7 @@ def test_ttl_zero_max_age_bypasses_fresh_cache(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 16, 17, 18 — atomic write via tmp + os.replace
+# 16, 17, 18 : atomic write via tmp + os.replace
 # ---------------------------------------------------------------------------
 
 
@@ -327,7 +327,7 @@ def test_atomic_write_interrupted_tmp_does_not_harm_final(tmp_path: Path) -> Non
     # Simulate interrupted write: write .tmp but crash before os.replace.
     tmp_path_candidate = tmp_path / "PXD000001_project.tmp"
     tmp_path_candidate.write_text('{"corrupt": true}', encoding="utf-8")
-    # Do NOT call os.replace — simulate crash.
+    # Do NOT call os.replace : simulate crash.
 
     # The .json file must be unchanged.
     assert json_path.exists()

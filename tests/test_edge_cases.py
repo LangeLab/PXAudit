@@ -6,16 +6,16 @@ test_tier_engine.py, test_cli.py, test_cache.py, or test_db.py.
 
 Test organisation
 -----------------
-1.  Accession validation — whitespace, tab-prefix, lowercase/mixed-case PXD
-2.  fileCategory near-matches — trailing spaces, SEARCHING, RESULTSET
-3.  SDRF token-boundary near-misses — bare token, underscores, letters-both-sides
+1.  Accession validation : whitespace, tab-prefix, lowercase/mixed-case PXD
+2.  fileCategory near-matches : trailing spaces, SEARCHING, RESULTSET
+3.  SDRF token-boundary near-misses : bare token, underscores, letters-both-sides
 4.  Full pipeline → DB row verification (most critical: not tested anywhere else)
       a. Gold:    audit + study + study_files rows match expected values
       b. Silver:  audit row has tier=Silver, has_sdrf=0
       c. files_fetch_failed Bronze: tier=Bronze, files_fetch_failed=1
       d. Unverifiable (MSV): tier=Unverifiable, is_unverifiable=1
       e. Upsert: second run overwrites, does not duplicate
-5.  Output formatting guard — correct ✔/✘ symbols for non-Gold tiers
+5.  Output formatting guard : correct ✔/✘ symbols for non-Gold tiers
 """
 
 from __future__ import annotations
@@ -107,7 +107,7 @@ def test_lowercase_pxd_routes_to_full_audit_not_unverifiable() -> None:
 
 
 def test_mixed_case_pxd_routes_to_full_audit_not_unverifiable() -> None:
-    """'PxD000001' — case-insensitive prefix check must treat it as PXD."""
+    """'PxD000001' : case-insensitive prefix check must treat it as PXD."""
     r = compute_audit("PxD000001", {}, [])
     assert r.is_unverifiable is False
 
@@ -132,14 +132,14 @@ def test_lowercase_pxd_cli_routes_correctly(
 
 
 # ---------------------------------------------------------------------------
-# 2. fileCategory near-matches — must NOT be recognised as result/search
+# 2. fileCategory near-matches : must NOT be recognised as result/search
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
     "category",
     [
-        "result ",  # trailing space — casefold gives "result ", not "result"
+        "result ",  # trailing space : casefold gives "result ", not "result"
         "SEARCHING",  # near-match on SEARCH; contains "search" but is longer
         "SEARCH ",  # trailing space
         "RESULTSET",  # RESULT as prefix of longer word
@@ -170,7 +170,7 @@ def test_file_category_near_matches_not_counted_as_result(category: str) -> None
 @pytest.mark.parametrize(
     "filename, expected",
     [
-        ("sdrf", False),  # bare token, no extension — fallback requires tabular ext
+        ("sdrf", False),  # bare token, no extension : fallback requires tabular ext
         ("_sdrf_.tsv", True),  # underscores are not letters → boundary OK
         ("123sdrf456.tsv", True),  # digits are not letters → boundary OK
         ("xsdrfx.tsv", False),  # letter immediately on both sides
@@ -402,7 +402,7 @@ def test_pipeline_upsert_study_files_replaced_on_second_run(
 
 
 # ---------------------------------------------------------------------------
-# 5. Output formatting — ✔/✘ symbols for non-Gold tiers
+# 5. Output formatting : ✔/✘ symbols for non-Gold tiers
 # ---------------------------------------------------------------------------
 
 

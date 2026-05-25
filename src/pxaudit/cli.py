@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import importlib.metadata
+import json
 import sys
+import time
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 
 import click
 import pandas as pd
+from tqdm import tqdm
 
 from pxaudit import _PRIDE_PREFIX
 from pxaudit.cache import read_cache, write_cache
@@ -119,8 +122,155 @@ def _print_result(result: AuditResult, study: dict, file_count: int) -> None:
     click.echo(f"  {flag(result.has_mztab)} mzTab summary present")
     click.echo(f"  {flag(result.has_tabular_quant)} Tabular quant table (proteinGroups / evidence)")
     if result.files_fetch_failed:
-        click.echo("  ! Files endpoint failed — file flags are unreliable")
+        click.echo("  ! Files endpoint failed: file flags are unreliable")
     click.echo("-" * 48)
+
+
+# ---------------------------------------------------------------------------
+# Core audit pipeline (shared by check and bulk-audit)
+# ---------------------------------------------------------------------------
+
+
+def _audit_single(
+    accession: str,
+    db_path: str,
+    *,
+    no_cache: bool = False,
+    refresh: bool = False,
+) -> tuple[AuditResult, dict, pd.DataFrame, list[dict], str]:
+    """Fetch, compute, persist, and return audit data for one accession.
+
+    Returns (result, study, files_df, files_data, fetched_at).
+    Raises ``PrideAPIError`` on project fetch failure.
+    """
+    fetched_at = datetime.now(UTC).isoformat()
+    project_data: dict | None = None
+    files_data: list[dict] | None = None
+    files_fetch_failed = False
+
+    use_cache = not (no_cache or refresh)
+    if accession.upper().startswith(_PRIDE_PREFIX):
+        if use_cache:
+            project_data = read_cache(accession, "project")  # type: ignore[assignment]
+            files_data = read_cache(accession, "files")  # type: ignore[assignment]
+
+        if project_data is None:
+            project_data = fetch_project(accession)
+            write_cache(accession, "project", project_data)
+
+        if files_data is None:
+            try:
+                files_data = fetch_files(accession)
+                write_cache(accession, "files", files_data)
+            except PrideAPIError:
+                files_fetch_failed = True
+                files_data = []
+
+    project_data = project_data or {}
+    files_data = files_data or []
+
+    result = compute_audit(
+        accession, project_data, files_data, files_fetch_failed=files_fetch_failed
+    )
+
+    study = _extract_study(accession, project_data, fetched_at)
+    files_df = _extract_files_df(accession, files_data)
+    conn = get_or_create_db(db_path)
+    try:
+        insert_study(conn, study)
+        insert_study_files(conn, accession, files_df)
+        insert_audit(conn, asdict(result))
+    finally:
+        conn.close()
+
+    return result, study, files_df, files_data, fetched_at
+
+
+# ---------------------------------------------------------------------------
+# Input helpers
+# ---------------------------------------------------------------------------
+
+
+def _read_accessions(input_path: str) -> list[str]:
+    """Read newline-delimited accessions from a file or stdin (``-``).
+
+    Strips whitespace, skips blank lines and ``#`` comment lines.
+    Duplicates are preserved (caller should deduplicate).
+    """
+    lines: list[str]
+    if input_path == "-":
+        lines = sys.stdin.readlines()
+    else:
+        lines = Path(input_path).read_text().splitlines()
+
+    accessions: list[str] = []
+    for _, line in enumerate(lines, 1):
+        acc = line.strip()
+        if not acc or acc.startswith("#"):
+            continue
+        accessions.append(acc)
+    return accessions
+
+
+# ---------------------------------------------------------------------------
+# Export helpers
+# ---------------------------------------------------------------------------
+
+
+def _default_export_path(fmt: str) -> str:
+    """Generate a default export filename like ``pxaudit_bulk_20260525.tsv``."""
+    date_str = datetime.now(UTC).strftime("%Y%m%d")
+    return f"pxaudit_bulk_{date_str}.{fmt}"
+
+
+_EXPORT_COLS = (
+    "accession",
+    "tier",
+    "quant_tier",
+    "has_title",
+    "has_organism",
+    "has_organism_id",
+    "has_instrument",
+    "has_result_files",
+    "has_psi_results",
+    "has_open_spectra",
+    "has_organism_part",
+    "has_publication",
+    "has_tabular_quant",
+    "has_quant_metadata",
+    "has_sdrf",
+    "has_mztab",
+    "files_fetch_failed",
+    "is_unverifiable",
+    "tier_logic_version",
+)
+
+
+def _result_to_row(result: AuditResult) -> dict:
+    """Convert an ``AuditResult`` to a flat dict for export."""
+    d = asdict(result)
+    return {c: d[c] for c in _EXPORT_COLS}
+
+
+def _export_tsv(results: list[AuditResult], path: str) -> None:
+    """Write results to a TSV file."""
+    rows = [_result_to_row(r) for r in results]
+    df = pd.DataFrame(rows, columns=_EXPORT_COLS)
+    df.to_csv(path, sep="\t", index=False)
+
+
+def _export_csv(results: list[AuditResult], path: str) -> None:
+    """Write results to a CSV file."""
+    rows = [_result_to_row(r) for r in results]
+    df = pd.DataFrame(rows, columns=_EXPORT_COLS)
+    df.to_csv(path, index=False)
+
+
+def _export_json(results: list[AuditResult], path: str) -> None:
+    """Write results to a JSON file."""
+    rows = [_result_to_row(r) for r in results]
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(rows, f, indent=2)
 
 
 # ---------------------------------------------------------------------------
@@ -141,71 +291,174 @@ def _print_result(result: AuditResult, study: dict, file_count: int) -> None:
 )
 def check(accession: str, refresh: bool, no_cache: bool, db_path: str) -> None:
     """Audit a single Proteomics Exchange accession."""
-    # ------------------------------------------------------------------
-    # 1.  Validate accession
-    # ------------------------------------------------------------------
     if not accession or not accession[0].isalpha():
         click.echo(f"Error: invalid accession {accession!r}", err=True)
         sys.exit(2)
 
-    fetched_at = datetime.now(UTC).isoformat()
-    project_data: dict | None = None
-    files_data: list[dict] | None = None
-    files_fetch_failed = False
-
     try:
-        # ------------------------------------------------------------------
-        # 2.  Fetch data (PRIDE only; non-PXD are Unverifiable by prefix)
-        # ------------------------------------------------------------------
-        use_cache = not (no_cache or refresh)
-        if accession.upper().startswith(_PRIDE_PREFIX):
-            if use_cache:
-                project_data = read_cache(accession, "project")
-                files_data = read_cache(accession, "files")
-
-            if project_data is None:
-                try:
-                    project_data = fetch_project(accession)
-                    write_cache(accession, "project", project_data)
-                except PrideAPIError as exc:
-                    click.echo(f"Error: {exc}", err=True)
-                    sys.exit(1)
-
-            if files_data is None:
-                try:
-                    files_data = fetch_files(accession)
-                    write_cache(accession, "files", files_data)
-                except PrideAPIError:
-                    files_fetch_failed = True
-                    files_data = []
-
-        project_data = project_data or {}
-        files_data = files_data or []
-
-        # ------------------------------------------------------------------
-        # 3.  Compute audit
-        # ------------------------------------------------------------------
-        result = compute_audit(
-            accession, project_data, files_data, files_fetch_failed=files_fetch_failed
+        result, study, _files_df, files_data, _fetched_at = _audit_single(
+            accession, db_path, no_cache=no_cache, refresh=refresh
         )
-
-        # ------------------------------------------------------------------
-        # 4.  Persist to SQLite
-        # ------------------------------------------------------------------
-        study = _extract_study(accession, project_data, fetched_at)
-        files_df = _extract_files_df(accession, files_data)
-        conn = get_or_create_db(db_path)
-        try:
-            insert_study(conn, study)
-            insert_study_files(conn, accession, files_df)
-            insert_audit(conn, asdict(result))
-        finally:
-            conn.close()
-
-        # ------------------------------------------------------------------
-        # 5.  Print
-        # ------------------------------------------------------------------
         _print_result(result, study, len(files_data))
+    except PrideAPIError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
     except KeyboardInterrupt:
         click.echo("\nInterrupted.")
         sys.exit(130)
+
+
+@main.command("bulk-audit")
+@click.option(
+    "--input",
+    "input_path",
+    required=True,
+    help="Path to accession list (one per line), or '-' for stdin.",
+)
+@click.option(
+    "--db",
+    "db_path",
+    default="pxaudit_results.db",
+    show_default=True,
+    help="SQLite output path.",
+)
+@click.option(
+    "--format",
+    "fmt",
+    type=click.Choice(["tsv", "json", "csv"], case_sensitive=False),
+    default=None,
+    help="Export format. Default: no export file written.",
+)
+@click.option(
+    "--output",
+    "export_path",
+    default=None,
+    help="Export file path. Default: pxaudit_bulk_<date>.<format>.",
+)
+@click.option(
+    "--delay",
+    default=1.0,
+    type=float,
+    show_default=True,
+    help="Seconds to wait between API calls.",
+)
+@click.option(
+    "--continue-on-error",
+    "continue_on_error",
+    is_flag=True,
+    default=False,
+    help="Skip failed accessions and continue.",
+)
+@click.option(
+    "--overwrite",
+    is_flag=True,
+    default=False,
+    help="Overwrite existing export file.",
+)
+def bulk_audit(
+    input_path: str,
+    db_path: str,
+    fmt: str | None,
+    export_path: str | None,
+    delay: float,
+    continue_on_error: bool,
+    overwrite: bool,
+) -> None:
+    """Audit multiple Proteomics Exchange accessions."""
+    # ------------------------------------------------------------------
+    # 1.  Read input
+    # ------------------------------------------------------------------
+    try:
+        raw_accessions = _read_accessions(input_path)
+    except FileNotFoundError:
+        click.echo(f"Error: input file not found: {input_path}", err=True)
+        sys.exit(2)
+
+    if not raw_accessions:
+        click.echo("Warning: no accessions found in input.", err=True)
+        sys.exit(0)
+
+    # ------------------------------------------------------------------
+    # 2.  Deduplicate
+    # ------------------------------------------------------------------
+    seen: set[str] = set()
+    accessions: list[str] = []
+    for acc in raw_accessions:
+        if acc in seen:
+            click.echo(f"Warning: duplicate accession {acc!r} skipped.", err=True)
+        else:
+            seen.add(acc)
+            accessions.append(acc)
+
+    total = len(accessions)
+
+    # ------------------------------------------------------------------
+    # 3.  Export setup
+    # ------------------------------------------------------------------
+    if fmt:
+        fmt = fmt.lower()
+        export_path = export_path or _default_export_path(fmt)
+        if Path(export_path).exists() and not overwrite:
+            click.echo(
+                f"Error: output file {export_path!r} already exists. Use --overwrite to overwrite.",
+                err=True,
+            )
+            sys.exit(2)
+    else:
+        export_path = None
+
+    # ------------------------------------------------------------------
+    # 4.  Batch audit
+    # ------------------------------------------------------------------
+    results: list[AuditResult] = []
+    failed: list[str] = []
+    start_time = time.time()
+
+    try:
+        for accession in tqdm(accessions, desc="Auditing", unit="accession"):
+            try:
+                result, _study, _files_df, _files_data, _fetched_at = _audit_single(
+                    accession, db_path
+                )
+                results.append(result)
+            except PrideAPIError as exc:
+                if continue_on_error:
+                    click.echo(f"\nWarning: {accession} failed ({exc}). Skipping.", err=True)
+                    failed.append(accession)
+                else:
+                    click.echo(f"\nError: {accession} failed ({exc}).", err=True)
+                    click.echo("Use --continue-on-error to skip failures.", err=True)
+                    # Write partial results
+                    if results:
+                        click.echo(f"Partial results: {len(results)} accessions completed.")
+                    sys.exit(1)
+
+            time.sleep(delay)
+
+    except KeyboardInterrupt:
+        click.echo("\nInterrupted. Partial results written to database.")
+
+    # ------------------------------------------------------------------
+    # 5.  Export
+    # ------------------------------------------------------------------
+    if results and export_path:
+        if fmt == "tsv":
+            _export_tsv(results, export_path)
+        elif fmt == "csv":
+            _export_csv(results, export_path)
+        else:
+            _export_json(results, export_path)
+        click.echo(f"Exported {len(results)} results to {export_path}")
+
+    # ------------------------------------------------------------------
+    # 6.  Summary
+    # ------------------------------------------------------------------
+    elapsed = time.time() - start_time
+    click.echo(f"\nBatch audit complete ({elapsed:.1f}s)")
+    click.echo(f"  Total     : {total}")
+    click.echo(f"  Completed : {len(results)}")
+    click.echo(f"  Failed    : {len(failed)}")
+    if results:
+        tier_dist = pd.Series([r.tier for r in results]).value_counts()
+        for tier, count in tier_dist.items():
+            click.echo(f"    {tier:<12} {count}")

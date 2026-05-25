@@ -30,6 +30,8 @@ Quant-Ready and Quant-Complete values are covered by unit tests in
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from pxaudit.pride_client import fetch_files, fetch_project
@@ -67,13 +69,13 @@ def test_live_tier_and_quant_tier(
     result = compute_audit(accession, project, files)
 
     assert result.tier == expected_tier, (
-        f"{accession}: tier — got {result.tier!r}, expected {expected_tier!r}\n"
+        f"{accession}: tier : got {result.tier!r}, expected {expected_tier!r}\n"
         f"  has_result_files={result.has_result_files}, has_psi_results={result.has_psi_results},\n"
         f"  has_sdrf={result.has_sdrf}, has_open_spectra={result.has_open_spectra},\n"
         f"  has_organism_part={result.has_organism_part}, has_publication={result.has_publication}"
     )
     assert result.quant_tier == expected_quant_tier, (
-        f"{accession}: quant_tier — got {result.quant_tier!r}, expected {expected_quant_tier!r}\n"
+        f"{accession}: quant_tier : got {result.quant_tier!r}, expected {expected_quant_tier!r}\n"
         f"  has_psi_results={result.has_psi_results}, "
         f"has_tabular_quant={result.has_tabular_quant},\n"
         f"  has_quant_metadata={result.has_quant_metadata}"
@@ -81,7 +83,7 @@ def test_live_tier_and_quant_tier(
 
 
 # ---------------------------------------------------------------------------
-# Non-PRIDE routing (no API call needed — covered here for completeness)
+# Non-PRIDE routing (no API call needed : covered here for completeness)
 # ---------------------------------------------------------------------------
 
 
@@ -103,7 +105,7 @@ def test_live_non_pxd_accession_is_unverifiable() -> None:
 
 @pytest.mark.integration
 def test_live_pxd000001_silver_has_psi_no_sdrf() -> None:
-    """PXD000001 must have PSI results (mzid) but no SDRF — the Silver criteria."""
+    """PXD000001 must have PSI results (mzid) but no SDRF : the Silver criteria."""
     project = fetch_project("PXD000001")
     files = fetch_files("PXD000001")
     result = compute_audit("PXD000001", project, files)
@@ -136,3 +138,74 @@ def test_live_pxd057701_raw_no_result_files() -> None:
     assert result.has_result_files is False
     assert result.tier == "Raw"
     assert result.quant_tier == "No Quant"
+
+
+# ---------------------------------------------------------------------------
+# Bulk-audit integration test
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_live_bulk_audit(tmp_path: Path) -> None:
+    """bulk-audit 3 real accessions : verify SQLite and TSV output."""
+    from click.testing import CliRunner
+
+    from pxaudit.cli import main
+
+    acc_file = tmp_path / "accessions.txt"
+    acc_file.write_text("PXD000001\nPXD004683\nMSV000079514\n")
+    db_path = tmp_path / "results.db"
+    tsv_path = tmp_path / "bulk_results.tsv"
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "bulk-audit",
+            "--input",
+            str(acc_file),
+            "--db",
+            str(db_path),
+            "--format",
+            "tsv",
+            "--output",
+            str(tsv_path),
+            "--delay",
+            "0",
+        ],
+    )
+    assert result.exit_code == 0, f"bulk-audit failed: {result.output}"
+    assert "Completed : 3" in result.output
+    assert tsv_path.exists()
+
+    tsv_content = tsv_path.read_text()
+    assert "PXD000001" in tsv_content
+    assert "PXD004683" in tsv_content
+    assert "MSV000079514" in tsv_content
+    assert "Silver" in tsv_content
+    assert "Diamond" in tsv_content
+    assert "Unverifiable" in tsv_content
+
+    # Verify SQLite database has correct rows.
+    import sqlite3
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        cursor = conn.execute("SELECT COUNT(*) FROM audit")
+        assert cursor.fetchone()[0] == 3
+
+        cursor = conn.execute("SELECT tier FROM audit WHERE accession = ?", ("PXD000001",))
+        assert cursor.fetchone()[0] == "Silver"
+
+        cursor = conn.execute("SELECT tier FROM audit WHERE accession = ?", ("PXD004683",))
+        assert cursor.fetchone()[0] == "Diamond"
+
+        cursor = conn.execute(
+            "SELECT tier, is_unverifiable FROM audit WHERE accession = ?",
+            ("MSV000079514",),
+        )
+        row = cursor.fetchone()
+        assert row[0] == "Unverifiable"
+        assert row[1] == 1
+    finally:
+        conn.close()

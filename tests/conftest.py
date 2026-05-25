@@ -5,8 +5,8 @@ test module without explicit import.
 
 Naming convention
 -----------------
-``pride_project_*``  — synthetic /projects API response dicts.
-``pride_files_*``    — synthetic /files API response lists.
+``pride_project_*``  : synthetic /projects API response dicts.
+``pride_files_*``    : synthetic /files API response lists.
 
 All payloads use the real PRIDE v3 JSON shape (CvParam dicts with ``value``
 fields, ``publicFileLocations`` lists, etc.) so they exercise the same
@@ -96,7 +96,7 @@ def pride_files_gold() -> list[dict]:
 
 @pytest.fixture()
 def pride_files_silver() -> list[dict]:
-    """Result file only — no SDRF → Silver tier when metadata is complete."""
+    """Result file only : no SDRF → Silver tier when metadata is complete."""
     return [
         {
             "fileName": "results.mzid",

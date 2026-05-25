@@ -19,7 +19,7 @@ plan/database_schema.md exactly.
 The ``None`` tier is reserved for non-PRIDE repositories (MassIVE, jPOST,
 iProX) where mandatory fields may not be enforced at submission time.
 For live PRIDE accessions, all mandatory fields are guaranteed by the
-repository so the ``None`` branch is dead code — it is exercised only
+repository so the ``None`` branch is dead code; it is exercised only
 by synthetic test payloads.
 """
 
@@ -37,7 +37,7 @@ from pxaudit.file_classifier import FileClass, FileTypeClassifier
 # Module-level constants
 # ---------------------------------------------------------------------------
 
-_TIER_LOGIC_VERSION: str = "v2.0"  # bumped from v{__version__} at 7-tier redesign (C07)
+_TIER_LOGIC_VERSION: str = "v2.0"  # increment when tier derivation rules change
 
 # ---------------------------------------------------------------------------
 # SDRF detection
@@ -54,22 +54,22 @@ _SDRF_CATEGORY: str = "experimental design"
 #
 # Two requirements to avoid false positives:
 #   1. The word-boundary lookbehind/lookahead (?<![a-zA-Z])sdrf(?![a-zA-Z]) ensures
-#      that "sdrfile.txt", "asdrf.tsv", "prefixsdrfsuffix" are NOT matched.  Note:
-#      underscores and digits are NOT letters, so "_sdrf_.tsv" and "123sdrf456.tsv"
-#      still match — that is intentional and matches the token-boundary test suite.
+#      that "sdrfile.txt", "asdrf.tsv", "prefixsdrfsuffix" are NOT matched.
+#      Underscores and digits are NOT letters, so "_sdrf_.tsv" and "123sdrf456.tsv"
+#      still match; that is intentional and matches the token-boundary test suite.
 #   2. The tabular extension guard \.(tsv|txt|csv) ensures "sdrf_instructions.pdf"
 #      and "sdrf_template.docx" are NOT matched.  An SDRF must be a tab/comma-
 #      delimited text file; the extension is the authoritative discriminator.
 #   3. An optional compression suffix allows "PXD073444.sdrf.tsv.gz" to match.
 #
-# Spec note: the original draft proposed r"sdrf.*\.(tsv|txt|csv)...", which lacks
-# the word-boundary guard and regresses sdrfile.txt / asdrf.tsv / sdrfdata.tsv.
+# The regex uses a word-boundary lookbehind/lookahead to avoid matching
+# sdrfile.txt, asdrf.tsv, or sdrfdata.tsv as false positives.
 _SDRF_FALLBACK_RE: re.Pattern[str] = re.compile(
     r"(?<![a-zA-Z])sdrf(?![a-zA-Z]).*\.(?:tsv|txt|csv)(?:\.(?:gz|zip|bz2|7z))?$",
     re.IGNORECASE,
 )
 
-# Module-level classifier instance — stateless after construction; safe to share.
+# Module-level classifier instance: stateless after construction, safe to share.
 _classifier: FileTypeClassifier = FileTypeClassifier()
 
 
@@ -86,7 +86,7 @@ def _safe_pubmed_id(value: object) -> int:
     guard prevents ``ValueError`` / ``TypeError`` from propagating to the caller.
     """
     try:
-        return int(value)  # type: ignore[arg-type]
+        return int(value)  # type: ignore[call-overload]
     except (TypeError, ValueError):
         return 0
 
@@ -104,28 +104,27 @@ class AuditResult:
     stores them as SQLite integers (0/1); Python ``bool`` is a subclass of
     ``int`` so no explicit conversion is needed.
 
-    Field order must match ``pxaudit.db._AUDIT_COLS`` exactly — the
-    schema-contract test ``test_audit_result_field_names_match_audit_cols_exactly``
-    enforces this.
+    Field order must match ``pxaudit.db._AUDIT_COLS`` exactly (enforced by the
+    schema-contract test).
     """
 
-    # ── Identifying (required) fields ─────────────────────────────────────────
+    # Identifying (required) fields
     accession: str
     tier: str
-    # ── Existing metadata flags ────────────────────────────────────────────────
+    # Metadata flags
     has_title: bool = False
     has_organism: bool = False
     has_organism_id: bool = False
     has_instrument: bool = False
     has_result_files: bool = False
-    # ── v2 flags (C03 / C06) ──────────────────────────────────────────────────
+    # File-level flags
     has_psi_results: bool = False  # FileClass.RESULT found (mzIdentML / mzTab)
     has_open_spectra: bool = False  # FileClass.PEAK found
     has_organism_part: bool = False  # len(project["organismParts"]) > 0
     has_publication: bool = False  # pubmedID present, non-null, != 0
     has_tabular_quant: bool = False  # FileClass.QUANT_MATRIX or ID_LIST found
     has_quant_metadata: bool = False  # quantificationMethods[] non-empty
-    # ── Legacy flags (kept for backward compat) ───────────────────────────────
+    # Legacy flags
     has_sdrf: bool = False
     has_mztab: bool = False
     files_fetch_failed: bool = False
@@ -236,7 +235,7 @@ def compute_audit(
         has_sdrf = False
         has_mztab = False
     else:
-        # Build flat Series from nested CvParam structures — one pass only.
+        # Build flat Series from nested CvParam structures: one pass only.
         file_names = pd.Series(
             [f.get("fileName") or "" for f in files_data],
             dtype="object",
@@ -260,7 +259,7 @@ def compute_audit(
         has_open_spectra = FileClass.PEAK in file_classes
         has_tabular_quant = bool(file_classes & {FileClass.QUANT_MATRIX, FileClass.ID_LIST})
 
-        # Submission-type-aware result gate (Audit Issue 3):
+        # Submission-type-aware result gate:
         # PARTIAL submissions may lack PSI-standard result files; a quant table
         # (QUANT_MATRIX or ID_LIST) is accepted as evidence of processed results.
         if submission_type.upper() == "PARTIAL":
@@ -271,7 +270,7 @@ def compute_audit(
             result_gate = frozenset({FileClass.RESULT, FileClass.SEARCH})
         has_result_files = bool(file_classes & result_gate)
 
-        # Two-stage SDRF detection — see module-level constants for rationale.
+        # Two-stage SDRF detection.
         # Primary: authoritative EXPERIMENTAL DESIGN category + "sdrf" in filename.
         experimental_design_mask = file_cats.str.casefold() == _SDRF_CATEGORY
         primary_sdrf = bool(
@@ -289,14 +288,14 @@ def compute_audit(
     # ------------------------------------------------------------------
     # 6.  Tier derivation  (mirrors SQL CASE in plan/database_schema.md)
     # ------------------------------------------------------------------
-    # 7-tier FAIR ladder (C07).  Each tier adds one more requirement:
-    #   None     — missing basic metadata (title / organism / instrument)
-    #   Raw      — has metadata but no processed result files at all
-    #   Bronze   — has result files but none are PSI-standard (mzIdentML / mzTab)
-    #   Silver   — PSI results present but no SDRF experimental-design file
-    #   Gold     — SDRF present but missing open spectra OR organism part annotation
-    #   Platinum — open spectra + organism part present but no linked publication
-    #   Diamond  — all FAIR criteria met
+    # 7-tier FAIR ladder.  Each tier adds one more requirement:
+    #   None     : missing basic metadata (title / organism / instrument)
+    #   Raw      : has metadata but no processed result files at all
+    #   Bronze   : has result files but none are PSI-standard (mzIdentML / mzTab)
+    #   Silver   : PSI results present but no SDRF experimental-design file
+    #   Gold     : SDRF present but missing open spectra OR organism part annotation
+    #   Platinum : open spectra + organism part present but no linked publication
+    #   Diamond  : all FAIR criteria met
     if not has_title or not has_organism or not has_instrument:
         tier = "None"
     elif not has_result_files:
@@ -313,7 +312,7 @@ def compute_audit(
         tier = "Diamond"
 
     # ------------------------------------------------------------------
-    # 7.  Quant-tier derivation  (secondary scoring axis; see C09)
+    # 7.  Quant-tier derivation (secondary scoring axis)
     # ------------------------------------------------------------------
     if not has_psi_results and not has_tabular_quant:
         quant_tier = "No Quant"

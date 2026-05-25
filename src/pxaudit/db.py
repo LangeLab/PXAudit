@@ -7,9 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 
-# ---------------------------------------------------------------------------
-# Column ordering — canonical, matches CREATE TABLE statement order
-# ---------------------------------------------------------------------------
+# Column order matches CREATE TABLE statement order.
 
 _STUDY_COLS = (
     "accession",
@@ -18,7 +16,7 @@ _STUDY_COLS = (
     "organism_id",
     "instrument",
     "submission_year",
-    "submission_type",  # «new» "COMPLETE" or "PARTIAL" from PRIDE API
+    "submission_type",  # "COMPLETE" or "PARTIAL" from PRIDE API
     "keywords",
     "repository",
     "fetched_at",
@@ -41,14 +39,12 @@ _AUDIT_COLS = (
     "has_organism_id",
     "has_instrument",
     "has_result_files",
-    # ── New v2 flags ──────────────────────────────────────────────────────────────────────
     "has_psi_results",  # FileClass.RESULT found (mzIdentML / mzTab)
     "has_open_spectra",  # FileClass.PEAK found
     "has_organism_part",  # len(project["organismParts"]) > 0
     "has_publication",  # pubmedID present, non-null, and != 0
     "has_tabular_quant",  # FileClass.QUANT_MATRIX or ID_LIST found
     "has_quant_metadata",  # quantificationMethods[] non-empty
-    # ─────────────────────────────────────────────────────────────────────────────────────
     "has_sdrf",
     "has_mztab",
     "files_fetch_failed",
@@ -98,7 +94,7 @@ CREATE TABLE IF NOT EXISTS audit (
     tier                TEXT,
     has_title           INTEGER,
     has_organism        INTEGER,
-    has_organism_id     INTEGER,  -- tracked; not tier-gating (reserved for Phase 2)
+    has_organism_id     INTEGER,  -- tracked for analysis; not used in tier gating
     has_instrument      INTEGER,
     has_result_files    INTEGER,
     has_psi_results     INTEGER,
@@ -161,8 +157,8 @@ def get_or_create_db(path: str | Path) -> sqlite3.Connection:
     The connection is opened with ``isolation_level=None`` (autocommit) so that
     every insert function manages its own ``BEGIN`` / ``COMMIT`` explicitly.
 
-    ``migrate_audit_v2`` is called after schema creation so that databases
-    created by a pre-v0.1.0 version are transparently upgraded on first use.
+    ``migrate_audit_v2`` is called after schema creation to upgrade
+    databases from an earlier schema version on first use.
     """
     conn = sqlite3.connect(str(Path(path)), isolation_level=None)
     conn.execute("PRAGMA foreign_keys = ON")
@@ -231,12 +227,11 @@ def insert_audit(conn: sqlite3.Connection, data: dict) -> None:
 
 
 def migrate_audit_v2(conn: sqlite3.Connection) -> None:
-    """Upgrade an existing database to the v2 schema in-place.
+    """Upgrade a database from schema v1 to v2 in-place.
 
-    Adds the six new boolean flag columns to the ``audit`` table and the
-    ``submission_type`` column to the ``study`` table if they are not already
-    present.  Safe to run multiple times (idempotent: uses ``PRAGMA table_info``
-    to guard each ``ALTER TABLE ADD COLUMN``).
+    Adds boolean flag columns to the ``audit`` table and ``submission_type``
+    to the ``study`` table if they are not already present.  Idempotent:
+    uses ``PRAGMA table_info`` to guard each ``ALTER TABLE ADD COLUMN``.
     """
     conn.execute("PRAGMA foreign_keys = ON")
     existing_audit = {row[1] for row in conn.execute("PRAGMA table_info(audit)")}

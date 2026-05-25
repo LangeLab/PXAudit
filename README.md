@@ -8,7 +8,8 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.1.0-8B5CF6?style=flat-square" alt="v0.1.0">
+  <img src="https://img.shields.io/badge/version-0.2.0-8B5CF6?style=flat-square" alt="v0.2.0">
+  <img src="https://img.shields.io/github/actions/workflow/status/LangeLab/PXAudit/ci.yml?branch=main&style=flat-square&logo=github" alt="CI">
   <img src="https://img.shields.io/badge/python-3.12+-2D7D46?style=flat-square&logo=python&logoColor=white" alt="Python 3.12+">
   <img src="https://img.shields.io/badge/license-MIT-4B9D6E?style=flat-square" alt="MIT">
   <img src="https://img.shields.io/badge/coverage-100%25-22C55E?style=flat-square" alt="100% branch coverage">
@@ -193,7 +194,7 @@ uv sync
 uv run pre-commit install
 ```
 
-Pre-commit runs `ruff` (lint + format, line-length 100) on every commit.
+Pre-commit runs `ruff` (lint + format, line-length 100) and `mypy` (strict mode) on every commit.
 
 ### Project Layout
 
@@ -240,10 +241,9 @@ This is by design, no assertion of quality is made for data that cannot be inspe
 
 ## Roadmap
 
-v0.1.0 covers single-study auditing. Planned work beyond this release:
+v0.2.0 covers single-study auditing, batch processing, CI/CD, and type checking. Planned work beyond this release:
 
-- **Bulk audit**: `pxaudit bulk-audit --input accessions.txt` with rate-limited batch processing and TSV/JSON export alongside the SQLite database.
-- **File manifest**: extend `study_files` with richer provenance (download URLs, file sizes already captured; planned: per-file hash, last-seen timestamps).
+- **File manifest**: extend `study_files` with per-file checksums, `fetched_at` timestamps, `manifest` command, stale fallback.
 - **Reporting**: `pxaudit report --db results.db` generating tier distributions, SDRF adoption trends, metadata completeness over time, and an exemplar shortlist as a Quarto-rendered HTML report.
 - **Multi-repository**: plugin adapters for MassIVE, jPOST, and iProX so non-PRIDE accessions are audited rather than marked Unverifiable.
 

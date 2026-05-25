@@ -4,20 +4,20 @@ Coverage target: 100% branch coverage on file_classifier.py.
 
 Test organisation
 -----------------
-1.  strip_compression — single, multi-layer, tgz alias, no-op
-2.  Extension registry — vendor RAW, PEAK, PSI RESULT, SEARCH, FASTA
-3.  Compressed extensions — strip then classify
-4.  Compound extensions — .pep.xml, .prot.xml, .wiff.scan, .sky.zip, .mztab-m
-5.  Exact-stem map — MaxQuant QUANT_MATRIX and ID_LIST
-6.  SDRF detection — canonical, compressed, imposters
-7.  PSI basename patterns — mzTab name variants, PRIDE XML
-8.  Quant-matrix patterns — DIA-NN, FragPipe, Spectronaut
-9.  ID-list patterns — psm.tsv, combined_ion.tsv
-10. PRIDE category fallback — all mapped categories, unmapped
-11. FileClass.OTHER — unknown extension, no fallback
+1.  strip_compression : single, multi-layer, tgz alias, no-op
+2.  Extension registry : vendor RAW, PEAK, PSI RESULT, SEARCH, FASTA
+3.  Compressed extensions : strip then classify
+4.  Compound extensions : .pep.xml, .prot.xml, .wiff.scan, .sky.zip, .mztab-m
+5.  Exact-stem map : MaxQuant QUANT_MATRIX and ID_LIST
+6.  SDRF detection : canonical, compressed, imposters
+7.  PSI basename patterns : mzTab name variants, PRIDE XML
+8.  Quant-matrix patterns : DIA-NN, FragPipe, Spectronaut
+9.  ID-list patterns : psm.tsv, combined_ion.tsv
+10. PRIDE category fallback : all mapped categories, unmapped
+11. FileClass.OTHER : unknown extension, no fallback
 12. Custom extension / basename overrides
-13. _extract_ext static method — compound and single-part
-14. FileClass enum — StrEnum membership and string equality
+13. _extract_ext static method : compound and single-part
+14. FileClass enum : StrEnum membership and string equality
 """
 
 from __future__ import annotations
@@ -55,10 +55,10 @@ clf = FileTypeClassifier()
         ("archive.tar.bz2", "archive"),
         ("archive.tar.xz", "archive"),
         ("archive.tgz", "archive"),
-        ("data.txt.zip.gz", "data.txt"),  # multi-layer — critical while-loop test
+        ("data.txt.zip.gz", "data.txt"),  # multi-layer : critical while-loop test
         ("data.raw.zip.gz", "data.raw"),  # multi-layer RAW
-        ("results.mzid", "results.mzid"),  # no compression — no-op
-        ("README", "README"),  # no extension — no-op
+        ("results.mzid", "results.mzid"),  # no compression : no-op
+        ("README", "README"),  # no extension : no-op
     ],
     ids=[
         "gz",
@@ -87,15 +87,15 @@ def test_compression_exts_ordered_longest_first() -> None:
     """Longest entries must come before their sub-strings to avoid premature matching."""
     for i, ext in enumerate(_COMPRESSION_EXTS):
         for later in _COMPRESSION_EXTS[i + 1 :]:
-            # A later (shorter) entry must NOT end with an earlier (longer) entry —
+            # A later (shorter) entry must NOT end with an earlier (longer) entry :
             # that would mean the shorter one comes first and would match prematurely.
             assert not later.endswith(ext), (
-                f"'{ext}' appears before '{later}' but '{later}' ends with '{ext}' — wrong order"
+                f"'{ext}' appears before '{later}' but '{later}' ends with '{ext}' : wrong order"
             )
 
 
 # ---------------------------------------------------------------------------
-# 2. Extension registry — basic classify calls
+# 2. Extension registry : basic classify calls
 # ---------------------------------------------------------------------------
 
 
@@ -172,7 +172,7 @@ def test_extension_registry_is_case_insensitive() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 3. Compressed extensions — strip then classify
+# 3. Compressed extensions : strip then classify
 # ---------------------------------------------------------------------------
 
 
@@ -205,7 +205,7 @@ def test_compressed_extensions(filename: str, expected: FileClass) -> None:
         ("results.pep.xml", FileClass.SEARCH),  # TPP peptide
         ("results.prot.xml", FileClass.SEARCH),  # TPP protein
         ("sample.wiff.scan", FileClass.RAW),  # Sciex scan index
-        ("method.sky.zip", FileClass.SEARCH),  # Skyline — .zip is format, not compression
+        ("method.sky.zip", FileClass.SEARCH),  # Skyline : .zip is format, not compression
         ("res.mztab-m", FileClass.RESULT),  # mzTab-M (metabolomics)
     ],
 )
@@ -220,7 +220,7 @@ def test_sky_zip_not_stripped_as_compression() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 5. Exact-stem map — MaxQuant
+# 5. Exact-stem map : MaxQuant
 # ---------------------------------------------------------------------------
 
 
@@ -245,7 +245,7 @@ def test_exact_stem_map_is_case_insensitive() -> None:
 
 
 def test_peptides_fasta_uses_extension_not_stem() -> None:
-    """'peptides.fasta' — extension registry (FASTA) must win over stem map (QUANT_MATRIX)."""
+    """'peptides.fasta' : extension registry (FASTA) must win over stem map (QUANT_MATRIX)."""
     assert clf.classify("peptides.fasta") == FileClass.FASTA
 
 
@@ -289,7 +289,7 @@ def test_sdrf_imposter_non_tabular(filename: str) -> None:
 
 
 def test_sdrf_substring_tabular_accepted() -> None:
-    """'sdrfile.tsv' contains 'sdrf' and ends with .tsv — accepted by design."""
+    """'sdrfile.tsv' contains 'sdrf' and ends with .tsv : accepted by design."""
     # The current guard is endswith tabular, not a word-boundary check.
     # This documents the intentional behaviour rather than asserting rejection.
     result = clf.classify("sdrfile.tsv")
@@ -395,7 +395,7 @@ def test_pride_category_fallback_case_insensitive() -> None:
 
 
 def test_pride_category_other_not_mapped() -> None:
-    """PRIDE's 'OTHER' category must not be mapped — fall through to FileClass.OTHER."""
+    """PRIDE's 'OTHER' category must not be mapped : fall through to FileClass.OTHER."""
     assert clf.classify("unknown.bin", pride_category="OTHER") == FileClass.OTHER
 
 
@@ -404,7 +404,7 @@ def test_pride_category_unknown_not_mapped() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 11. FileClass.OTHER — unknown, no fallback
+# 11. FileClass.OTHER : unknown, no fallback
 # ---------------------------------------------------------------------------
 
 
@@ -415,7 +415,7 @@ def test_pride_category_unknown_not_mapped() -> None:
         "README",
         "workflow.xml",  # .xml intentionally absent from ext registry
         "parameters.xml",
-        "archive.tar.gz",  # stripped to bare 'archive' — no extension
+        "archive.tar.gz",  # stripped to bare 'archive' : no extension
     ],
 )
 def test_other_for_unknown_files(filename: str) -> None:
@@ -478,7 +478,7 @@ def test_extract_ext(lower_base: str, expected: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 14. FileClass enum — StrEnum behaviour
+# 14. FileClass enum : StrEnum behaviour
 # ---------------------------------------------------------------------------
 
 

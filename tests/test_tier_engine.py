@@ -7,13 +7,13 @@ Test organisation
 1.  Invalid accession → ValueError
 2.  Non-PXD prefix routing → Unverifiable
 3.  Tier boundary (parametrized): Gold / Silver / Bronze×2 / None×3
-4.  files_fetch_failed override — caps tier at Bronze
-5.  SDRF pattern — case sensitivity and token-boundary checks
-6.  mzTab extension — matches .mztab variants, rejects .mztabdata
-7.  fileCategory canonical matching — RESULT/SEARCH recognised, RESULTS not
-8.  Null / empty project-data inputs — graceful False flags
-9.  Empty files_data list — all file flags False
-10. AuditResult structure — fields match _AUDIT_COLS; tier_logic_version correct
+4.  files_fetch_failed override : caps tier at Bronze
+5.  SDRF pattern : case sensitivity and token-boundary checks
+6.  mzTab extension : matches .mztab variants, rejects .mztabdata
+7.  fileCategory canonical matching : RESULT/SEARCH recognised, RESULTS not
+8.  Null / empty project-data inputs : graceful False flags
+9.  Empty files_data list : all file flags False
+10. AuditResult structure : fields match _AUDIT_COLS; tier_logic_version correct
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ from pxaudit.tier_engine import (
 )
 
 # ---------------------------------------------------------------------------
-# Helpers — build minimal synthetic API payloads
+# Helpers : build minimal synthetic API payloads
 # ---------------------------------------------------------------------------
 
 
@@ -89,7 +89,7 @@ def _sdrf_files() -> list[dict]:
 
 
 def _gold_files() -> list[dict]:
-    """Result + SDRF + mzTab — satisfies all file-based flags for Gold."""
+    """Result + SDRF + mzTab : satisfies all file-based flags for Gold."""
     return [
         _file("results.mzid", "RESULT"),
         _file("sdrf.tsv", "OTHER"),
@@ -153,8 +153,8 @@ def test_non_pxd_all_flags_false() -> None:
             _result_files(),
             "Silver",
         ),
-        # Silver: organism_id missing — 7-tier dropped organism_id from gate;
-        # result files present → Bronze (no PSI)? No — mzid IS PSI → Silver
+        # Silver: organism_id missing : 7-tier dropped organism_id from gate;
+        # result files present → Bronze (no PSI)? No : mzid IS PSI → Silver
         (
             _project(organism_id=None),
             _result_files(),
@@ -224,12 +224,12 @@ def test_none_tier_empty_string_title() -> None:
     assert r.tier == "None"
 
 
-# 3b. New 7-tier levels — Platinum and Diamond
+# 3b. New 7-tier levels : Platinum and Diamond
 # ---------------------------------------------------------------------------
 
 
 def _platinum_project() -> dict:
-    """Project with organism_part and no publication — enables Platinum/Diamond tests."""
+    """Project with organism_part and no publication : enables Platinum/Diamond tests."""
     return {**_project(), "organismParts": [{"name": "brain"}], "references": []}
 
 
@@ -321,7 +321,7 @@ def test_files_fetch_failed_false_with_empty_files_still_raw() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 5. SDRF pattern — token boundaries and case sensitivity
+# 5. SDRF pattern : token boundaries and case sensitivity
 # ---------------------------------------------------------------------------
 
 
@@ -337,7 +337,7 @@ def test_files_fetch_failed_false_with_empty_files_still_raw() -> None:
         ("sdrfdata.tsv", False),  # same
         ("not_related.tsv", False),
         ("sdrf_instructions.pdf", False),  # tabular-ext guard: .pdf must NOT match
-        ("PXD073444.sdrf.tsv.gz", True),  # compressed SDRF — .tsv.gz suffix allowed
+        ("PXD073444.sdrf.tsv.gz", True),  # compressed SDRF : .tsv.gz suffix allowed
     ],
     ids=[
         "lowercase",
@@ -362,7 +362,7 @@ def test_sdrf_pattern_matching(file_name: str, expected: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 5b. SDRF primary path — EXPERIMENTAL DESIGN category
+# 5b. SDRF primary path : EXPERIMENTAL DESIGN category
 # ---------------------------------------------------------------------------
 
 
@@ -405,7 +405,7 @@ def test_sdrf_primary_path(file_name: str, category: str, expected: bool) -> Non
         ("results.MZTAB", True),
         ("results.mzTabData", False),  # must NOT match
         ("results.mztabdata", False),  # same
-        ("results.mztab.gz", False),  # compressed — not a bare .mztab
+        ("results.mztab.gz", False),  # compressed : not a bare .mztab
         ("results.mzid", False),
     ],
     ids=["mzTab", "mztab", "MZTAB", "mzTabData", "mztabdata", "mztab-gz", "mzid"],
@@ -520,7 +520,7 @@ def test_empty_instruments_list_gives_has_instrument_false() -> None:
 
 
 def test_none_project_data_handled_as_empty_dict() -> None:
-    """Caller passes None for project_data — must not raise, all flags False."""
+    """Caller passes None for project_data : must not raise, all flags False."""
     r = compute_audit("PXD000001", None, [])  # type: ignore[arg-type]
     assert r.tier == "None"
     assert r.has_title is False
@@ -540,7 +540,7 @@ def test_empty_files_list_gives_all_file_flags_false() -> None:
 
 
 def test_file_with_none_file_name_handled_gracefully() -> None:
-    """A file dict with fileName=None must not raise — treated as empty string."""
+    """A file dict with fileName=None must not raise : treated as empty string."""
     files = [{"fileName": None, "fileCategory": {"value": "RESULT"}, "fileSizeBytes": 0}]
     r = compute_audit("PXD000001", _project(), files)
     assert r.has_result_files is True  # category is still RESULT
@@ -623,9 +623,9 @@ def test_has_quant_metadata_true_when_quant_methods_non_empty() -> None:
     "pubmed_value, expected",
     [
         (12345, True),  # valid integer pubmedID
-        (0, False),  # zero — PRIDE sentinel for unpublished
-        (None, False),  # None — older API responses; safe_pubmed_id handles TypeError
-        ("", False),  # empty string — safe_pubmed_id handles ValueError
+        (0, False),  # zero : PRIDE sentinel for unpublished
+        (None, False),  # None : older API responses; safe_pubmed_id handles TypeError
+        ("", False),  # empty string : safe_pubmed_id handles ValueError
     ],
     ids=["valid-int", "zero", "none", "empty-str"],
 )
@@ -671,14 +671,14 @@ def test_has_open_spectra_false_for_raw_only() -> None:
 
 
 def test_has_tabular_quant_true_for_quant_matrix() -> None:
-    # proteinGroups.txt — MaxQuant fixed stem → FileClass.QUANT_MATRIX
+    # proteinGroups.txt : MaxQuant fixed stem → FileClass.QUANT_MATRIX
     files = [_file("proteinGroups.txt", "OTHER"), _file("results.mzid", "RESULT")]
     r = compute_audit("PXD000001", _project(), files)
     assert r.has_tabular_quant is True
 
 
 def test_has_tabular_quant_true_for_id_list() -> None:
-    # evidence.txt — MaxQuant fixed stem → FileClass.ID_LIST
+    # evidence.txt : MaxQuant fixed stem → FileClass.ID_LIST
     files = [_file("evidence.txt", "OTHER"), _file("results.mzid", "RESULT")]
     r = compute_audit("PXD000001", _project(), files)
     assert r.has_tabular_quant is True

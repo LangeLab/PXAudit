@@ -14,6 +14,7 @@ Each test asserts the *positive* and *negative* case where applicable:
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from unittest.mock import Mock, call, patch
 
 import pytest
@@ -55,7 +56,12 @@ def _error_response(status_code: int) -> Mock:
     return resp
 
 
-def _setup_session(MockSession: Mock, *, responses=None, side_effect=None) -> Mock:
+def _setup_session(
+    MockSession: type[Mock],
+    *,
+    responses: Sequence[Mock] | None = None,
+    side_effect: Exception | None = None,
+) -> Mock:
     """
     Wire up a MockSession instance so headers is a real dict (for introspection)
     and .get() either returns responses in sequence or raises side_effect.
@@ -73,7 +79,7 @@ def _setup_session(MockSession: Mock, *, responses=None, side_effect=None) -> Mo
 
 
 # ---------------------------------------------------------------------------
-# 1. URL routing — confirms the real PRIDE v3 API paths are used
+# 1. URL routing : confirms the real PRIDE v3 API paths are used
 # ---------------------------------------------------------------------------
 
 
@@ -127,7 +133,7 @@ def test_fetch_files_200_returns_list(mock_time: Mock, MockSession: Mock) -> Non
 
 
 # ---------------------------------------------------------------------------
-# 3. HTTP 404 — raises immediately, no retry
+# 3. HTTP 404 : raises immediately, no retry
 # ---------------------------------------------------------------------------
 
 
@@ -137,7 +143,7 @@ def test_404_raises_not_found_error(mock_time: Mock, MockSession: Mock) -> None:
     _setup_session(MockSession, responses=[_error_response(404)])
     with pytest.raises(PrideNotFoundError):
         fetch_project("PXD000001", delay=0)
-    # PrideNotFoundError IS-A PrideAPIError — catches must work via either type
+    # PrideNotFoundError IS-A PrideAPIError : catches must work via either type
     with pytest.raises(PrideAPIError):
         fetch_project("PXD000001", delay=0)
 
@@ -152,32 +158,34 @@ def test_404_call_count_is_one_no_retry(mock_time: Mock, MockSession: Mock) -> N
 
 
 # ---------------------------------------------------------------------------
-# 4. HTTP 429 — raises immediately, no retry
+# 4. HTTP 429 : retries with backoff, then raises PrideRateLimitError
 # ---------------------------------------------------------------------------
 
 
 @patch("pxaudit.pride_client.requests.Session")
 @patch("pxaudit.pride_client.time")
 def test_429_raises_rate_limit_error(mock_time: Mock, MockSession: Mock) -> None:
-    _setup_session(MockSession, responses=[_error_response(429)])
+    _setup_session(MockSession, responses=[_error_response(429)] * (_MAX_RETRIES + 1))
     with pytest.raises(PrideRateLimitError):
         fetch_project("PXD000001", delay=0)
-    # PrideRateLimitError IS-A PrideAPIError — same IS-A check as for 404
+    # PrideRateLimitError IS-A PrideAPIError : same IS-A check as for 404
+    _setup_session(MockSession, responses=[_error_response(429)] * (_MAX_RETRIES + 1))
     with pytest.raises(PrideAPIError):
         fetch_project("PXD000001", delay=0)
 
 
 @patch("pxaudit.pride_client.requests.Session")
 @patch("pxaudit.pride_client.time")
-def test_429_call_count_is_one_no_retry(mock_time: Mock, MockSession: Mock) -> None:
-    inst = _setup_session(MockSession, responses=[_error_response(429)])
+def test_429_retry_count_is_three(mock_time: Mock, MockSession: Mock) -> None:
+    """429 is retried: 1 initial attempt + 2 retries = 3 total GET calls."""
+    inst = _setup_session(MockSession, responses=[_error_response(429)] * (_MAX_RETRIES + 1))
     with pytest.raises(PrideRateLimitError):
         fetch_project("PXD000001", delay=0)
-    assert inst.get.call_count == 1, "429 must not trigger any retries"
+    assert inst.get.call_count == _MAX_RETRIES + 1
 
 
 # ---------------------------------------------------------------------------
-# 5. HTTP 500 — retries, then raises PrideAPIError
+# 5. HTTP 500 : retries, then raises PrideAPIError
 # ---------------------------------------------------------------------------
 
 
@@ -216,7 +224,7 @@ def test_500_then_200_succeeds_without_error(mock_time: Mock, MockSession: Mock)
 
 
 # ---------------------------------------------------------------------------
-# 6. Timeout — retries, then raises PrideAPIError
+# 6. Timeout : retries, then raises PrideAPIError
 # ---------------------------------------------------------------------------
 
 
@@ -251,7 +259,7 @@ def test_timeout_retry_count_is_three(mock_time: Mock, MockSession: Mock) -> Non
 def test_connect_timeout_and_read_timeout_both_retry(
     mock_time: Mock, MockSession: Mock, exc_cls: type
 ) -> None:
-    """Both ConnectTimeout and ReadTimeout are subclasses of Timeout — both retry."""
+    """Both ConnectTimeout and ReadTimeout are subclasses of Timeout : both retry."""
     inst = _setup_session(MockSession, side_effect=exc_cls())
     with pytest.raises(PrideAPIError):
         fetch_project("PXD000001", delay=0)
@@ -259,7 +267,7 @@ def test_connect_timeout_and_read_timeout_both_retry(
 
 
 # ---------------------------------------------------------------------------
-# 7. Sleep / backoff — proves delay and exponential backoff are called correctly
+# 7. Sleep / backoff : proves delay and exponential backoff are called correctly
 # ---------------------------------------------------------------------------
 
 
