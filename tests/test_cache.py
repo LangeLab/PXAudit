@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -160,6 +161,7 @@ def test_corrupted_json_logs_warning(tmp_path: Path, caplog: pytest.LogCaptureFi
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="chmod does not prevent writes on Windows")
 def test_write_permission_error_raises(tmp_path: Path) -> None:
     """write_cache must propagate OSError when the cache dir is not writable."""
     cache_dir = tmp_path / "locked"
@@ -236,8 +238,8 @@ def test_ttl_default_constant_is_seven_days() -> None:
 
 
 @patch("time.time")
-def test_ttl_boundary_exactly_at_max_age_is_fresh(mock_time: MagicMock, tmp_path: Path) -> None:
-    """age == max_age is served (code uses strict >, not >=).
+def test_ttl_boundary_exactly_at_max_age_is_stale(mock_time: MagicMock, tmp_path: Path) -> None:
+    """age == max_age is stale (code uses >=, not >).
 
     ``time.time`` is patched to return a fixed timestamp so the age
     calculation in ``read_cache`` is deterministic.
@@ -248,7 +250,7 @@ def test_ttl_boundary_exactly_at_max_age_is_fresh(mock_time: MagicMock, tmp_path
     os.utime(path, (fixed_mtime, fixed_mtime))
     mock_time.return_value = fixed_mtime + 3600  # age == max_age exactly
     result = read_cache("PXD000001", "project", cache_dir=tmp_path, max_age=3600)
-    assert result == {"key": "value"}
+    assert result is None
 
 
 @patch("time.time")
@@ -328,6 +330,7 @@ def test_atomic_write_interrupted_tmp_does_not_harm_final(tmp_path: Path) -> Non
     assert result == payload
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="chmod does not prevent writes on Windows")
 def test_atomic_write_oserror_on_tmp_propagates(tmp_path: Path) -> None:
     """If writing the .tmp file fails, the error must propagate (no .json created)."""
     cache_dir = tmp_path / "locked"

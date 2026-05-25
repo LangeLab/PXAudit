@@ -91,7 +91,7 @@ def read_cache(
     if max_age is not None:
         try:
             age = time.time() - path.stat().st_mtime
-            if age > max_age:
+            if age >= max_age:
                 _log.info(
                     "Cache file %s is %.1f s old (TTL=%.0f s); stale, will re-fetch",
                     path,
