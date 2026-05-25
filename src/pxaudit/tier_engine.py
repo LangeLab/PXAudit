@@ -345,3 +345,9 @@ def compute_audit(
         is_unverifiable=False,
         quant_tier=quant_tier,
     )
+
+
+__all__ = [
+    "AuditResult",
+    "compute_audit",
+]

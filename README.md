@@ -1,4 +1,4 @@
-<!-- markdownlint-disable MD033 MD036 MD041 -->
+<!-- markdownlint-disable MD010 MD033 MD036 MD041 -->
 <p align="center">
   <h1 align="center">PXAudit</h1>
 </p>
@@ -8,21 +8,21 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.2.0-8B5CF6?style=flat-square" alt="v0.2.0">
-  <img src="https://img.shields.io/github/actions/workflow/status/LangeLab/PXAudit/ci.yml?branch=main&style=flat-square&logo=github" alt="CI">
-  <img src="https://img.shields.io/badge/python-3.12+-2D7D46?style=flat-square&logo=python&logoColor=white" alt="Python 3.12+">
-  <img src="https://img.shields.io/badge/license-MIT-4B9D6E?style=flat-square" alt="MIT">
+  <img src="https://img.shields.io/badge/python-3.12--3.14-2D7D46?style=flat-square&logo=python&logoColor=white" alt="Python 3.12-3.14">
+  <img src="https://img.shields.io/badge/version-0.3.0-8B5CF6?style=flat-square" alt="v0.3.0">
+  <img src="https://img.shields.io/badge/status-beta-C17D10?style=flat-square" alt="Beta">
+  <img src="https://img.shields.io/github/actions/workflow/status/LangeLab/PXAudit/ci.yml?branch=main&style=flat-square&logo=github&label=CI" alt="CI">
   <img src="https://img.shields.io/badge/coverage-100%25-22C55E?style=flat-square" alt="100% branch coverage">
-  <img src="https://img.shields.io/badge/PRIDE_API-v3-0066CC?style=flat-square" alt="PRIDE API v3">
-  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/changelog-Keep%20a%20Changelog-E05D44?style=flat-square" alt="Changelog"></a>
+  <img src="https://img.shields.io/badge/license-MIT-4B9D6E?style=flat-square" alt="MIT">
 </p>
 
-PXAudit fetches a [PRIDE](https://www.ebi.ac.uk/pride/) dataset's project metadata and file list, classifies every file with a deterministic `FileTypeClassifier`, then assigns two orthogonal quality scores:
+<p align="center">
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/changelog-CHANGELOG-E05D44?style=flat-square" alt="Changelog"></a>
+  <a href="CITATION.cff"><img src="https://img.shields.io/badge/cite-CITATION.cff-0066CC?style=flat-square" alt="Citation"></a>
+  <!-- <a href=""><img src="https://img.shields.io/badge/docs-Wiki-0F766E?style=flat-square" alt="Docs"></a> -->
+</p>
 
-- **Tier** - a 7-level [FAIR](https://doi.org/10.1038/sdata.2016.18) ladder from _None_ through _Diamond_, based on metadata completeness and open-data practices.
-- **Quant Tier** - a secondary axis for quantification readiness, from _No Quant_ through _Quant-Complete_.
-
-Results are written to a local SQLite database so you can query, compare, and track scores over time.
+PXAudit fetches a [PRIDE](https://www.ebi.ac.uk/pride/) dataset's project metadata and file list, classifies every file with a deterministic `FileTypeClassifier`, then assigns a 7-tier [FAIR](https://doi.org/10.1038/sdata.2016.18) ladder and a quantification-readiness tier. Results are written to a local SQLite database.
 
 ---
 
@@ -34,11 +34,6 @@ Requires Python >= 3.12. [uv](https://docs.astral.sh/uv/) is the recommended run
 git clone https://github.com/LangeLab/PXAudit.git
 cd PXAudit
 uv sync
-```
-
-The `pxaudit` console script is installed automatically:
-
-```bash
 uv run pxaudit --help
 ```
 
@@ -58,31 +53,43 @@ On first run, PXAudit fetches project metadata and file lists from the PRIDE RES
 
 ### `pxaudit check`
 
-```text
-Usage: pxaudit check [OPTIONS] ACCESSION
-
-  Audit a single Proteomics Exchange accession.
-
-Options:
-  --no-cache        Skip cache reads and always fetch fresh data from PRIDE.
-  --db PATH         SQLite output path.  [default: pxaudit_results.db]
-  --help            Show this message and exit.
-```
-
-#### Examples
+Audit a single Proteomics Exchange accession.
 
 ```bash
-# Audit a single dataset
 uv run pxaudit check PXD004683
-
-# Force a fresh fetch (bypasses local cache)
-uv run pxaudit check PXD004683 --no-cache
-
-# Write results to a specific database file
+uv run pxaudit check PXD004683 --no-cache   # bypass local cache
 uv run pxaudit check PXD004683 --db ~/audits/lab.db
 ```
 
-Non-PRIDE accessions (e.g. `MSV`, `JPST`, `IPX`) are accepted without error and assigned the _Unverifiable_ tier -- PXAudit only has access to the PRIDE REST API.
+Options: `--refresh` (re-fetch, update cache), `--no-cache` (skip cache reads),
+`--db PATH` (SQLite output path, default `pxaudit_results.db`).
+
+Non-PRIDE accessions (`MSV`, `JPST`, `IPX`) are accepted without error and
+assigned the _Unverifiable_ tier; PXAudit only has access to the PRIDE API.
+
+### `pxaudit bulk-audit`
+
+Audit multiple accessions in batch.
+
+```bash
+uv run pxaudit bulk-audit --input accessions.txt
+uv run pxaudit bulk-audit --input accessions.txt --format tsv --output results.tsv
+cat accessions.txt | uv run pxaudit bulk-audit --input -
+```
+
+Options: `--format tsv|json|csv`, `--output PATH`, `--delay SECONDS`,
+`--continue-on-error`, `--overwrite`.
+
+### `pxaudit manifest`
+
+List files for an accession from the audit database.
+
+```bash
+uv run pxaudit manifest PXD004683
+uv run pxaudit manifest PXD004683 --format json
+```
+
+Options: `--db PATH` (default `pxaudit_results.db`), `--format tsv|json`.
 
 ---
 
@@ -143,7 +150,7 @@ The quant tier is independent of the FAIR tier and indicates quantification read
 
 ### Validated Results
 
-The following scores were produced by running `pxaudit check` against the live PRIDE REST API on 2026-03-21 and are included in the integration test suite.
+The following scores were last verified against the live PRIDE REST API on 2026-03-21 and are included in the integration test suite.
 
 | Accession | Tier | Quant Tier |
 | --- | --- | --- |
@@ -200,11 +207,11 @@ Pre-commit runs `ruff` (lint + format, line-length 100) and `mypy` (strict mode)
 
 ```text
 src/pxaudit/
-├── cli.py              # click entry points (pxaudit check)
+├── cli.py              # click entry points (check, bulk-audit, manifest)
 ├── tier_engine.py      # 7-tier FAIR ladder + quant tier logic
 ├── file_classifier.py  # deterministic FileClass assignment for every file type
 ├── pride_client.py     # PRIDE REST API v3 client with pagination + retry/backoff
-├── db.py               # SQLite schema + upsert helpers
+├── db.py               # SQLite schema + upsert helpers + migrations
 └── cache.py            # local JSON response cache (~/.pxaudit_cache/)
 ```
 
@@ -223,27 +230,12 @@ uv run pytest --cov=pxaudit --cov-report=term-missing
 uv run pytest -m integration -v --no-cov
 ```
 
-The default run excludes integration tests (`-m 'not integration'` is set in `pyproject.toml`). The test suite has **384 unit tests** with **100% branch coverage** across all modules, plus **10 live integration tests** covering six real PRIDE accessions.
-
----
-
-## Non-PRIDE Accessions
-
-PXAudit only has access to the PRIDE REST API. Accessions from other repositories (MassIVE `MSV`, jPOST `JPST`, iProX `IPX`) are accepted as valid input but receive:
-
-- `tier = "Unverifiable"`
-- `quant_tier = "Unverifiable"`
-- All Boolean flags set to `False`
-
-This is by design, no assertion of quality is made for data that cannot be inspected.
+The default run excludes integration tests (`-m 'not integration'` is set in `pyproject.toml`). The test suite has **455 unit tests** with **100% branch coverage** across all modules, plus **12 live integration tests** covering six real PRIDE accessions.
 
 ---
 
 ## Roadmap
 
-v0.2.0 covers single-study auditing, batch processing, CI/CD, and type checking. Planned work beyond this release:
-
-- **File manifest**: extend `study_files` with per-file checksums, `fetched_at` timestamps, `manifest` command, stale fallback.
 - **Reporting**: `pxaudit report --db results.db` generating tier distributions, SDRF adoption trends, metadata completeness over time, and an exemplar shortlist as a Quarto-rendered HTML report.
 - **Multi-repository**: plugin adapters for MassIVE, jPOST, and iProX so non-PRIDE accessions are audited rather than marked Unverifiable.
 
@@ -260,7 +252,7 @@ If you use PXAudit in your research, please cite it as:
   author   = {Ergin, Enes Kemal},
   title    = {{PXAudit}: A command-line tool for auditing {Proteomics Exchange} study metadata},
   year     = {2026},
-  version  = {0.1.0},
+  version  = {0.3.0},
   url      = {https://github.com/LangeLab/PXAudit},
   license  = {MIT},
 }
@@ -272,4 +264,4 @@ A `CITATION.cff` file is included in the repository root for tools that parse it
 
 ## License
 
-MIT
+MIT License. See [LICENSE](LICENSE) for details.

@@ -78,6 +78,7 @@ def pride_files_gold() -> list[dict]:
             "publicFileLocations": [
                 {"name": "FTP Protocol", "value": "ftp://ftp.ebi.ac.uk/results.mzid"}
             ],
+            "fileChecksum": "abc123def456",
         },
         {
             "fileName": "sdrf.tsv",
@@ -90,13 +91,14 @@ def pride_files_gold() -> list[dict]:
             "fileCategory": {"@type": "CvParam", "value": "RESULT"},
             "fileSizeBytes": 256,
             "publicFileLocations": [],
+            "fileChecksum": "789ghi012jkl",
         },
     ]
 
 
 @pytest.fixture()
 def pride_files_silver() -> list[dict]:
-    """Result file only : no SDRF → Silver tier when metadata is complete."""
+    """Result file only, no SDRF → Silver tier when metadata is complete."""
     return [
         {
             "fileName": "results.mzid",

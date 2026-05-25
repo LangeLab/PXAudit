@@ -1,4 +1,11 @@
-"""Command-line interface for pxaudit."""
+"""Command-line interface for pxaudit.
+
+Commands
+--------
+check        Audit a single Proteomics Exchange accession.
+bulk-audit   Audit multiple Proteomics Exchange accessions in batch.
+manifest     List files for an accession from the audit database.
+"""
 
 from __future__ import annotations
 
@@ -9,16 +16,55 @@ import time
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import NamedTuple
 
 import click
 import pandas as pd
 from tqdm import tqdm
 
 from pxaudit import _PRIDE_PREFIX
-from pxaudit.cache import read_cache, write_cache
+from pxaudit.cache import read_cache, read_cache_stale, write_cache
 from pxaudit.db import get_or_create_db, insert_audit, insert_study, insert_study_files
 from pxaudit.pride_client import PrideAPIError, fetch_files, fetch_project
 from pxaudit.tier_engine import AuditResult, compute_audit
+
+__all__ = [
+    "main",
+    "_audit_single",
+    "_default_export_path",
+    "_export_csv",
+    "_export_json",
+    "_export_tsv",
+    "_extract_files_df",
+    "_extract_study",
+    "_print_result",
+    "_read_accessions",
+    "_result_to_row",
+]
+
+
+class AuditData(NamedTuple):
+    """Return type for :func:`_audit_single`.
+
+    Attributes
+    ----------
+    result:
+        Computed audit result with tier, quant tier, and flags.
+    study:
+        Extracted study metadata dict for the ``study`` table.
+    files_df:
+        Extracted file metadata DataFrame for the ``study_files`` table.
+    files_data:
+        Raw file list from the PRIDE API response.
+    fetched_at:
+        ISO 8601 timestamp of when the data was fetched.
+    """
+
+    result: AuditResult
+    study: dict
+    files_df: pd.DataFrame
+    files_data: list[dict]
+    fetched_at: str
 
 
 @click.group()
@@ -61,6 +107,8 @@ def _extract_files_df(accession: str, files: list[dict]) -> pd.DataFrame:
         "file_extension",
         "ftp_location",
         "file_size",
+        "checksum",
+        "checksum_type",
     ]
     if not files:
         return pd.DataFrame(columns=cols)
@@ -79,6 +127,8 @@ def _extract_files_df(accession: str, files: list[dict]) -> pd.DataFrame:
                 None,
             ),
             "file_size": f.get("fileSizeBytes"),
+            "checksum": f.get("fileChecksum") or None,
+            "checksum_type": "MD5" if f.get("fileChecksum") else None,
         }
         for f in files
     ]
@@ -137,11 +187,14 @@ def _audit_single(
     *,
     no_cache: bool = False,
     refresh: bool = False,
-) -> tuple[AuditResult, dict, pd.DataFrame, list[dict], str]:
+) -> AuditData:
     """Fetch, compute, persist, and return audit data for one accession.
 
-    Returns (result, study, files_df, files_data, fetched_at).
-    Raises ``PrideAPIError`` on project fetch failure.
+    On network failure, serves stale cached data with a warning if available.
+    Only raises ``PrideAPIError`` when no cache exists at all.
+
+    Returns an :class:`AuditData` named tuple with result, study, files_df,
+    files_data, and fetched_at.
     """
     fetched_at = datetime.now(UTC).isoformat()
     project_data: dict | None = None
@@ -155,16 +208,37 @@ def _audit_single(
             files_data = read_cache(accession, "files")  # type: ignore[assignment]
 
         if project_data is None:
-            project_data = fetch_project(accession)
-            write_cache(accession, "project", project_data)
+            try:
+                project_data = fetch_project(accession)
+                write_cache(accession, "project", project_data)
+            except PrideAPIError:
+                stale, age = read_cache_stale(accession, "project")
+                if stale is not None:
+                    project_data = stale  # type: ignore[assignment]
+                    click.echo(
+                        f"Warning: using stale cached project data for {accession} "
+                        f"(cache age: {age:.0f}s). API unreachable.",
+                        err=True,
+                    )
+                else:
+                    raise
 
         if files_data is None:
             try:
                 files_data = fetch_files(accession)
                 write_cache(accession, "files", files_data)
             except PrideAPIError:
-                files_fetch_failed = True
-                files_data = []
+                stale, age = read_cache_stale(accession, "files")
+                if stale is not None:
+                    files_data = stale  # type: ignore[assignment]
+                    click.echo(
+                        f"Warning: using stale cached file list for {accession} "
+                        f"(cache age: {age:.0f}s). API unreachable.",
+                        err=True,
+                    )
+                else:
+                    files_fetch_failed = True
+                    files_data = []
 
     project_data = project_data or {}
     files_data = files_data or []
@@ -183,7 +257,7 @@ def _audit_single(
     finally:
         conn.close()
 
-    return result, study, files_df, files_data, fetched_at
+    return AuditData(result, study, files_df, files_data, fetched_at)
 
 
 # ---------------------------------------------------------------------------
@@ -296,10 +370,8 @@ def check(accession: str, refresh: bool, no_cache: bool, db_path: str) -> None:
         sys.exit(2)
 
     try:
-        result, study, _files_df, files_data, _fetched_at = _audit_single(
-            accession, db_path, no_cache=no_cache, refresh=refresh
-        )
-        _print_result(result, study, len(files_data))
+        data = _audit_single(accession, db_path, no_cache=no_cache, refresh=refresh)
+        _print_result(data.result, data.study, len(data.files_data))
     except PrideAPIError as exc:
         click.echo(f"Error: {exc}", err=True)
         sys.exit(1)
@@ -417,10 +489,8 @@ def bulk_audit(
     try:
         for accession in tqdm(accessions, desc="Auditing", unit="accession"):
             try:
-                result, _study, _files_df, _files_data, _fetched_at = _audit_single(
-                    accession, db_path
-                )
-                results.append(result)
+                data = _audit_single(accession, db_path)
+                results.append(data.result)
             except PrideAPIError as exc:
                 if continue_on_error:
                     click.echo(f"\nWarning: {accession} failed ({exc}). Skipping.", err=True)
@@ -462,3 +532,58 @@ def bulk_audit(
         tier_dist = pd.Series([r.tier for r in results]).value_counts()
         for tier, count in tier_dist.items():
             click.echo(f"    {tier:<12} {count}")
+
+
+@main.command("manifest")
+@click.argument("accession")
+@click.option(
+    "--db",
+    "db_path",
+    default="pxaudit_results.db",
+    show_default=True,
+    help="SQLite database path.",
+)
+@click.option(
+    "--format",
+    "fmt",
+    type=click.Choice(["tsv", "json"], case_sensitive=False),
+    default="tsv",
+    show_default=True,
+    help="Output format.",
+)
+def manifest(accession: str, db_path: str, fmt: str) -> None:
+    """List files for an accession from the audit database."""
+    conn = get_or_create_db(db_path)
+    try:
+        cursor = conn.execute(
+            "SELECT file_name, file_category, file_extension, ftp_location, "
+            "file_size, checksum, checksum_type "
+            "FROM study_files WHERE accession = ? ORDER BY file_name",
+            (accession,),
+        )
+        rows = cursor.fetchall()
+    finally:
+        conn.close()
+
+    if not rows:
+        click.echo(
+            f"No files found for {accession!r}. Run 'pxaudit check {accession}' first.",
+            err=True,
+        )
+        sys.exit(1)
+
+    columns = [
+        "file_name",
+        "file_category",
+        "file_extension",
+        "ftp_location",
+        "file_size",
+        "checksum",
+        "checksum_type",
+    ]
+    df = pd.DataFrame(rows, columns=columns)
+
+    if fmt == "json":
+        click.echo(df.to_json(orient="records", indent=2))
+    else:
+        click.echo(df.to_csv(sep="\t", index=False))

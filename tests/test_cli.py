@@ -61,10 +61,12 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pandas as pd
 import pytest
 from click.testing import CliRunner
 
 from pxaudit.cli import (
+    AuditData,
     _default_export_path,
     _export_csv,
     _export_json,
@@ -175,6 +177,7 @@ def mocks(monkeypatch: pytest.MonkeyPatch) -> dict:
     """
     m: dict = {
         "read_cache": MagicMock(return_value=None),
+        "read_cache_stale": MagicMock(return_value=(None, None)),
         "write_cache": MagicMock(),
         "fetch_project": MagicMock(return_value=_GOLD_PROJECT),
         "fetch_files": MagicMock(return_value=_GOLD_FILES),
@@ -574,6 +577,8 @@ def test_extract_files_df_empty_gives_empty_dataframe() -> None:
         "file_extension",
         "ftp_location",
         "file_size",
+        "checksum",
+        "checksum_type",
     ]
 
 
@@ -592,6 +597,8 @@ def test_extract_files_df_columns_present() -> None:
         "file_extension",
         "ftp_location",
         "file_size",
+        "checksum",
+        "checksum_type",
     }
     assert set(df.columns) == expected
 
@@ -792,7 +799,7 @@ def bulk_mocks(monkeypatch: pytest.MonkeyPatch) -> dict:
             )
         else:
             raise PrideAPIError(f"unknown {accession}")
-        return r, {}, MagicMock(), [], "2026-01-01T00:00:00+00:00"
+        return AuditData(r, {}, MagicMock(), [], "2026-01-01T00:00:00+00:00")
 
     m: dict = {"_audit_single": MagicMock(side_effect=fake_audit)}
     monkeypatch.setattr("pxaudit.cli._audit_single", m["_audit_single"])
@@ -1038,3 +1045,178 @@ def test_bulk_audit_keyboard_interrupt(bulk_mocks: dict, tmp_path: Path) -> None
     )
     assert result.exit_code == 0
     assert "Interrupted" in result.output
+
+
+# ---------------------------------------------------------------------------
+# 15. manifest command tests
+# ---------------------------------------------------------------------------
+
+
+def test_manifest_no_files_errors(tmp_path: Path) -> None:
+    """manifest on an accession with no files prints error and exits 1."""
+    db_path = tmp_path / "empty.db"
+    from pxaudit.db import get_or_create_db
+
+    get_or_create_db(db_path).close()
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["manifest", "PXD000001", "--db", str(db_path)],
+    )
+    assert result.exit_code == 1
+    assert "No files found" in result.output
+
+
+def test_manifest_tsv_output(tmp_path: Path) -> None:
+    """manifest --format tsv prints tab-separated file listing."""
+    from pxaudit.db import get_or_create_db, insert_study, insert_study_files
+
+    db_path = tmp_path / "test.db"
+    conn = get_or_create_db(db_path)
+    try:
+        insert_study(conn, {"accession": "PXD000001", "fetched_at": "now"})
+        df = pd.DataFrame(
+            [
+                {
+                    "accession": "PXD000001",
+                    "file_name": "test.raw",
+                    "file_category": "RAW",
+                    "file_extension": ".raw",
+                    "ftp_location": "ftp://example/test.raw",
+                    "file_size": 1024,
+                    "checksum": "abc123",
+                    "checksum_type": "MD5",
+                }
+            ]
+        )
+        insert_study_files(conn, "PXD000001", df)
+    finally:
+        conn.close()
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["manifest", "PXD000001", "--db", str(db_path), "--format", "tsv"],
+    )
+    assert result.exit_code == 0
+    assert "test.raw" in result.output
+    assert ".raw" in result.output
+    assert "abc123" in result.output
+
+
+def test_manifest_json_output(tmp_path: Path) -> None:
+    """manifest --format json prints JSON file listing."""
+    from pxaudit.db import get_or_create_db, insert_study, insert_study_files
+
+    db_path = tmp_path / "test.db"
+    conn = get_or_create_db(db_path)
+    try:
+        insert_study(conn, {"accession": "PXD000001", "fetched_at": "now"})
+        df = pd.DataFrame(
+            [
+                {
+                    "accession": "PXD000001",
+                    "file_name": "test.raw",
+                    "file_category": "RAW",
+                    "file_extension": ".raw",
+                    "ftp_location": "ftp://example/test.raw",
+                    "file_size": 1024,
+                    "checksum": None,
+                    "checksum_type": None,
+                }
+            ]
+        )
+        insert_study_files(conn, "PXD000001", df)
+    finally:
+        conn.close()
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["manifest", "PXD000001", "--db", str(db_path), "--format", "json"],
+    )
+    assert result.exit_code == 0
+    assert "test.raw" in result.output
+    assert "file_name" in result.output
+
+
+# ---------------------------------------------------------------------------
+# 16. Stale cache fallback tests
+# ---------------------------------------------------------------------------
+
+
+def test_check_stale_cache_fallback_on_project_failure(
+    mocks: dict, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """When project fetch fails, stale cached project data must be served with warning."""
+    monkeypatch.setattr("pxaudit.cli.fetch_project", MagicMock(side_effect=PrideAPIError("down")))
+    monkeypatch.setattr(
+        "pxaudit.cli.read_cache_stale",
+        MagicMock(return_value=({"title": "stale"}, 9999.0)),
+    )
+    runner = CliRunner()
+    result = runner.invoke(main, ["check", "PXD000001"])
+    assert result.exit_code == 0
+    assert "stale cached project data" in result.output
+
+
+def test_check_stale_cache_fallback_on_files_failure(
+    mocks: dict, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """When files fetch fails, stale cached files must be served with warning."""
+    monkeypatch.setattr("pxaudit.cli.fetch_files", MagicMock(side_effect=PrideAPIError("down")))
+    monkeypatch.setattr(
+        "pxaudit.cli.read_cache_stale",
+        MagicMock(return_value=([{"fileName": "stale.mzid"}], 9999.0)),
+    )
+    runner = CliRunner()
+    result = runner.invoke(main, ["check", "PXD000001"])
+    assert result.exit_code == 0
+    assert "stale cached file list" in result.output
+
+
+def test_check_stale_cache_fallback_project_fails_no_cache(
+    mocks: dict, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """When project fetch fails and no stale cache, must exit 1."""
+    monkeypatch.setattr("pxaudit.cli.fetch_project", MagicMock(side_effect=PrideAPIError("down")))
+    monkeypatch.setattr(
+        "pxaudit.cli.read_cache_stale",
+        MagicMock(return_value=(None, None)),
+    )
+    runner = CliRunner()
+    result = runner.invoke(main, ["check", "PXD000001"])
+    assert result.exit_code == 1
+
+
+def test_bulk_audit_stale_cache_fallback_on_project_failure(
+    bulk_mocks: dict, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """bulk-audit with stale fallback must continue with warning."""
+    acc_file = tmp_path / "ids.txt"
+    acc_file.write_text("PXD000001\nPXD000002\n")
+    # Fake audit that fails for PXD000001 but has stale cache.
+    from pxaudit.cli import AuditData, AuditResult
+
+    call_count = [0]
+
+    def fake_audit(acc: str, db: str, **kw: object) -> AuditData:
+        call_count[0] += 1
+        if acc == "PXD000001":
+            raise PrideAPIError("down")
+        return AuditData(
+            AuditResult(accession=acc, tier="Diamond"),
+            {},
+            MagicMock(),
+            [],
+            "ts",
+        )
+
+    monkeypatch.setattr("pxaudit.cli._audit_single", MagicMock(side_effect=fake_audit))
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["bulk-audit", "--input", str(acc_file), "--continue-on-error"],
+    )
+    assert result.exit_code == 0
+    assert "Failed    : 1" in result.output

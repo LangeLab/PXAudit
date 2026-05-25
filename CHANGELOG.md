@@ -10,8 +10,36 @@ All notable changes to PXAudit are documented here. The format follows [Keep a C
 
 ### Planned
 
-- File manifest: extend `study_files` with per-file checksums, `fetched_at` timestamps, `manifest` command.
 - Reporting: `pxaudit report --db` generating tier distributions, trends, and exemplars as Quarto HTML.
+
+---
+
+## [0.3.0] - 2026-05-25 - [Tagged]
+
+Schema provenance, file manifest, cache versioning, stale-cache fallback, public API exports, code-quality refinements, and cross-platform CI.
+
+### Added
+
+- Stale cache fallback: `read_cache_stale()` added; on network failure, stale cached data is served with a warning. Hard error only when no cache exists.
+- `migrate_study_v2()` and `migrate_study_files_v2()`: idempotent migrations for `fetched_at`, `checksum`, and `checksum_type` columns on existing databases.
+- Cache version header (`cache_version: 1`): written on every cache write, validated on read. Legacy format (pre-v0.3.0) still readable. Unknown version triggers re-fetch.
+- Per-file checksum tracking: `fileChecksum` from PRIDE API stored as `checksum` (TEXT) with `checksum_type="MD5"` in `study_files` table.
+- `pxaudit manifest PXD000001` command: lists files for an accession from the audit database with `--format tsv|json`. Errors if accession not yet audited.
+- `AuditData` NamedTuple: typed return value for `_audit_single()`, replacing the positional 5-tuple.
+- `__all__` exports defined in every public module.
+- Expanded module docstrings in `cli.py` and `db.py`.
+- `STYLE.md` in `plan/`: code-writing guide, docstring conventions, comment standards, and emoji policy.
+- CI matrix expanded to Ubuntu, macOS, and Windows across Python 3.12-3.14. `astral-sh/setup-uv` bumped to v6.
+- Integration test for live checksum and `fetched_at` verification against the PRIDE API.
+- 455 unit tests (+27 from v0.2.0), 100% branch coverage.
+
+### Fixed
+
+- HTTP 429 rate-limit now retries with exponential backoff instead of failing immediately.
+- Mixed PRIDE + non-PRIDE input in bulk-audit produces correct Unverifiable rows.
+- `_unwrap_cache()` helper handles versioned, legacy, and corrupt cache formats robustly.
+- Removed all `# Audit fix (Issue N)` and `# Note:` justification comments from source code.
+- Replaced Unicode em-dashes and box-drawing characters with ASCII equivalents across all files.
 
 ---
 
@@ -78,7 +106,7 @@ Cache hardening, bug fixes, and doc improvements.
 
 ---
 
-## [0.1.0] - 2026-03-21
+## [0.1.0] - 2026-03-21 - [Tagged]
 
 First tagged release. Single-study auditing with a 7-tier FAIR ladder and quantification readiness axis.
 
@@ -100,3 +128,7 @@ First tagged release. Single-study auditing with a 7-tier FAIR ladder and quanti
 
 - Cache dir resolved relative to CWD; now uses absolute `~/.pxaudit_cache/` (#2).
 - `fetch_files` fetched only the first 100 files; added pagination loop (#4).
+
+[0.3.0]: https://github.com/LangeLab/PXAudit/releases/tag/v0.3.0
+[0.2.0]: https://github.com/LangeLab/PXAudit/releases/tag/v0.2.0
+[0.1.0]: https://github.com/LangeLab/PXAudit/releases/tag/v0.1.0

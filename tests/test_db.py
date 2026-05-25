@@ -16,6 +16,8 @@ from pxaudit.db import (
     insert_study,
     insert_study_files,
     migrate_audit_v2,
+    migrate_study_files_v2,
+    migrate_study_v2,
 )
 
 # ---------------------------------------------------------------------------
@@ -68,6 +70,8 @@ def _make_files_df(accession: str, n: int = 1) -> pd.DataFrame:
             "file_extension": [".raw"] * n,
             "ftp_location": [f"ftp://pride.ebi.ac.uk/file_{i}.raw" for i in range(n)],
             "file_size": [1024 * (i + 1) for i in range(n)],
+            "checksum": [None] * n,
+            "checksum_type": [None] * n,
         }
     )
 
@@ -204,6 +208,8 @@ def test_insert_study_files_zero_rows(conn: sqlite3.Connection) -> None:
             "file_extension",
             "ftp_location",
             "file_size",
+            "checksum",
+            "checksum_type",
         ]
     )
     insert_study_files(conn, "PXD000001", empty_df)
@@ -251,6 +257,8 @@ def test_insert_study_files_error_rolls_back(conn: sqlite3.Connection) -> None:
                 "file_extension": ".raw",
                 "ftp_location": None,
                 "file_size": None,
+                "checksum": None,
+                "checksum_type": None,
             }
         ]
     )
@@ -273,6 +281,8 @@ def test_insert_study_files_nullable_columns(conn: sqlite3.Connection) -> None:
                 "file_extension": ".raw",
                 "ftp_location": None,
                 "file_size": None,
+                "checksum": None,
+                "checksum_type": None,
             }
         ]
     )
@@ -476,3 +486,172 @@ def test_migrate_audit_v2_no_op_on_v2_schema(conn: sqlite3.Connection) -> None:
     migrate_audit_v2(conn)  # must not raise
     cols = {row[1] for row in conn.execute("PRAGMA table_info(audit)")}
     assert "has_psi_results" in cols
+
+
+# ---------------------------------------------------------------------------
+# migrate_study_v2 tests
+# ---------------------------------------------------------------------------
+
+
+def test_migrate_study_v2_adds_fetched_at(conn: sqlite3.Connection) -> None:
+    """migrate_study_v2 must add fetched_at to a study table that lacks it."""
+    v0_conn = sqlite3.connect(":memory:", isolation_level=None)
+    v0_conn.execute("""
+        CREATE TABLE study (
+            accession TEXT NOT NULL PRIMARY KEY,
+            title TEXT, organism TEXT, instrument TEXT,
+            submission_year INTEGER, keywords TEXT, repository TEXT
+        )
+    """)
+
+    migrate_study_v2(v0_conn)
+
+    cols = {row[1] for row in v0_conn.execute("PRAGMA table_info(study)")}
+    assert "fetched_at" in cols
+    v0_conn.close()
+
+
+def test_migrate_study_v2_is_idempotent(conn: sqlite3.Connection) -> None:
+    """Running migrate_study_v2 twice on the same DB must not raise."""
+    v0_conn = sqlite3.connect(":memory:", isolation_level=None)
+    v0_conn.execute("""
+        CREATE TABLE study (
+            accession TEXT NOT NULL PRIMARY KEY,
+            title TEXT, organism TEXT, instrument TEXT,
+            submission_year INTEGER, keywords TEXT, repository TEXT
+        )
+    """)
+    migrate_study_v2(v0_conn)
+    migrate_study_v2(v0_conn)  # second call: must be a no-op
+    v0_conn.close()
+
+
+def test_migrate_study_v2_no_op_on_current_schema(conn: sqlite3.Connection) -> None:
+    """Running migrate_study_v2 on a freshly-created DB must be a no-op."""
+    migrate_study_v2(conn)  # must not raise
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(study)")}
+    assert "fetched_at" in cols
+
+
+def test_get_or_create_db_calls_migrate_study_v2(tmp_path: Path) -> None:
+    """get_or_create_db must call migrate_study_v2 for legacy databases."""
+    from pxaudit.db import get_or_create_db
+
+    # Create a v0 study table (no fetched_at) in a database file.
+    db_path = tmp_path / "legacy.db"
+    legacy = sqlite3.connect(str(db_path), isolation_level=None)
+    legacy.execute("""
+        CREATE TABLE study (
+            accession TEXT NOT NULL PRIMARY KEY,
+            title TEXT, organism TEXT, instrument TEXT,
+            submission_year INTEGER, keywords TEXT, repository TEXT
+        )
+    """)
+    legacy.execute("""
+        CREATE TABLE audit (
+            accession TEXT NOT NULL PRIMARY KEY, tier TEXT,
+            has_title INTEGER, has_organism INTEGER, has_instrument INTEGER,
+            has_result_files INTEGER, has_sdrf INTEGER, has_mztab INTEGER,
+            files_fetch_failed INTEGER, is_unverifiable INTEGER, tier_logic_version TEXT
+        )
+    """)
+    legacy.close()
+
+    # Re-open via get_or_create_db: migration should add fetched_at.
+    conn = get_or_create_db(db_path)
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(study)")}
+    assert "fetched_at" in cols
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# migrate_study_files_v2 tests
+# ---------------------------------------------------------------------------
+
+
+def test_migrate_study_files_v2_adds_checksum_columns(conn: sqlite3.Connection) -> None:
+    """migrate_study_files_v2 must add checksum and checksum_type to study_files."""
+    v0_conn = sqlite3.connect(":memory:", isolation_level=None)
+    v0_conn.execute("""
+        CREATE TABLE study_files (
+            accession TEXT NOT NULL, file_name TEXT NOT NULL,
+            file_category TEXT, file_extension TEXT,
+            ftp_location TEXT, file_size INTEGER
+        )
+    """)
+
+    migrate_study_files_v2(v0_conn)
+
+    cols = {row[1] for row in v0_conn.execute("PRAGMA table_info(study_files)")}
+    assert "checksum" in cols
+    assert "checksum_type" in cols
+    v0_conn.close()
+
+
+def test_migrate_study_files_v2_is_idempotent(conn: sqlite3.Connection) -> None:
+    """Running migrate_study_files_v2 twice must not raise."""
+    v0_conn = sqlite3.connect(":memory:", isolation_level=None)
+    v0_conn.execute("""
+        CREATE TABLE study_files (
+            accession TEXT NOT NULL, file_name TEXT NOT NULL,
+            file_category TEXT, file_extension TEXT,
+            ftp_location TEXT, file_size INTEGER
+        )
+    """)
+    migrate_study_files_v2(v0_conn)
+    migrate_study_files_v2(v0_conn)
+    v0_conn.close()
+
+
+def test_migrate_study_files_v2_no_op_on_current_schema(conn: sqlite3.Connection) -> None:
+    """Running migrate_study_files_v2 on a freshly-created DB must be a no-op."""
+    migrate_study_files_v2(conn)
+
+
+# ---------------------------------------------------------------------------
+# Checksum extraction tests
+# ---------------------------------------------------------------------------
+
+
+def test_study_files_checksum_stored_when_present(conn: sqlite3.Connection) -> None:
+    """File with fileChecksum in PRIDE response must store checksum and MD5 type."""
+    from pxaudit.cli import _extract_files_df
+
+    files = [
+        {
+            "fileName": "results.mzid",
+            "fileCategory": {"value": "RESULT"},
+            "fileSizeBytes": 100,
+            "publicFileLocations": [],
+            "fileChecksum": "abc123",
+        }
+    ]
+    df = _extract_files_df("PXD000001", files)
+    assert df.loc[0, "checksum"] == "abc123"
+    assert df.loc[0, "checksum_type"] == "MD5"
+
+
+def test_study_files_checksum_null_when_absent(conn: sqlite3.Connection) -> None:
+    """File without fileChecksum must store None for both checksum columns."""
+    from pxaudit.cli import _extract_files_df
+
+    files = [
+        {
+            "fileName": "results.mzid",
+            "fileCategory": {"value": "RESULT"},
+            "fileSizeBytes": 100,
+            "publicFileLocations": [],
+        }
+    ]
+    df = _extract_files_df("PXD000001", files)
+    assert df.loc[0, "checksum"] is None or pd.isna(df.loc[0, "checksum"])
+    assert df.loc[0, "checksum_type"] is None or pd.isna(df.loc[0, "checksum_type"])
+
+
+def test_study_files_df_columns_include_checksum() -> None:
+    """_extract_files_df must return checksum and checksum_type columns."""
+    from pxaudit.cli import _extract_files_df
+
+    df = _extract_files_df("PXD000001", [])
+    assert "checksum" in df.columns
+    assert "checksum_type" in df.columns

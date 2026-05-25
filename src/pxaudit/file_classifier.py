@@ -395,3 +395,10 @@ class FileTypeClassifier:
             if lower_base.endswith(candidate):
                 return candidate
         return "." + lower_base.rsplit(".", 1)[-1] if "." in lower_base else ""
+
+
+__all__ = [
+    "FileClass",
+    "FileTypeClassifier",
+    "strip_compression",
+]

@@ -165,3 +165,12 @@ def fetch_files(accession: str, *, delay: float = 0.5) -> list[dict]:
             break
         page += 1
     return all_files
+
+
+__all__ = [
+    "PrideAPIError",
+    "PrideNotFoundError",
+    "PrideRateLimitError",
+    "fetch_files",
+    "fetch_project",
+]

@@ -335,6 +335,7 @@ def test_pipeline_files_fetch_failed_bronze_in_db(
 ) -> None:
     """Files endpoint failure: audit row must have tier=Raw, files_fetch_failed=1."""
     monkeypatch.setattr("pxaudit.cli.read_cache", MagicMock(return_value=None))
+    monkeypatch.setattr("pxaudit.cli.read_cache_stale", MagicMock(return_value=(None, None)))
     monkeypatch.setattr("pxaudit.cli.write_cache", MagicMock())
     monkeypatch.setattr("pxaudit.cli.fetch_project", MagicMock(return_value=pride_project_gold))
     monkeypatch.setattr("pxaudit.cli.fetch_files", MagicMock(side_effect=PrideAPIError("down")))

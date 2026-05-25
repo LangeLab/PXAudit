@@ -209,3 +209,31 @@ def test_live_bulk_audit(tmp_path: Path) -> None:
         assert row[1] == 1
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Live checksum and fetched_at verification
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_live_checksum_and_fetched_at_present() -> None:
+    """Live PRIDE data must have checksums and fetched_at populated."""
+    from datetime import UTC, datetime
+
+    from pxaudit.cli import _extract_files_df, _extract_study
+
+    project = fetch_project("PXD004683")
+    files = fetch_files("PXD004683")
+
+    # fetched_at should be set by the caller; we just verify extraction works.
+    fetched_at = datetime.now(UTC).isoformat()
+    study = _extract_study("PXD004683", project, fetched_at)
+    assert study["fetched_at"] == fetched_at
+
+    # At least one file should have a checksum from the live API.
+    df = _extract_files_df("PXD004683", files)
+    assert len(df) > 0
+    checksums = df["checksum"].dropna()
+    assert len(checksums) > 0, "Expected at least one file with a checksum from live PRIDE"
+    assert df["checksum_type"].dropna().iloc[0] == "MD5"

@@ -26,6 +26,7 @@ write_cache
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
@@ -34,7 +35,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from pxaudit.cache import _DEFAULT_TTL, read_cache, write_cache
+from pxaudit.cache import _DEFAULT_TTL, read_cache, read_cache_stale, write_cache
 
 # ---------------------------------------------------------------------------
 # 1 & 2 : cache miss
@@ -209,28 +210,19 @@ def test_ttl_fresh_cache_disabled_with_none(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 14 & 15 : TTL: stale cache returns None and is deleted
+# 14 & 15 : TTL: stale cache returns None, kept for fallback
 # ---------------------------------------------------------------------------
 
 
-def test_ttl_stale_cache_returns_none(tmp_path: Path) -> None:
-    """A cache file older than max_age must return None and be deleted."""
+def test_ttl_stale_cache_returns_none_keeps_file(tmp_path: Path) -> None:
+    """A cache file older than max_age must return None but keep the file for stale fallback."""
     write_cache("PXD000001", "project", {"key": "value"}, cache_dir=tmp_path)
     path = tmp_path / "PXD000001_project.json"
     old = time.time() - 7200
     os.utime(path, (old, old))
     result = read_cache("PXD000001", "project", cache_dir=tmp_path, max_age=3600)
     assert result is None
-
-
-def test_ttl_stale_cache_deletes_file(tmp_path: Path) -> None:
-    """A stale cache file must be removed so the next read triggers re-fetch."""
-    write_cache("PXD000001", "project", {"key": "value"}, cache_dir=tmp_path)
-    path = tmp_path / "PXD000001_project.json"
-    old = time.time() - 7200
-    os.utime(path, (old, old))
-    read_cache("PXD000001", "project", cache_dir=tmp_path, max_age=3600)
-    assert not path.exists()
+    assert path.exists(), "stale file must be kept for fallback"
 
 
 def test_ttl_default_constant_is_seven_days() -> None:
@@ -281,7 +273,7 @@ def test_ttl_boundary_one_second_after_is_stale(mock_time: MagicMock, tmp_path: 
     mock_time.return_value = fixed_mtime + 3601  # age == max_age + 1
     result = read_cache("PXD000001", "project", cache_dir=tmp_path, max_age=3600)
     assert result is None
-    assert not path.exists()
+    assert path.exists(), "stale file must be kept for fallback"
 
 
 # ---------------------------------------------------------------------------
@@ -296,7 +288,7 @@ def test_ttl_zero_max_age_bypasses_fresh_cache(tmp_path: Path) -> None:
     assert path.exists()
     result = read_cache("PXD000001", "project", cache_dir=tmp_path, max_age=0)
     assert result is None
-    assert not path.exists()
+    assert path.exists(), "stale file must be kept for fallback"
     # Fresh write after bypass must succeed
     write_cache("PXD000001", "project", {"new": "data"}, cache_dir=tmp_path)
     result = read_cache("PXD000001", "project", cache_dir=tmp_path)
@@ -344,3 +336,117 @@ def test_atomic_write_oserror_on_tmp_propagates(tmp_path: Path) -> None:
     with pytest.raises(OSError):
         write_cache("PXD000001", "project", {"x": 1}, cache_dir=cache_dir)
     cache_dir.chmod(0o755)
+
+
+# ---------------------------------------------------------------------------
+# Cache version header tests
+# ---------------------------------------------------------------------------
+
+
+def test_cache_version_header_present_on_write(tmp_path: Path) -> None:
+    """Written cache file must contain a version header."""
+    data = {"title": "test"}
+    write_cache("PXD000001", "project", data, cache_dir=tmp_path)
+    path = tmp_path / "PXD000001_project.json"
+    raw = json.loads(path.read_text())
+    assert raw["cache_version"] == 1
+    assert raw["data"] == data
+
+
+def test_cache_version_round_trip(tmp_path: Path) -> None:
+    """Write then read must return identical data through the version wrapper."""
+    data = {"title": "roundtrip"}
+    write_cache("PXD000001", "project", data, cache_dir=tmp_path)
+    result = read_cache("PXD000001", "project", cache_dir=tmp_path)
+    assert result == data
+
+
+def test_cache_legacy_format_still_readable(tmp_path: Path) -> None:
+    """Plain JSON (no version header) from older versions must still be readable."""
+    data = {"title": "legacy"}
+    path = tmp_path / "PXD000001_project.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    result = read_cache("PXD000001", "project", cache_dir=tmp_path, max_age=None)
+    assert result == data
+
+
+def test_cache_unknown_version_returns_none(tmp_path: Path) -> None:
+    """Unknown cache_version must delete the file and return None."""
+    payload = {"cache_version": 999, "data": {"x": 1}}
+    path = tmp_path / "PXD000001_project.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    result = read_cache("PXD000001", "project", cache_dir=tmp_path, max_age=None)
+    assert result is None
+    assert not path.exists()
+
+
+def test_cache_unknown_version_deletes_file(tmp_path: Path) -> None:
+    """Unknown cache_version must delete the file."""
+    payload = {"cache_version": 999, "data": {"x": 1}}
+    path = tmp_path / "PXD000001_project.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    read_cache("PXD000001", "project", cache_dir=tmp_path, max_age=None)
+    assert not path.exists()
+
+
+def test_cache_bad_data_structure_returns_none(tmp_path: Path) -> None:
+    """Cache file with a version header but missing data key returns None."""
+    payload = {"cache_version": 1, "meta": "no data key"}
+    path = tmp_path / "PXD000001_project.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    result = read_cache("PXD000001", "project", cache_dir=tmp_path, max_age=None)
+    assert result is None
+
+
+def test_cache_scalar_value_returns_none(tmp_path: Path) -> None:
+    """Cache file containing a bare string or number (not dict/list) returns None."""
+    path = tmp_path / "PXD000001_project.json"
+    path.write_text('"just a string"', encoding="utf-8")
+    result = read_cache("PXD000001", "project", cache_dir=tmp_path, max_age=None)
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# read_cache_stale tests
+# ---------------------------------------------------------------------------
+
+
+def test_read_cache_stale_returns_data_and_age(tmp_path: Path) -> None:
+    """read_cache_stale must return stale data and its age in seconds."""
+    write_cache("PXD000001", "project", {"key": "value"}, cache_dir=tmp_path)
+    path = tmp_path / "PXD000001_project.json"
+    old = time.time() - 7200
+    os.utime(path, (old, old))
+
+    data, age = read_cache_stale("PXD000001", "project", cache_dir=tmp_path)
+    assert data == {"key": "value"}
+    assert age is not None
+    assert age > 7000  # roughly 7200 s, allow slight clock drift
+
+
+def test_read_cache_stale_missing_file_returns_none_none(tmp_path: Path) -> None:
+    """read_cache_stale on absent file must return (None, None)."""
+    data, age = read_cache_stale("PXD000001", "project", cache_dir=tmp_path)
+    assert data is None
+    assert age is None
+
+
+def test_read_cache_stale_corrupt_file_returns_none_none(tmp_path: Path) -> None:
+    """read_cache_stale on corrupt JSON must delete the file and return (None, None)."""
+    path = tmp_path / "PXD000001_project.json"
+    path.write_text("{bad json", encoding="utf-8")
+    data, age = read_cache_stale("PXD000001", "project", cache_dir=tmp_path)
+    assert data is None
+    assert age is None
+    assert not path.exists()
+
+
+def test_read_cache_stale_unknown_version_returns_none_none(tmp_path: Path) -> None:
+    """read_cache_stale on unknown cache version must return (None, None)."""
+    payload = {"cache_version": 999, "data": {"x": 1}}
+    path = tmp_path / "PXD000001_project.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    data, age = read_cache_stale("PXD000001", "project", cache_dir=tmp_path)
+    assert data is None
+    assert age is None
+    assert not path.exists()  # unknown version deletes the file

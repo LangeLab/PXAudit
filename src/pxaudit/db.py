@@ -1,4 +1,16 @@
-"""SQLite database schema creation and insert functions."""
+"""SQLite database schema, insert functions, and schema migrations.
+
+Tables
+------
+study        One row per accession: title, organism, instrument, submission metadata.
+study_files  One row per file: name, category, extension, FTP URL, size, checksum.
+audit        One row per accession: computed tier, quant tier, and Boolean flags.
+
+Each insert function manages its own transaction (BEGIN/COMMIT/ROLLBACK).
+Migration functions (``migrate_audit_v2``, ``migrate_study_v2``,
+``migrate_study_files_v2``) are idempotent and safe to run on already-
+migrated databases.
+"""
 
 from __future__ import annotations
 
@@ -29,6 +41,8 @@ _STUDY_FILES_COLS = (
     "file_extension",
     "ftp_location",
     "file_size",
+    "checksum",
+    "checksum_type",
 )
 
 _AUDIT_COLS = (
@@ -79,7 +93,9 @@ CREATE TABLE IF NOT EXISTS study_files (
     file_category   TEXT,
     file_extension  TEXT,
     ftp_location    TEXT,
-    file_size       INTEGER
+    file_size       INTEGER,
+    checksum        TEXT,
+    checksum_type   TEXT
 );
 """
 
@@ -125,8 +141,9 @@ _INSERT_STUDY = (
 
 _INSERT_STUDY_FILES = (
     "INSERT INTO study_files "
-    "(accession, file_name, file_category, file_extension, ftp_location, file_size) "
-    "VALUES (?, ?, ?, ?, ?, ?)"
+    "(accession, file_name, file_category, file_extension, ftp_location, file_size, "
+    "checksum, checksum_type) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
 )
 
 _INSERT_AUDIT = (
@@ -157,14 +174,16 @@ def get_or_create_db(path: str | Path) -> sqlite3.Connection:
     The connection is opened with ``isolation_level=None`` (autocommit) so that
     every insert function manages its own ``BEGIN`` / ``COMMIT`` explicitly.
 
-    ``migrate_audit_v2`` is called after schema creation to upgrade
-    databases from an earlier schema version on first use.
+    Migrations are called after schema creation so that databases from an
+    earlier schema version are transparently upgraded on first use.
     """
     conn = sqlite3.connect(str(Path(path)), isolation_level=None)
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
     create_tables(conn)
     migrate_audit_v2(conn)
+    migrate_study_v2(conn)
+    migrate_study_files_v2(conn)
     return conn
 
 
@@ -252,3 +271,40 @@ def migrate_audit_v2(conn: sqlite3.Connection) -> None:
     existing_study = {row[1] for row in conn.execute("PRAGMA table_info(study)")}
     if "submission_type" not in existing_study:
         conn.execute("ALTER TABLE study ADD COLUMN submission_type TEXT")
+
+
+def migrate_study_v2(conn: sqlite3.Connection) -> None:
+    """Upgrade a database from schema v1 to v2 for the ``study`` table.
+
+    Adds the ``fetched_at`` column if it is not already present.
+    Idempotent: uses ``PRAGMA table_info`` to guard the column addition.
+    """
+    conn.execute("PRAGMA foreign_keys = ON")
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(study)")}
+    if "fetched_at" not in existing:
+        conn.execute("ALTER TABLE study ADD COLUMN fetched_at TEXT")
+
+
+def migrate_study_files_v2(conn: sqlite3.Connection) -> None:
+    """Upgrade a database from schema v1 to v2 for the ``study_files`` table.
+
+    Adds ``checksum`` and ``checksum_type`` columns if they are not already present.
+    Idempotent: uses ``PRAGMA table_info`` to guard each column addition.
+    """
+    conn.execute("PRAGMA foreign_keys = ON")
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(study_files)")}
+    for col in ("checksum", "checksum_type"):
+        if col not in existing:
+            conn.execute(f"ALTER TABLE study_files ADD COLUMN {col} TEXT")  # noqa: S608
+
+
+__all__ = [
+    "create_tables",
+    "get_or_create_db",
+    "insert_audit",
+    "insert_study",
+    "insert_study_files",
+    "migrate_audit_v2",
+    "migrate_study_files_v2",
+    "migrate_study_v2",
+]
