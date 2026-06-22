@@ -245,6 +245,65 @@ def insert_audit(conn: sqlite3.Connection, data: dict) -> None:
         raise
 
 
+def insert_audit_record(
+    conn: sqlite3.Connection,
+    study: dict,
+    accession: str,
+    files_df: pd.DataFrame,
+    audit_data: dict,
+) -> None:
+    """Insert study, study_files, and audit in a single transaction.
+
+    Either all three succeed or all three roll back.  This prevents partial
+    failures from leaving orphaned rows across tables.
+
+    Parameters
+    ----------
+    conn:
+        SQLite connection with ``isolation_level=None`` (autocommit).
+    study:
+        Study row dict matching ``_STUDY_COLS``.
+    accession:
+        PRIDE accession string, e.g. ``"PXD000001"``.
+    files_df:
+        DataFrame with columns matching ``_STUDY_FILES_COLS``.
+    audit_data:
+        Audit row dict matching ``_AUDIT_COLS``.
+    """
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("BEGIN")
+    try:
+        _insert_study_row(conn, study)
+        _insert_study_files_rows(conn, accession, files_df)
+        _insert_audit_row(conn, audit_data)
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+
+def _insert_study_row(conn: sqlite3.Connection, data: dict) -> None:
+    """Insert a single study row without managing a transaction."""
+    row = tuple(data.get(c) for c in _STUDY_COLS)
+    conn.execute(_INSERT_STUDY, row)
+
+
+def _insert_study_files_rows(
+    conn: sqlite3.Connection, accession: str, files_df: pd.DataFrame
+) -> None:
+    """Replace all file rows for *accession* without managing a transaction."""
+    df_sub = files_df[list(_STUDY_FILES_COLS)]
+    rows = df_sub.astype(object).where(df_sub.notna(), other=None).values.tolist()
+    conn.execute("DELETE FROM study_files WHERE accession = ?", (accession,))
+    conn.executemany(_INSERT_STUDY_FILES, rows)
+
+
+def _insert_audit_row(conn: sqlite3.Connection, data: dict) -> None:
+    """Insert a single audit row without managing a transaction."""
+    row = tuple(data.get(c) for c in _AUDIT_COLS)
+    conn.execute(_INSERT_AUDIT, row)
+
+
 def migrate_audit_v2(conn: sqlite3.Connection) -> None:
     """Upgrade a database from schema v1 to v2 in-place.
 
@@ -302,6 +361,7 @@ __all__ = [
     "create_tables",
     "get_or_create_db",
     "insert_audit",
+    "insert_audit_record",
     "insert_study",
     "insert_study_files",
     "migrate_audit_v2",

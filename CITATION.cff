@@ -2,7 +2,7 @@ cff-version: 1.2.0
 message: "If you use PXAudit in your research, please cite it as below."
 title: "PXAudit: A command-line tool for auditing Proteomics Exchange study metadata"
 version: 0.3.0
-date-released: "2026-03-21"
+date-released: "2026-05-25"
 license: MIT
 repository-code: "https://github.com/LangeLab/PXAudit"
 authors:

@@ -24,7 +24,7 @@ from tqdm import tqdm
 
 from pxaudit import _PRIDE_PREFIX
 from pxaudit.cache import read_cache, read_cache_stale, write_cache
-from pxaudit.db import get_or_create_db, insert_audit, insert_study, insert_study_files
+from pxaudit.db import get_or_create_db, insert_audit_record
 from pxaudit.pride_client import PrideAPIError, fetch_files, fetch_project
 from pxaudit.tier_engine import AuditResult, compute_audit
 
@@ -202,6 +202,7 @@ def _audit_single(
     files_fetch_failed = False
 
     use_cache = not (no_cache or refresh)
+    persist_cache = not no_cache  # --no-cache disables writes too
     if accession.upper().startswith(_PRIDE_PREFIX):
         if use_cache:
             project_data = read_cache(accession, "project")  # type: ignore[assignment]
@@ -210,7 +211,8 @@ def _audit_single(
         if project_data is None:
             try:
                 project_data = fetch_project(accession)
-                write_cache(accession, "project", project_data)
+                if persist_cache:
+                    write_cache(accession, "project", project_data)
             except PrideAPIError:
                 stale, age = read_cache_stale(accession, "project")
                 if stale is not None:
@@ -226,7 +228,8 @@ def _audit_single(
         if files_data is None:
             try:
                 files_data = fetch_files(accession)
-                write_cache(accession, "files", files_data)
+                if persist_cache:
+                    write_cache(accession, "files", files_data)
             except PrideAPIError:
                 stale, age = read_cache_stale(accession, "files")
                 if stale is not None:
@@ -251,9 +254,7 @@ def _audit_single(
     files_df = _extract_files_df(accession, files_data)
     conn = get_or_create_db(db_path)
     try:
-        insert_study(conn, study)
-        insert_study_files(conn, accession, files_df)
-        insert_audit(conn, asdict(result))
+        insert_audit_record(conn, study, accession, files_df, asdict(result))
     finally:
         conn.close()
 

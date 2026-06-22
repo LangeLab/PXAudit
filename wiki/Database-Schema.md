@@ -89,6 +89,6 @@ WHERE a.has_sdrf = 0 AND a.has_result_files = 1;
 
 These functions upgrade databases from earlier schema versions. All are idempotent and safe to run multiple times:
 
-- `migrate_audit_v2(conn)`: adds v2 flag columns to `audit` and `submission_type` to `study`
+- `migrate_audit_v2(conn)`: adds v2 flag columns and `quant_tier` to `audit`, and `submission_type` to `study`
 - `migrate_study_v2(conn)`: adds `fetched_at` to `study`
 - `migrate_study_files_v2(conn)`: adds `checksum` and `checksum_type` to `study_files`

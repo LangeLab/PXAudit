@@ -16,11 +16,10 @@ Flag computation mixes two strategies:
 The tier derivation mirrors the SQL CASE expression in
 plan/database_schema.md exactly.
 
-The ``None`` tier is reserved for non-PRIDE repositories (MassIVE, jPOST,
-iProX) where mandatory fields may not be enforced at submission time.
-For live PRIDE accessions, all mandatory fields are guaranteed by the
-repository so the ``None`` branch is dead code; it is exercised only
-by synthetic test payloads.
+The ``None`` tier applies when mandatory fields (title, organism, or
+instrument) are missing. For live PRIDE accessions, these fields are
+enforced at submission time so the ``None`` branch is not expected to
+trigger in practice, though it is exercised by synthetic test payloads.
 """
 
 from __future__ import annotations
@@ -31,7 +30,7 @@ from dataclasses import dataclass
 import pandas as pd
 
 from pxaudit import _PRIDE_PREFIX
-from pxaudit.file_classifier import FileClass, FileTypeClassifier
+from pxaudit.file_classifier import FileClass, FileTypeClassifier, strip_compression
 
 # ---------------------------------------------------------------------------
 # Module-level constants
@@ -283,7 +282,8 @@ def compute_audit(
         fallback_sdrf = bool(file_names.str.contains(_SDRF_FALLBACK_RE, na=False).any())
         has_sdrf = primary_sdrf or fallback_sdrf
 
-        has_mztab = bool(file_names.str.casefold().str.endswith(".mztab").any())
+        stripped_names = file_names.apply(strip_compression)
+        has_mztab = bool(stripped_names.str.casefold().str.endswith(".mztab").any())
 
     # ------------------------------------------------------------------
     # 6.  Tier derivation  (mirrors SQL CASE in plan/database_schema.md)

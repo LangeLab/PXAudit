@@ -184,6 +184,12 @@ _EXTENSION_TO_CLASS: dict[str, FileClass] = {
 }
 
 
+# Compound extensions: derived dynamically from _EXTENSION_TO_CLASS.
+# Keys containing a dot after the first character (e.g. ".pep.xml", ".sky.zip")
+# must be checked before single-part extensions to avoid premature matching.
+_COMPOUND_EXTS: tuple[str, ...] = tuple(k for k in _EXTENSION_TO_CLASS if "." in k[1:])
+
+
 # ---------------------------------------------------------------------------
 # Exact-stem registry (MaxQuant fixed-output filenames)
 # ---------------------------------------------------------------------------
@@ -391,7 +397,7 @@ class FileTypeClassifier:
         lower_base:
             Lower-case filename string, already stripped of compression suffixes.
         """
-        for candidate in (".pep.xml", ".prot.xml", ".wiff.scan", ".mztab-m", ".sky.zip"):
+        for candidate in _COMPOUND_EXTS:
             if lower_base.endswith(candidate):
                 return candidate
         return "." + lower_base.rsplit(".", 1)[-1] if "." in lower_base else ""

@@ -405,10 +405,24 @@ def test_sdrf_primary_path(file_name: str, category: str, expected: bool) -> Non
         ("results.MZTAB", True),
         ("results.mzTabData", False),  # must NOT match
         ("results.mztabdata", False),  # same
-        ("results.mztab.gz", False),  # compressed : not a bare .mztab
+        ("results.mztab.gz", True),  # compressed : strip_compression exposes .mztab
+        ("results.mztab.zip", True),  # compressed : strip_compression exposes .mztab
+        ("results.mztab.bz2", True),  # compressed : strip_compression exposes .mztab
+        ("results.mzTab.GZ", True),  # compressed : case-insensitive after strip
         ("results.mzid", False),
     ],
-    ids=["mzTab", "mztab", "MZTAB", "mzTabData", "mztabdata", "mztab-gz", "mzid"],
+    ids=[
+        "mzTab",
+        "mztab",
+        "MZTAB",
+        "mzTabData",
+        "mztabdata",
+        "mztab-gz",
+        "mztab-zip",
+        "mztab-bz2",
+        "mzTab-GZ-case",
+        "mzid",
+    ],
 )
 def test_mztab_extension_matching(file_name: str, expected: bool) -> None:
     files = [_file(file_name, "RESULT")]

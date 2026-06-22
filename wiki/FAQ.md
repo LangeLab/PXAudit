@@ -10,13 +10,17 @@ No. It only queries metadata endpoints. No raw data, result files, or anything e
 
 ## How are files classified?
 
-Three-stage deterministic pipeline:
+Multi-step deterministic pipeline:
 
-1. **Extension registry**: maps known extensions like `.mzML`, `.raw`, `.mzid` to a FileClass
+1. **Extension registry**: maps known extensions like `.mzML`, `.raw`, `.mzid` to a FileClass. Checks the original filename first (for compound formats like `.sky.zip`), then the de-compressed filename.
 2. **Exact-stem map**: catches MaxQuant fixed filenames like `proteinGroups.txt`
-3. **Regex patterns**: matches tool-specific output names like `report.tsv`, `psm.tsv`
+3. **SDRF check**: matches filenames containing "sdrf" with a tabular extension
+4. **PSI basename patterns**: catches mzTab and PRIDE XML variants
+5. **Quant-matrix patterns**: matches tool-specific quant output like `report.tsv`, `proteinGroups.txt`
+6. **ID-list patterns**: matches PSM and scan-level lists like `psm.tsv`
+7. **PRIDE fileCategory fallback**: used only when none of the above match
 
-The PRIDE `fileCategory` tag is used only as a fallback when none of the above match. Compression suffixes (`.gz`, `.zip`, `.bz2`) are stripped before classification so `results.mzid.gz` classifies the same as `results.mzid`.
+Compression suffixes (`.gz`, `.zip`, `.bz2`) are stripped before classification so `results.mzid.gz` classifies the same as `results.mzid`.
 
 ## Why is my dataset scoring lower than expected?
 

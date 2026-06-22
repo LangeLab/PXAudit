@@ -45,7 +45,7 @@ def _unwrap_cache(raw: Any, path: Path) -> dict | list | None:
         )
         path.unlink(missing_ok=True)
         return None
-    # Legacy format (pre-v0.4.0): plain dict or list without version wrapper.
+    # Legacy format (pre-v0.3.0): plain dict or list without version wrapper.
     if isinstance(raw, (dict, list)):
         return raw
     return None

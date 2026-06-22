@@ -6,10 +6,10 @@ repos:
         args: [--fix]
       - id: ruff-format
   - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.15.0
+    rev: v2.1.0
     hooks:
       - id: mypy
-        args: [src/, tests/]
+        args: [--config-file=pyproject.toml]
         additional_dependencies:
           - pandas-stubs>=3.0
           - types-requests>=2.32

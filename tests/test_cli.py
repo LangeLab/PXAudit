@@ -182,9 +182,7 @@ def mocks(monkeypatch: pytest.MonkeyPatch) -> dict:
         "fetch_project": MagicMock(return_value=_GOLD_PROJECT),
         "fetch_files": MagicMock(return_value=_GOLD_FILES),
         "get_or_create_db": MagicMock(return_value=MagicMock()),
-        "insert_study": MagicMock(),
-        "insert_study_files": MagicMock(),
-        "insert_audit": MagicMock(),
+        "insert_audit_record": MagicMock(),
     }
     for name, mock in m.items():
         monkeypatch.setattr(f"pxaudit.cli.{name}", mock)
@@ -271,9 +269,7 @@ def test_check_write_cache_called_on_miss(mocks: dict) -> None:
 def test_check_insert_functions_all_called(mocks: dict) -> None:
     runner = CliRunner()
     runner.invoke(main, ["check", "PXD000001"])
-    mocks["insert_study"].assert_called_once()
-    mocks["insert_study_files"].assert_called_once()
-    mocks["insert_audit"].assert_called_once()
+    mocks["insert_audit_record"].assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -398,13 +394,13 @@ def test_check_no_cache_skips_read_cache(mocks: dict) -> None:
     mocks["read_cache"].assert_not_called()
 
 
-def test_check_no_cache_still_fetches_and_writes(mocks: dict) -> None:
-    """--no-cache skips reads but still fetches from API and writes to cache."""
+def test_check_no_cache_does_not_write_cache(mocks: dict) -> None:
+    """--no-cache skips both reads AND writes to cache."""
     runner = CliRunner()
     runner.invoke(main, ["check", "PXD000001", "--no-cache"])
     mocks["fetch_project"].assert_called_once()
     mocks["fetch_files"].assert_called_once()
-    assert mocks["write_cache"].call_count == 2
+    mocks["write_cache"].assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -434,13 +430,13 @@ def test_check_refresh_still_fetches_and_writes(mocks: dict) -> None:
 
 
 def test_check_refresh_with_no_cache_combined(mocks: dict) -> None:
-    """--refresh combined with --no-cache must still behave (read skip, fetch, write)."""
+    """--refresh combined with --no-cache must skip writes (--no-cache wins)."""
     runner = CliRunner()
     runner.invoke(main, ["check", "PXD000001", "--refresh", "--no-cache"])
     mocks["read_cache"].assert_not_called()
     mocks["fetch_project"].assert_called_once()
     mocks["fetch_files"].assert_called_once()
-    assert mocks["write_cache"].call_count == 2
+    mocks["write_cache"].assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -675,7 +671,7 @@ def test_check_keyboard_interrupt_before_db_clean_close(
     def _interrupt(*args: object) -> None:
         raise KeyboardInterrupt
 
-    monkeypatch.setattr("pxaudit.cli.insert_study", _interrupt)
+    monkeypatch.setattr("pxaudit.cli.insert_audit_record", _interrupt)
     runner = CliRunner()
     result = runner.invoke(main, ["check", "PXD000001"])
     assert result.exit_code == 130

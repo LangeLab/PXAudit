@@ -25,6 +25,7 @@ from __future__ import annotations
 import pytest
 
 from pxaudit.file_classifier import (
+    _COMPOUND_EXTS,
     _COMPRESSION_EXTS,
     _EXACT_STEM_TO_CLASS,
     _EXTENSION_TO_CLASS,
@@ -217,6 +218,18 @@ def test_sky_zip_not_stripped_as_compression() -> None:
     """Skyline's .sky.zip must NOT have .zip stripped before classification."""
     # If .zip were stripped first, 'method.sky' would fall through to OTHER.
     assert clf.classify("method.sky.zip") == FileClass.SEARCH
+
+
+def test_compound_exts_derived_from_registry() -> None:
+    """_COMPOUND_EXTS must be a subset of _EXTENSION_TO_CLASS keys."""
+    for ext in _COMPOUND_EXTS:
+        assert ext in _EXTENSION_TO_CLASS, f"_COMPOUND_EXTS contains '{ext}' not in registry"
+
+
+def test_compound_exts_all_have_dot_after_first_char() -> None:
+    """Every compound extension must contain a dot after the leading dot."""
+    for ext in _COMPOUND_EXTS:
+        assert "." in ext[1:], f"'{ext}' does not have a compound dot pattern"
 
 
 # ---------------------------------------------------------------------------

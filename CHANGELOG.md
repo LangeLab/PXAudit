@@ -6,11 +6,19 @@ All notable changes to PXAudit are documented here. The format follows [Keep a C
 
 ---
 
-## [Unreleased]
+## [0.4.0] - Unreleased
 
-### Planned
+### Added
 
-- Reporting: `pxaudit report --db` generating tier distributions, trends, and exemplars as Quarto HTML.
+- `insert_audit_record()` in `db.py`: transaction-wrapped batch insert for study, study_files, and audit. Prevents partial failures from leaving orphaned rows.
+- `_COMPOUND_EXTS` in `file_classifier.py`: derived dynamically from `_EXTENSION_TO_CLASS` keys. No more manual sync required.
+- `test_compound_exts_derived_from_registry` and `test_compound_exts_all_have_dot_after_first_char` in `test_file_classifier.py`.
+
+### Fixed
+
+- `has_mztab` now detects compressed mzTab files (`.mztab.gz`, `.mztab.zip`, `.mztab.bz2`, etc.) by applying `strip_compression` before the extension check.
+- `--no-cache` now skips both cache reads AND writes. `--refresh` skips reads but still writes to cache. Previously both flags behaved identically.
+- DB inserts wrapped in single transaction: study, study_files, and audit either all succeed or all roll back.
 
 ---
 

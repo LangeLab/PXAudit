@@ -201,7 +201,7 @@ uv sync
 uv run pre-commit install
 ```
 
-Pre-commit runs `ruff` (lint + format, line-length 100) and `mypy` (strict mode) on every commit. See the [wiki](https://github.com/LangeLab/PXAudit/wiki) for detailed reference documentation.
+Pre-commit runs `ruff` (lint + format, line-length 100) and `mypy` (strict options) on every commit. See the [wiki](https://github.com/LangeLab/PXAudit/wiki) for detailed reference documentation.
 
 ### Project Layout
 

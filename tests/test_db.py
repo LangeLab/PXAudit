@@ -13,6 +13,7 @@ from pxaudit.db import (
     create_tables,
     get_or_create_db,
     insert_audit,
+    insert_audit_record,
     insert_study,
     insert_study_files,
     migrate_audit_v2,
@@ -655,3 +656,64 @@ def test_study_files_df_columns_include_checksum() -> None:
     df = _extract_files_df("PXD000001", [])
     assert "checksum" in df.columns
     assert "checksum_type" in df.columns
+
+
+# ---------------------------------------------------------------------------
+# insert_audit_record transaction tests
+# ---------------------------------------------------------------------------
+
+
+def test_insert_audit_record_success(tmp_path: Path) -> None:
+    """All three inserts succeed: study, study_files, and audit must all be present."""
+    conn = get_or_create_db(tmp_path / "test.db")
+    try:
+        files_df = _make_files_df("PXD000001", 2)
+        insert_audit_record(conn, _STUDY_DATA, "PXD000001", files_df, _AUDIT_DATA)
+        assert conn.execute("SELECT COUNT(*) FROM study").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM study_files").fetchone()[0] == 2
+        assert conn.execute("SELECT COUNT(*) FROM audit").fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
+def test_insert_audit_record_rollback_on_failure(tmp_path: Path) -> None:
+    """If audit insert fails, study and study_files must also be rolled back."""
+    conn = get_or_create_db(tmp_path / "test.db")
+    try:
+        bad_audit = {"accession": None, "tier": None}  # will fail NOT NULL
+        files_df = _make_files_df("PXD000001", 1)
+        with pytest.raises(sqlite3.IntegrityError):
+            insert_audit_record(conn, _STUDY_DATA, "PXD000001", files_df, bad_audit)
+        assert conn.execute("SELECT COUNT(*) FROM study").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM study_files").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM audit").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_insert_audit_record_study_files_rollback(tmp_path: Path) -> None:
+    """If study_files insert fails, study must also be rolled back."""
+    conn = get_or_create_db(tmp_path / "test.db")
+    try:
+        # file_name has NOT NULL constraint; None triggers IntegrityError
+        bad_df = pd.DataFrame(
+            [
+                {
+                    "accession": "PXD000001",
+                    "file_name": None,
+                    "file_category": "RAW",
+                    "file_extension": ".raw",
+                    "ftp_location": None,
+                    "file_size": None,
+                    "checksum": None,
+                    "checksum_type": None,
+                }
+            ]
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            insert_audit_record(conn, _STUDY_DATA, "PXD000001", bad_df, _AUDIT_DATA)
+        assert conn.execute("SELECT COUNT(*) FROM study").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM study_files").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM audit").fetchone()[0] == 0
+    finally:
+        conn.close()

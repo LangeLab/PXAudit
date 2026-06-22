@@ -122,9 +122,7 @@ def test_lowercase_pxd_cli_routes_correctly(
     monkeypatch.setattr("pxaudit.cli.fetch_project", fetch_project)
     monkeypatch.setattr("pxaudit.cli.fetch_files", MagicMock(return_value=pride_files_gold))
     monkeypatch.setattr("pxaudit.cli.get_or_create_db", MagicMock(return_value=MagicMock()))
-    monkeypatch.setattr("pxaudit.cli.insert_study", MagicMock())
-    monkeypatch.setattr("pxaudit.cli.insert_study_files", MagicMock())
-    monkeypatch.setattr("pxaudit.cli.insert_audit", MagicMock())
+    monkeypatch.setattr("pxaudit.cli.insert_audit_record", MagicMock())
 
     result = CliRunner().invoke(main, ["check", "pxd000001"])
     assert result.exit_code == 0
@@ -418,9 +416,7 @@ def test_silver_output_shows_cross_for_sdrf(
     monkeypatch.setattr("pxaudit.cli.fetch_project", MagicMock(return_value=pride_project_gold))
     monkeypatch.setattr("pxaudit.cli.fetch_files", MagicMock(return_value=pride_files_silver))
     monkeypatch.setattr("pxaudit.cli.get_or_create_db", MagicMock(return_value=MagicMock()))
-    monkeypatch.setattr("pxaudit.cli.insert_study", MagicMock())
-    monkeypatch.setattr("pxaudit.cli.insert_study_files", MagicMock())
-    monkeypatch.setattr("pxaudit.cli.insert_audit", MagicMock())
+    monkeypatch.setattr("pxaudit.cli.insert_audit_record", MagicMock())
 
     result = CliRunner().invoke(main, ["check", "PXD000001"])
     assert "Silver" in result.output
@@ -435,9 +431,7 @@ def test_unverifiable_output_shows_tier(
     monkeypatch.setattr("pxaudit.cli.read_cache", MagicMock(return_value=None))
     monkeypatch.setattr("pxaudit.cli.write_cache", MagicMock())
     monkeypatch.setattr("pxaudit.cli.get_or_create_db", MagicMock(return_value=MagicMock()))
-    monkeypatch.setattr("pxaudit.cli.insert_study", MagicMock())
-    monkeypatch.setattr("pxaudit.cli.insert_study_files", MagicMock())
-    monkeypatch.setattr("pxaudit.cli.insert_audit", MagicMock())
+    monkeypatch.setattr("pxaudit.cli.insert_audit_record", MagicMock())
 
     result = CliRunner().invoke(main, ["check", "MSV000001"])
     assert result.exit_code == 0
