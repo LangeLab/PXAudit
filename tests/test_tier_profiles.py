@@ -1,4 +1,4 @@
-"""Integration tests for compute_audit() against realistic PRIDE submission profiles.
+"""Profile tests for compute_audit() against realistic PRIDE submission profiles.
 
 Each test uses a hand-crafted mock that mirrors the actual /projects and /files
 payloads for a known accession, allowing the full compute_audit() logic to be

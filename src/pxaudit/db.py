@@ -192,7 +192,6 @@ def insert_study(conn: sqlite3.Connection, data: dict) -> None:
 
     Missing keys in *data* are treated as NULL.
     """
-    conn.execute("PRAGMA foreign_keys = ON")
     row = tuple(data.get(c) for c in _STUDY_COLS)
     conn.execute("BEGIN")
     try:
@@ -213,7 +212,6 @@ def insert_study_files(conn: sqlite3.Connection, accession: str, files_df: pd.Da
 
     Any pandas NA / float NaN in the DataFrame is written as SQL NULL.
     """
-    conn.execute("PRAGMA foreign_keys = ON")
     df_sub = files_df[list(_STUDY_FILES_COLS)]
     # Convert to object dtype so numpy can hold Python None instead of float NaN,
     # which sqlite3 would interpret as REAL rather than NULL.
@@ -234,7 +232,6 @@ def insert_audit(conn: sqlite3.Connection, data: dict) -> None:
 
     Missing keys in *data* are treated as NULL.
     """
-    conn.execute("PRAGMA foreign_keys = ON")
     row = tuple(data.get(c) for c in _AUDIT_COLS)
     conn.execute("BEGIN")
     try:
@@ -270,7 +267,6 @@ def insert_audit_record(
     audit_data:
         Audit row dict matching ``_AUDIT_COLS``.
     """
-    conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("BEGIN")
     try:
         _insert_study_row(conn, study)
@@ -311,7 +307,6 @@ def migrate_audit_v2(conn: sqlite3.Connection) -> None:
     to the ``study`` table if they are not already present.  Idempotent:
     uses ``PRAGMA table_info`` to guard each ``ALTER TABLE ADD COLUMN``.
     """
-    conn.execute("PRAGMA foreign_keys = ON")
     existing_audit = {row[1] for row in conn.execute("PRAGMA table_info(audit)")}
     for col in (
         "has_psi_results",
@@ -338,7 +333,6 @@ def migrate_study_v2(conn: sqlite3.Connection) -> None:
     Adds the ``fetched_at`` column if it is not already present.
     Idempotent: uses ``PRAGMA table_info`` to guard the column addition.
     """
-    conn.execute("PRAGMA foreign_keys = ON")
     existing = {row[1] for row in conn.execute("PRAGMA table_info(study)")}
     if "fetched_at" not in existing:
         conn.execute("ALTER TABLE study ADD COLUMN fetched_at TEXT")
@@ -350,7 +344,6 @@ def migrate_study_files_v2(conn: sqlite3.Connection) -> None:
     Adds ``checksum`` and ``checksum_type`` columns if they are not already present.
     Idempotent: uses ``PRAGMA table_info`` to guard each column addition.
     """
-    conn.execute("PRAGMA foreign_keys = ON")
     existing = {row[1] for row in conn.execute("PRAGMA table_info(study_files)")}
     for col in ("checksum", "checksum_type"):
         if col not in existing:

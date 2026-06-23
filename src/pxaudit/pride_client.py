@@ -11,7 +11,7 @@ Transformation of CvParam objects, date strings, etc. is the caller's responsibi
 from __future__ import annotations
 
 import time
-from typing import cast
+import typing
 
 import requests
 
@@ -90,7 +90,7 @@ def _request(
 
     if session is None:
         session = requests.Session()
-        session.headers["User-Agent"] = _USER_AGENT
+    session.headers.setdefault("User-Agent", _USER_AGENT)
 
     last_exc: Exception | None = None
 
@@ -135,7 +135,7 @@ def fetch_project(accession: str, *, delay: float = 0.5) -> dict:
     accession does not exist on PRIDE.
     """
     url = f"{_BASE_URL}/projects/{accession}"
-    return cast(dict, _request(url, delay=delay))
+    return typing.cast(dict, _request(url, delay=delay))
 
 
 def fetch_files(accession: str, *, delay: float = 0.5) -> list[dict]:
@@ -159,7 +159,7 @@ def fetch_files(accession: str, *, delay: float = 0.5) -> list[dict]:
             f"{_BASE_URL}/projects/{accession}/files"
             f"?page={page}&pageSize={page_size}&sortDirection=DESC&sortCondition=id"
         )
-        batch = cast(list[dict], _request(url, delay=delay, session=session))
+        batch = typing.cast(list[dict], _request(url, delay=delay, session=session))
         all_files.extend(batch)
         if len(batch) < page_size:
             break

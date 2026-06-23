@@ -1,5 +1,6 @@
 # Planning documents
 tmp/
+temp/
 plan/
 
 # uv / virtualenv

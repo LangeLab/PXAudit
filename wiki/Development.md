@@ -14,11 +14,12 @@ uv run pre-commit install
 ```bash
 src/pxaudit/
 ├── __init__.py        # Version, PRIDE prefix
-├── cli.py             # Click commands: check, bulk-audit, manifest
+├── cli.py             # Click commands: check, bulk-audit, manifest, report
 ├── tier_engine.py     # FAIR ladder scoring + quant tier logic
 ├── file_classifier.py # Filename to FileClass mapping
 ├── pride_client.py    # PRIDE REST API v3 client
 ├── db.py              # SQLite schema, inserts, migrations
+├── report.py          # HTML report generation (Jinja2 + matplotlib)
 └── cache.py           # Local JSON response cache
 ```
 
@@ -30,7 +31,7 @@ uv run pytest --cov=pxaudit                # with coverage report
 uv run pytest -m integration -v --no-cov   # live API tests (requires network)
 ```
 
-There are 455 unit tests and 12 integration tests, all at 100% branch coverage.
+There are 514 unit tests and 12 integration tests, all at 100% branch coverage.
 
 ## Code quality checks
 
@@ -49,6 +50,8 @@ uv run ruff format --check src/ tests/
 uv run mypy src/ tests/
 uv run pytest --cov=pxaudit --cov-fail-under=100
 ```
+
+Note: `report.py` requires `jinja2` and `matplotlib` (optional deps). Install with `uv sync --extra report`.
 
 ## Style guide
 

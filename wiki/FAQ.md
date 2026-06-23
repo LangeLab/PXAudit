@@ -57,8 +57,20 @@ Default is 7 days. Use `--refresh` to force a re-fetch regardless of cache age.
   author   = {Ergin, Enes Kemal},
   title    = {{PXAudit}: A command-line tool for auditing {Proteomics Exchange} study metadata},
   year     = {2026},
-  version  = {0.3.0},
+  version  = {0.4.0},
   url      = {https://github.com/LangeLab/PXAudit},
   license  = {MIT},
 }
 ```
+
+## How do I generate a report?
+
+After auditing datasets, run:
+
+```bash
+pxaudit report --db pxaudit_results.db --output report/
+```
+
+This produces a self-contained `report.html` file with donut charts, metadata completeness bars, cohort analysis, and a full accession table. Requires `jinja2` and `matplotlib` (install with `pip install pxaudit[report]`).
+
+Use `--title` to customise the header and `--overwrite` to replace a previous report in the same directory.

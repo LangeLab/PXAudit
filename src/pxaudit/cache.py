@@ -12,8 +12,8 @@ import json
 import logging
 import os
 import time
+import typing
 from pathlib import Path
-from typing import Any
 
 _log = logging.getLogger(__name__)
 
@@ -28,7 +28,7 @@ __all__ = [
 ]
 
 
-def _unwrap_cache(raw: Any, path: Path) -> dict | list | None:
+def _unwrap_cache(raw: typing.Any, path: Path) -> dict | list | None:
     """Extract the payload from a cache file, handling versioned and legacy formats.
 
     Returns ``None`` and deletes *path* on version mismatch or corrupt structure.

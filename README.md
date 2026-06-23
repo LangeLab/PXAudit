@@ -9,7 +9,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.12--3.14-2D7D46?style=flat-square&logo=python&logoColor=white" alt="Python 3.12-3.14">
-  <img src="https://img.shields.io/badge/version-0.3.0-8B5CF6?style=flat-square" alt="v0.3.0">
+  <img src="https://img.shields.io/badge/version-0.4.0-8B5CF6?style=flat-square" alt="v0.4.0">
   <img src="https://img.shields.io/badge/status-beta-C17D10?style=flat-square" alt="Beta">
   <img src="https://img.shields.io/github/actions/workflow/status/LangeLab/PXAudit/ci.yml?branch=main&style=flat-square&logo=github&label=CI" alt="CI">
   <img src="https://img.shields.io/badge/coverage-100%25-22C55E?style=flat-square" alt="100% branch coverage">
@@ -61,11 +61,9 @@ uv run pxaudit check PXD004683 --no-cache   # bypass local cache
 uv run pxaudit check PXD004683 --db ~/audits/lab.db
 ```
 
-Options: `--refresh` (re-fetch, update cache), `--no-cache` (skip cache reads),
-`--db PATH` (SQLite output path, default `pxaudit_results.db`).
+Options: `--refresh` (re-fetch, update cache), `--no-cache` (skip cache reads), `--db PATH` (SQLite output path, default `pxaudit_results.db`).
 
-Non-PRIDE accessions (`MSV`, `JPST`, `IPX`) are accepted without error and
-assigned the _Unverifiable_ tier; PXAudit only has access to the PRIDE API.
+Non-PRIDE accessions (`MSV`, `JPST`, `IPX`) are accepted without error and assigned the _Unverifiable_ tier; PXAudit only has access to the PRIDE API.
 
 ### `pxaudit bulk-audit`
 
@@ -77,8 +75,7 @@ uv run pxaudit bulk-audit --input accessions.txt --format tsv --output results.t
 cat accessions.txt | uv run pxaudit bulk-audit --input -
 ```
 
-Options: `--format tsv|json|csv`, `--output PATH`, `--delay SECONDS`,
-`--continue-on-error`, `--overwrite`.
+Options: `--format tsv|json|csv`, `--output PATH`, `--delay SECONDS`, `--continue-on-error`, `--overwrite`.
 
 ### `pxaudit manifest`
 
@@ -90,6 +87,19 @@ uv run pxaudit manifest PXD004683 --format json
 ```
 
 Options: `--db PATH` (default `pxaudit_results.db`), `--format tsv|json`.
+
+### `pxaudit report`
+
+Generate a self-contained HTML report from a populated database.
+
+```bash
+uv run pxaudit report --db pxaudit_results.db
+uv run pxaudit report --db pxaudit_results.db --output reports/ --title "Lab Audit Report"
+```
+
+Options: `--output DIR` (default: current directory), `--title TEXT` (default: "PXAudit Report"), `--overwrite` (overwrite existing output directory).
+
+Requires optional dependencies: `pip install pxaudit[report]` or `uv sync --extra report`.
 
 ---
 
@@ -124,15 +134,15 @@ Files (142 total)
 
 PXAudit scores each dataset on a **7-tier FAIR ladder**. Every tier adds one FAIR requirement to the previous; a dataset must satisfy all criteria up to and including the tier it claims.
 
-| Tier | Requirements |
-| --- | --- |
-| **None** | Missing a mandatory metadata field (title, organism, or instrument). |
-| **Raw** | Mandatory metadata present; no processed result files found. |
-| **Bronze** | Result/search files present, but none are PSI-standard (mzIdentML / mzTab). |
-| **Silver** | PSI-standard results present; no SDRF experimental-design file. |
-| **Gold** | SDRF present; open spectra (mzML / MGF) **or** organism-part annotation missing. |
-| **Platinum** | Open spectra + organism-part annotation present; no linked PubMed publication. |
-| **Diamond** | All FAIR criteria met: PSI results, SDRF, open spectra, organism part, and a publication. |
+| Tier         | Requirements                                                                              |
+| ------------ | ----------------------------------------------------------------------------------------- |
+| **None**     | Missing a mandatory metadata field (title, organism, or instrument).                      |
+| **Raw**      | Mandatory metadata present; no processed result files found.                              |
+| **Bronze**   | Result/search files present, but none are PSI-standard (mzIdentML / mzTab).               |
+| **Silver**   | PSI-standard results present; no SDRF experimental-design file.                           |
+| **Gold**     | SDRF present; open spectra (mzML / MGF) **or** organism-part annotation missing.          |
+| **Platinum** | Open spectra + organism-part annotation present; no linked PubMed publication.            |
+| **Diamond**  | All FAIR criteria met: PSI results, SDRF, open spectra, organism part, and a publication. |
 
 > Tier logic is version-stamped (`tier_logic_version = "v2.0"`) and stored in the database so that re-scoring after a logic update can be detected.
 
@@ -140,26 +150,26 @@ PXAudit scores each dataset on a **7-tier FAIR ladder**. Every tier adds one FAI
 
 The quant tier is independent of the FAIR tier and indicates quantification readiness.
 
-| Quant Tier | Meaning |
-| --- | --- |
-| **Unverifiable** | Non-PRIDE accession; cannot be evaluated. |
-| **No Quant** | No PSI-standard results and no tabular quant files. |
-| **Partial** | Either PSI-standard IDs **or** a quant table, but not both. |
-| **Quant-Ready** | PSI IDs + tabular quant table present; CV-term quantification metadata missing. |
-| **Quant-Complete** | PSI IDs + tabular quant table + CV-term method metadata are fully described. |
+| Quant Tier         | Meaning                                                                         |
+| ------------------ | ------------------------------------------------------------------------------- |
+| **Unverifiable**   | Non-PRIDE accession; cannot be evaluated.                                       |
+| **No Quant**       | No PSI-standard results and no tabular quant files.                             |
+| **Partial**        | Either PSI-standard IDs **or** a quant table, but not both.                     |
+| **Quant-Ready**    | PSI IDs + tabular quant table present; CV-term quantification metadata missing. |
+| **Quant-Complete** | PSI IDs + tabular quant table + CV-term method metadata are fully described.    |
 
 ### Validated Results
 
 The following scores were last verified against the live PRIDE REST API on 2026-03-21 and are included in the integration test suite.
 
-| Accession | Tier | Quant Tier |
-| --- | --- | --- |
-| PXD057701 | Raw | No Quant |
-| PXD002244 | Bronze | No Quant |
-| PXD000001 | Silver | Partial |
-| PXD073444 | Platinum | Partial |
-| PXD075811 | Platinum | Partial |
-| PXD004683 | Diamond | Partial |
+| Accession | Tier     | Quant Tier |
+| --------- | -------- | ---------- |
+| PXD057701 | Raw      | No Quant   |
+| PXD002244 | Bronze   | No Quant   |
+| PXD000001 | Silver   | Partial    |
+| PXD073444 | Platinum | Partial    |
+| PXD075811 | Platinum | Partial    |
+| PXD004683 | Diamond  | Partial    |
 
 ---
 
@@ -167,11 +177,11 @@ The following scores were last verified against the live PRIDE REST API on 2026-
 
 Every `check` run upserts three tables in the SQLite database:
 
-| Table | Description |
-| --- | --- |
-| `study` | One row per accession: title, organism, instrument, submission year and type, keywords. |
-| `study_files` | One row per file: name, PRIDE category, extension, FTP URL, size in bytes. |
-| `audit` | One row per accession: computed tier, quant tier, 13 `has_*` quality flags, `files_fetch_failed`, `is_unverifiable`, and `tier_logic_version`. |
+| Table         | Description                                                                                                                                    |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `study`       | One row per accession: title, organism, instrument, submission year and type, keywords.                                                        |
+| `study_files` | One row per file: name, PRIDE category, extension, FTP URL, size in bytes.                                                                     |
+| `audit`       | One row per accession: computed tier, quant tier, 13 `has_*` quality flags, `files_fetch_failed`, `is_unverifiable`, and `tier_logic_version`. |
 
 > **Example queries**
 
@@ -207,12 +217,13 @@ Pre-commit runs `ruff` (lint + format, line-length 100) and `mypy` (strict optio
 
 ```text
 src/pxaudit/
-├── cli.py              # click entry points (check, bulk-audit, manifest)
+├── cli.py              # click entry points (check, bulk-audit, manifest, report)
 ├── tier_engine.py      # 7-tier FAIR ladder + quant tier logic
 ├── file_classifier.py  # deterministic FileClass assignment for every file type
 ├── pride_client.py     # PRIDE REST API v3 client with pagination + retry/backoff
 ├── db.py               # SQLite schema + upsert helpers + migrations
-└── cache.py            # local JSON response cache (~/.pxaudit_cache/)
+├── cache.py            # local JSON response cache (~/.pxaudit_cache/)
+└── report.py           # HTML report generation with Jinja2 + matplotlib
 ```
 
 ---
@@ -230,13 +241,13 @@ uv run pytest --cov=pxaudit --cov-report=term-missing
 uv run pytest -m integration -v --no-cov
 ```
 
-The default run excludes integration tests (`-m 'not integration'` is set in `pyproject.toml`). The test suite has **455 unit tests** with **100% branch coverage** across all modules, plus **12 live integration tests** covering six real PRIDE accessions.
+The default run excludes integration tests (`-m 'not integration'` is set in `pyproject.toml`). The test suite has **506 unit tests** with **100% branch coverage** across all modules, plus **12 live integration tests** covering six real PRIDE accessions.
 
 ---
 
 ## Roadmap
 
-- **Reporting**: `pxaudit report --db results.db` generating tier distributions, SDRF adoption trends, metadata completeness over time, and an exemplar shortlist as a Quarto-rendered HTML report.
+- **Reporting**: `pxaudit report --db results.db` generating tier distributions, metadata completeness, cohort analysis, and dataset explorer as self-contained HTML reports.
 - **Multi-repository**: plugin adapters for MassIVE, jPOST, and iProX so non-PRIDE accessions are audited rather than marked Unverifiable.
 
 Contributions and issue reports are welcome.
@@ -252,7 +263,7 @@ If you use PXAudit in your research, please cite it as:
   author   = {Ergin, Enes Kemal},
   title    = {{PXAudit}: A command-line tool for auditing {Proteomics Exchange} study metadata},
   year     = {2026},
-  version  = {0.3.0},
+  version  = {0.4.0},
   url      = {https://github.com/LangeLab/PXAudit},
   license  = {MIT},
 }

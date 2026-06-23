@@ -6,19 +6,31 @@ All notable changes to PXAudit are documented here. The format follows [Keep a C
 
 ---
 
-## [0.4.0] - Unreleased
+## [0.4.0] - 2026-06-22 - [Tagged]
 
 ### Added
 
-- `insert_audit_record()` in `db.py`: transaction-wrapped batch insert for study, study_files, and audit. Prevents partial failures from leaving orphaned rows.
-- `_COMPOUND_EXTS` in `file_classifier.py`: derived dynamically from `_EXTENSION_TO_CLASS` keys. No more manual sync required.
-- `test_compound_exts_derived_from_registry` and `test_compound_exts_all_have_dot_after_first_char` in `test_file_classifier.py`.
+- `pxaudit report --db results.db` command: self-contained HTML report generation from SQLite database.
+- Quality Distribution: donut charts with full legends for qualitative (7-tier FAIR ladder) and quantitative tiers.
+- Metadata Completeness: horizontal bar chart showing missing fields ranked by frequency, color-coded by severity.
+- Cohort Analysis: stacked bar charts showing quality distribution by organism and instrument type.
+- Tier Reference: two-column grid with accurate descriptions for all tiers.
+- Dataset Explorer: sortable table with colored tier badges, flag indicators, and title tooltips.
+- Publication-quality matplotlib plots: 150 DPI, proper typography, clean layouts.
+- `temp/generate_demo.py`: realistic demo database generator with 150+ synthetic datasets.
+- `test_report.py`: 38 tests covering all query functions, chart rendering, and HTML output.
+
+### Changed
+
+- Color palette redesigned: distinct colors matching tier meanings (blue=Diamond, gold=Gold, etc.).
+- Tier descriptions updated with precise definitions from source code.
+- Report structure reorganized around scientist's questions (quality, completeness, cohorts).
 
 ### Fixed
 
-- `has_mztab` now detects compressed mzTab files (`.mztab.gz`, `.mztab.zip`, `.mztab.bz2`, etc.) by applying `strip_compression` before the extension check.
-- `--no-cache` now skips both cache reads AND writes. `--refresh` skips reads but still writes to cache. Previously both flags behaved identically.
-- DB inserts wrapped in single transaction: study, study_files, and audit either all succeed or all roll back.
+- Quantitative tier detection: now correctly identifies Quant-Ready and Quant-Complete datasets.
+- Donut chart legends show all tiers even when count=0.
+- Metadata completeness chart annotations instead of redundant table.
 
 ---
 
@@ -137,6 +149,7 @@ First tagged release. Single-study auditing with a 7-tier FAIR ladder and quanti
 - Cache dir resolved relative to CWD; now uses absolute `~/.pxaudit_cache/` (#2).
 - `fetch_files` fetched only the first 100 files; added pagination loop (#4).
 
+[0.4.0]: https://github.com/LangeLab/PXAudit/releases/tag/v0.4.0
 [0.3.0]: https://github.com/LangeLab/PXAudit/releases/tag/v0.3.0
 [0.2.0]: https://github.com/LangeLab/PXAudit/releases/tag/v0.2.0
 [0.1.0]: https://github.com/LangeLab/PXAudit/releases/tag/v0.1.0

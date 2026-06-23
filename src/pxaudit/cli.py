@@ -5,18 +5,20 @@ Commands
 check        Audit a single Proteomics Exchange accession.
 bulk-audit   Audit multiple Proteomics Exchange accessions in batch.
 manifest     List files for an accession from the audit database.
+report       Generate a self-contained HTML report from a populated database.
 """
 
 from __future__ import annotations
 
 import importlib.metadata
 import json
+import sqlite3
 import sys
 import time
+import typing
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import NamedTuple
 
 import click
 import pandas as pd
@@ -43,7 +45,7 @@ __all__ = [
 ]
 
 
-class AuditData(NamedTuple):
+class AuditData(typing.NamedTuple):
     """Return type for :func:`_audit_single`.
 
     Attributes
@@ -78,6 +80,16 @@ def main() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _parse_submission_year(date_str: str) -> int | None:
+    """Extract the year from an ISO 8601 date string, returning None on failure."""
+    if not date_str or len(date_str) < 4:
+        return None
+    try:
+        return int(date_str[:4])
+    except ValueError:
+        return None
+
+
 def _extract_study(accession: str, project: dict, fetched_at: str) -> dict:
     """Map a raw PRIDE /projects response to a ``study`` table row dict."""
     organisms: list[dict] = project.get("organisms") or []
@@ -90,7 +102,7 @@ def _extract_study(accession: str, project: dict, fetched_at: str) -> dict:
         "organism": organisms[0].get("name") if organisms else None,
         "organism_id": organisms[0].get("accession") if organisms else None,
         "instrument": instruments[0].get("name") if instruments else None,
-        "submission_year": int(date_str[:4]) if date_str else None,
+        "submission_year": _parse_submission_year(date_str),
         "submission_type": project.get("submissionType") or None,
         "keywords": ", ".join(keywords) if keywords else None,
         "repository": "PRIDE",
@@ -193,8 +205,26 @@ def _audit_single(
     On network failure, serves stale cached data with a warning if available.
     Only raises ``PrideAPIError`` when no cache exists at all.
 
-    Returns an :class:`AuditData` named tuple with result, study, files_df,
-    files_data, and fetched_at.
+    Parameters
+    ----------
+    accession:
+        PRIDE accession string, e.g. ``"PXD000001"``.
+    db_path:
+        Path to the SQLite database file.
+    no_cache:
+        Skip cache reads and writes.
+    refresh:
+        Skip cache reads but write fresh data.
+
+    Returns
+    -------
+    AuditData
+        Named tuple with result, study, files_df, files_data, and fetched_at.
+
+    Raises
+    ------
+    PrideAPIError
+        If the PRIDE API is unreachable and no cached data is available.
     """
     fetched_at = datetime.now(UTC).isoformat()
     project_data: dict | None = None
@@ -279,7 +309,7 @@ def _read_accessions(input_path: str) -> list[str]:
         lines = Path(input_path).read_text().splitlines()
 
     accessions: list[str] = []
-    for _, line in enumerate(lines, 1):
+    for line in lines:
         acc = line.strip()
         if not acc or acc.startswith("#"):
             continue
@@ -346,6 +376,16 @@ def _export_json(results: list[AuditResult], path: str) -> None:
     rows = [_result_to_row(r) for r in results]
     with open(path, "w", encoding="utf-8") as f:
         json.dump(rows, f, indent=2)
+
+
+def _write_export(results: list[AuditResult], path: str, fmt: str) -> None:
+    """Write *results* to *path* in the requested format (tsv/csv/json)."""
+    if fmt == "tsv":
+        _export_tsv(results, path)
+    elif fmt == "csv":
+        _export_csv(results, path)
+    else:
+        _export_json(results, path)
 
 
 # ---------------------------------------------------------------------------
@@ -499,8 +539,14 @@ def bulk_audit(
                 else:
                     click.echo(f"\nError: {accession} failed ({exc}).", err=True)
                     click.echo("Use --continue-on-error to skip failures.", err=True)
-                    # Write partial results
-                    if results:
+                    # Write partial export before exiting.
+                    if results and export_path:
+                        _write_export(results, export_path, fmt or "tsv")
+                        click.echo(
+                            f"Partial export written to {export_path} "
+                            f"({len(results)} accessions completed)."
+                        )
+                    elif results:
                         click.echo(f"Partial results: {len(results)} accessions completed.")
                     sys.exit(1)
 
@@ -508,17 +554,16 @@ def bulk_audit(
 
     except KeyboardInterrupt:
         click.echo("\nInterrupted. Partial results written to database.")
+        # Write partial export on interrupt as well.
+        if results and export_path:
+            _write_export(results, export_path, fmt or "tsv")
+            click.echo(f"Partial export written to {export_path}")
 
     # ------------------------------------------------------------------
     # 5.  Export
     # ------------------------------------------------------------------
     if results and export_path:
-        if fmt == "tsv":
-            _export_tsv(results, export_path)
-        elif fmt == "csv":
-            _export_csv(results, export_path)
-        else:
-            _export_json(results, export_path)
+        _write_export(results, export_path, fmt or "tsv")
         click.echo(f"Exported {len(results)} results to {export_path}")
 
     # ------------------------------------------------------------------
@@ -588,3 +633,58 @@ def manifest(accession: str, db_path: str, fmt: str) -> None:
         click.echo(df.to_json(orient="records", indent=2))
     else:
         click.echo(df.to_csv(sep="\t", index=False))
+
+
+@main.command("report")
+@click.option("--db", "db_path", required=True, help="SQLite database path.")
+@click.option(
+    "--output",
+    "output_dir",
+    default=".",
+    show_default=True,
+    help="Output directory for the HTML report.",
+)
+@click.option(
+    "--title",
+    default="PXAudit Report",
+    show_default=True,
+    help="Report title shown in the page header.",
+)
+@click.option(
+    "--overwrite",
+    is_flag=True,
+    default=False,
+    help="Overwrite existing output directory.",
+)
+def report(db_path: str, output_dir: str, title: str, overwrite: bool) -> None:
+    """Generate a self-contained HTML report from a populated database."""
+    from pxaudit.report import generate_report
+
+    if not Path(db_path).exists():
+        click.echo(f"Error: database not found: {db_path}", err=True)
+        sys.exit(2)
+
+    out = Path(output_dir)
+    if out.exists() and not overwrite:
+        click.echo(
+            f"Error: output directory {output_dir!r} already exists. Use --overwrite to overwrite.",
+            err=True,
+        )
+        sys.exit(2)
+
+    try:
+        report_path = generate_report(db_path, output_dir, title)
+    except ValueError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+    except ImportError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+    except FileNotFoundError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(2)
+    except (PermissionError, sqlite3.DatabaseError) as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(2)
+
+    click.echo(f"Report written to {report_path}")

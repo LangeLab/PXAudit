@@ -1,6 +1,6 @@
 [project]
 name = "pxaudit"
-version = "0.3.0"
+version = "0.4.0"
 description = "Proteomics Exchange metadata audit tool"
 authors = [
     { name = "eneskemalergin", email = "eneskemalergin@gmail.com" }
@@ -11,6 +11,12 @@ dependencies = [
     "pandas>=3.0",
     "requests>=2.32.5",
     "tqdm>=4.67.0",
+]
+
+[project.optional-dependencies]
+report = [
+    "jinja2>=3.1",
+    "matplotlib>=3.8",
 ]
 
 [project.scripts]
@@ -34,6 +40,10 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/pxaudit/report.py" = ["E501"]
+"tests/test_report.py" = ["E501"]
 
 [tool.pytest.ini_options]
 addopts = "--strict-markers --tb=short --cov=pxaudit --cov-report=term-missing -m 'not integration'"

@@ -111,6 +111,55 @@ The accession must have been audited first (via `check` or `bulk-audit`). Output
 
 ---
 
+## `pxaudit report`
+
+Generate a self-contained HTML report from a populated database.
+
+```bash
+pxaudit report [OPTIONS]
+```
+
+**Options**
+
+| Flag           | Default          | Description                              |
+| -------------- | ---------------- | ---------------------------------------- |
+| `--db PATH`    | required         | SQLite database path                     |
+| `--output DIR` | `.`              | Output directory for the HTML report     |
+| `--title TEXT` | `PXAudit Report` | Report title shown in the page header    |
+| `--overwrite`  | off              | Overwrite an existing output directory   |
+
+**Examples**
+
+```bash
+# Basic report in current directory
+pxaudit report --db pxaudit_results.db
+
+# Custom title and output directory
+pxaudit report --db results.db --output ~/reports/ --title "My Cohort Audit"
+
+# Overwrite a previous report
+pxaudit report --db results.db --output report/ --overwrite
+```
+
+The report is a single `report.html` file (no external dependencies) containing:
+
+- **Summary header**: total accessions, verifiable/unverifiable counts, database path, version
+- **Quality Distribution**: donut charts for both qualitative (FAIR ladder) and quantitative tiers with full legends
+- **Metadata Completeness**: horizontal bar chart showing % missing for each metadata field, colour-coded by severity (red = critical, amber = moderate, green = acceptable)
+- **Cohort Analysis**: stacked bar charts breaking down quality by organism and instrument type
+- **Tier Reference**: two-column grid explaining every qualitative and quantitative tier
+- **All Accessions**: collapsible table with accession, title, tier, quant tier, and every metadata flag as a coloured badge (present / absent / unknown)
+
+Charts are rendered with matplotlib (150 DPI) and embedded as base64 PNG. The template uses Jinja2. Both are optional dependencies installed via `pip install pxaudit[report]`.
+
+Requires `jinja2` and `matplotlib`. Install with:
+
+```bash
+pip install pxaudit[report]
+```
+
+---
+
 ## Workflow example: from search to report
 
 ```bash
@@ -131,6 +180,9 @@ sqlite3 pxaudit_results.db "
 # 4. Inspect a specific dataset's files
 pxaudit manifest PXD004683 | head -20
 
-# 5. Re-audit a single accession after a logic update
+# 5. Generate an HTML report
+pxaudit report --db pxaudit_results.db --output report/ --title "Target Audit"
+
+# 6. Re-audit a single accession after a logic update
 pxaudit check PXD004683 --refresh
 ```

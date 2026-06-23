@@ -534,6 +534,24 @@ def test_extract_study_missing_date_gives_none_year() -> None:
     assert row["submission_year"] is None
 
 
+def test_extract_study_malformed_date_gives_none_year() -> None:
+    """Malformed submissionDate must not crash; submission_year is None."""
+    row = _extract_study("PXD000001", {"submissionDate": "not-a-date"}, "ts")
+    assert row["submission_year"] is None
+
+
+def test_extract_study_short_date_gives_none_year() -> None:
+    """Date string shorter than 4 chars → submission_year is None."""
+    row = _extract_study("PXD000001", {"submissionDate": "20"}, "ts")
+    assert row["submission_year"] is None
+
+
+def test_extract_study_non_digit_prefix_gives_none_year() -> None:
+    """Date starting with non-digits → submission_year is None."""
+    row = _extract_study("PXD000001", {"submissionDate": "abcd-ef-gh"}, "ts")
+    assert row["submission_year"] is None
+
+
 def test_extract_study_multi_keyword_joined() -> None:
     """Multiple keywords → joined with ', '."""
     row = _extract_study("PXD000001", {"keywords": ["a", "b", "c"]}, "ts")
@@ -769,7 +787,7 @@ def test_export_json(tmp_path: Path) -> None:
 
 @pytest.fixture()
 def bulk_mocks(monkeypatch: pytest.MonkeyPatch) -> dict:
-    """Patch _audit_single to skip real I/O during bulk-audit tests.
+    """Patch _audit_single and time.sleep to skip real I/O during bulk-audit tests.
 
     Returns results for two accessions: PXD000001 (Gold, Partial)
     and PXD000002 (Diamond, Quant-Complete).
@@ -799,6 +817,7 @@ def bulk_mocks(monkeypatch: pytest.MonkeyPatch) -> dict:
 
     m: dict = {"_audit_single": MagicMock(side_effect=fake_audit)}
     monkeypatch.setattr("pxaudit.cli._audit_single", m["_audit_single"])
+    monkeypatch.setattr("pxaudit.cli.time.sleep", lambda _: None)
     return m
 
 
@@ -904,6 +923,62 @@ def test_bulk_audit_stop_on_error_with_partial_results(bulk_mocks: dict, tmp_pat
     )
     assert result.exit_code == 1
     assert "Partial results" in result.output
+
+
+def test_bulk_audit_stop_on_error_writes_partial_export(bulk_mocks: dict, tmp_path: Path) -> None:
+    """Without --continue-on-error and with --format, failure writes partial export."""
+    acc_file = tmp_path / "ids.txt"
+    acc_file.write_text("PXD000001\nUNKNOWN_ACC\n")
+    export_path = tmp_path / "partial.tsv"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "bulk-audit",
+            "--input",
+            str(acc_file),
+            "--format",
+            "tsv",
+            "--output",
+            str(export_path),
+        ],
+    )
+    assert result.exit_code == 1
+    assert export_path.exists()
+    assert "Partial export written" in result.output
+
+
+def test_bulk_audit_keyboard_interrupt_writes_partial_export(
+    bulk_mocks: dict, tmp_path: Path
+) -> None:
+    """KeyboardInterrupt after partial success writes partial export."""
+
+    def _audit_one_then_interrupt(accession: str, db_path: str, **kw: object) -> object:
+        if accession == "PXD000001":
+            r = AuditResult(accession="PXD000001", tier="Gold", quant_tier="Partial")
+            return AuditData(r, {}, MagicMock(), [], "2026-01-01T00:00:00+00:00")
+        raise KeyboardInterrupt
+
+    bulk_mocks["_audit_single"].side_effect = _audit_one_then_interrupt
+    acc_file = tmp_path / "ids.txt"
+    acc_file.write_text("PXD000001\nPXD000002\n")
+    export_path = tmp_path / "partial_intr.tsv"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "bulk-audit",
+            "--input",
+            str(acc_file),
+            "--format",
+            "tsv",
+            "--output",
+            str(export_path),
+        ],
+    )
+    assert result.exit_code == 0
+    assert export_path.exists()
+    assert "Partial export written" in result.output
 
 
 def test_bulk_audit_stdin_input(bulk_mocks: dict, tmp_path: Path) -> None:

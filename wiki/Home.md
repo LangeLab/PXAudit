@@ -18,6 +18,7 @@ That one command fetches the dataset's metadata and file list, classifies every 
 - **Check a single dataset**: `pxaudit check PXD000001` scores one accession and prints a summary.
 - **Audit a whole list**: `pxaudit bulk-audit --input ids.txt` runs through dozens or hundreds of accessions with a progress bar, then exports the results.
 - **Inspect file inventories**: `pxaudit manifest PXD000001` lists every file in a dataset with its category, size, and checksum.
+- **Generate an HTML report**: `pxaudit report --db results.db` produces a self-contained HTML report with donut charts, metadata completeness bars, cohort analysis, and a full accession table.
 - **Track over time**: every audit writes to the same SQLite database, so you can query tier distributions, spot trends, and flag datasets that need re-scoring after a logic update.
 - **Work offline**: API responses are cached locally. If the network goes down, PXAudit falls back to the cached data with a warning.
 
@@ -34,6 +35,18 @@ PXAudit hits two PRIDE REST endpoints per accession (`/projects` and `/files`), 
 
 Results are upserted into three SQLite tables (`study`, `study_files`, `audit`) so nothing gets lost when you re-audit an accession.
 
+## Report preview
+
+After auditing datasets, generate a self-contained HTML report:
+
+```bash
+pxaudit report --db pxaudit_results.db --output report/
+```
+
+The report includes quality distribution donut charts, metadata completeness bars, cohort analysis by organism and instrument, a tier reference, and a searchable accession table.
+
+![Demo report screenshot](../assets/demo-report-capture.png)
+
 ## Project status
 
-Current release: **v0.3.0** (beta). Active development at [github.com/LangeLab/PXAudit](https://github.com/LangeLab/PXAudit).
+Current release: **v0.4.0** (beta). Active development at [github.com/LangeLab/PXAudit](https://github.com/LangeLab/PXAudit).
