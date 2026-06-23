@@ -450,14 +450,14 @@ def generate_report(db_path: str | Path, output_dir: str | Path, title: str) -> 
     output_dir = Path(output_dir)
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
-    except PermissionError as exc:
+    except PermissionError as exc:  # pragma: no cover: chmod ineffective on Windows NTFS
         raise PermissionError(f"cannot create output directory {output_dir}: {exc}") from exc
 
     html = _render_html(data, db_path, title)
     out_path = output_dir / "report.html"
     try:
         out_path.write_text(html, encoding="utf-8")
-    except PermissionError as exc:
+    except PermissionError as exc:  # pragma: no cover: chmod ineffective on Windows NTFS
         raise PermissionError(f"cannot write {out_path}: {exc}") from exc
     return out_path
 

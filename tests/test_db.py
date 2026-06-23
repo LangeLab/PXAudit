@@ -180,21 +180,19 @@ def test_insert_study_files_fk_violation_raises(conn: sqlite3.Connection) -> Non
         insert_study_files(conn, "PXD_ORPHAN", df)
 
 
-def test_insert_study_files_fk_enforced_via_get_or_create_db() -> None:
+def test_insert_study_files_fk_enforced_via_get_or_create_db(tmp_path: Path) -> None:
     """FK constraints are enforced when using get_or_create_db().
 
     Regression test for ISS-001: connections from get_or_create_db() have
     PRAGMA foreign_keys = ON set once, which persists for the connection lifetime.
     """
-    import tempfile
-
-    with tempfile.NamedTemporaryFile(suffix=".db") as f:
-        conn = get_or_create_db(f.name)
-        insert_study(conn, _STUDY_DATA)
-        orphan_df = _make_files_df("PXD_MISSING", 1)
-        with pytest.raises(sqlite3.IntegrityError):
-            insert_study_files(conn, "PXD_MISSING", orphan_df)
-        conn.close()
+    db_path = tmp_path / "fk_test.db"
+    conn = get_or_create_db(db_path)
+    insert_study(conn, _STUDY_DATA)
+    orphan_df = _make_files_df("PXD_MISSING", 1)
+    with pytest.raises(sqlite3.IntegrityError):
+        insert_study_files(conn, "PXD_MISSING", orphan_df)
+    conn.close()
 
 
 def test_insert_study_files_zero_rows(conn: sqlite3.Connection) -> None:

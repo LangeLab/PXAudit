@@ -604,6 +604,7 @@ class TestEdgeCases:
         with pytest.raises(FileNotFoundError, match="database not found"):
             generate_report(tmp_path / "nope.db", tmp_path, "X")
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="chmod has no effect on NTFS")
     def test_permission_error_mkdir(self, realistic_db: Path, tmp_path: Path) -> None:
         readonly = tmp_path / "ro"
         readonly.mkdir()
@@ -614,6 +615,7 @@ class TestEdgeCases:
         finally:
             readonly.chmod(0o755)
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="chmod has no effect on NTFS")
     def test_permission_error_write(self, realistic_db: Path, tmp_path: Path) -> None:
         """PermissionError when report.html can't be written."""
         readonly = tmp_path / "ro2"
@@ -687,6 +689,7 @@ class TestCliIntegration:
         assert r.exit_code == 2
         assert "not a database" in r.output
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="chmod has no effect on NTFS")
     def test_permission_denied_dir(self, realistic_db: Path, tmp_path: Path) -> None:
         readonly = tmp_path / "ro_cli"
         readonly.mkdir()
