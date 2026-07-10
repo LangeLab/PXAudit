@@ -9,7 +9,7 @@ Test organisation
 3.  Project API failure → exit 1
 4.  Files API failure → exit 0, Bronze, files_fetch_failed warning printed
 5.  Cache hit paths : project and/or files already cached → fetches skipped
-6.  --no-cache flag : read_cache never called; write_cache still called
+6.  --no-cache flag : read_cache never called; write_cache never called
 7.  --refresh flag : same semantics as --no-cache for reads; still fetches and writes
 8.  --db flag : correct path forwarded to get_or_create_db
 9.  Non-PXD prefix : Unverifiable result, no API calls, exit 0
@@ -79,6 +79,20 @@ from pxaudit.cli import (
 )
 from pxaudit.pride_client import PrideAPIError
 from pxaudit.tier_engine import AuditResult
+
+# ---------------------------------------------------------------------------
+# Output mode reset (module globals on _output)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _reset_output_mode() -> None:
+    from pxaudit import _output
+
+    _output.configure(quiet=False, verbose=False, no_color=False)
+    yield
+    _output.configure(quiet=False, verbose=False, no_color=False)
+
 
 # ---------------------------------------------------------------------------
 # Synthetic PRIDE API payloads
@@ -813,7 +827,7 @@ def bulk_mocks(monkeypatch: pytest.MonkeyPatch) -> dict:
             )
         else:
             raise PrideAPIError(f"unknown {accession}")
-        return AuditData(r, {}, MagicMock(), [], "2026-01-01T00:00:00+00:00")
+        return AuditData(r, {}, MagicMock(), [], "2026-01-01T00:00:00+00:00", [], [], True)
 
     m: dict = {"_audit_single": MagicMock(side_effect=fake_audit)}
     monkeypatch.setattr("pxaudit.cli._audit_single", m["_audit_single"])
@@ -956,7 +970,7 @@ def test_bulk_audit_keyboard_interrupt_writes_partial_export(
     def _audit_one_then_interrupt(accession: str, db_path: str, **kw: object) -> object:
         if accession == "PXD000001":
             r = AuditResult(accession="PXD000001", tier="Gold", quant_tier="Partial")
-            return AuditData(r, {}, MagicMock(), [], "2026-01-01T00:00:00+00:00")
+            return AuditData(r, {}, MagicMock(), [], "2026-01-01T00:00:00+00:00", [], [], True)
         raise KeyboardInterrupt
 
     bulk_mocks["_audit_single"].side_effect = _audit_one_then_interrupt
@@ -976,7 +990,7 @@ def test_bulk_audit_keyboard_interrupt_writes_partial_export(
             str(export_path),
         ],
     )
-    assert result.exit_code == 0
+    assert result.exit_code == 130
     assert export_path.exists()
     assert "Partial export written" in result.output
 
@@ -1114,7 +1128,7 @@ def test_bulk_audit_keyboard_interrupt(bulk_mocks: dict, tmp_path: Path) -> None
         main,
         ["bulk-audit", "--input", str(acc_file)],
     )
-    assert result.exit_code == 0
+    assert result.exit_code == 130
     assert "Interrupted" in result.output
 
 
@@ -1267,7 +1281,8 @@ def test_bulk_audit_stale_cache_fallback_on_project_failure(
     acc_file = tmp_path / "ids.txt"
     acc_file.write_text("PXD000001\nPXD000002\n")
     # Fake audit that fails for PXD000001 but has stale cache.
-    from pxaudit.cli import AuditData, AuditResult
+    from pxaudit.cli import AuditData
+    from pxaudit.tier_engine import AuditResult
 
     call_count = [0]
 
@@ -1281,6 +1296,9 @@ def test_bulk_audit_stale_cache_fallback_on_project_failure(
             MagicMock(),
             [],
             "ts",
+            [],
+            [],
+            True,
         )
 
     monkeypatch.setattr("pxaudit.cli._audit_single", MagicMock(side_effect=fake_audit))
@@ -1291,3 +1309,828 @@ def test_bulk_audit_stale_cache_fallback_on_project_failure(
     )
     assert result.exit_code == 0
     assert "Failed    : 1" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Group flags, quiet/verbose matrix, cache commands, delay skip
+# ---------------------------------------------------------------------------
+
+
+def test_quiet_and_verbose_mutually_exclusive(mocks: dict) -> None:
+    """-q and -v together exit 2."""
+    runner = CliRunner()
+    result = runner.invoke(main, ["-q", "-v", "check", "PXD000001"])
+    assert result.exit_code == 2
+    assert "mutually exclusive" in result.output
+
+
+def test_check_quiet_one_line_no_checklist(mocks: dict) -> None:
+    """Quiet check: one status line, no Metadata/Files checklist body."""
+    runner = CliRunner()
+    result = runner.invoke(main, ["-q", "check", "PXD000001", "--db", "out.db"])
+    assert result.exit_code == 0
+    assert "Metadata" not in result.output
+    assert "Files (" not in result.output
+    assert "PXD000001" in result.output
+    assert "db=out.db" in result.output
+    assert "Gold" in result.output or "tier" in result.output.lower() or "Partial" in result.output
+
+
+def test_check_verbose_includes_detail(mocks: dict) -> None:
+    """Verbose check includes cache miss/fetch detail lines."""
+    runner = CliRunner()
+    result = runner.invoke(main, ["-v", "check", "PXD000001"])
+    assert result.exit_code == 0
+    assert "Metadata" in result.output
+    assert "cache miss" in result.output or "fetch:" in result.output
+
+
+def test_check_stale_warning_survives_quiet(mocks: dict, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Quiet must not suppress stale-cache warnings on stderr."""
+    mocks["fetch_project"].side_effect = PrideAPIError("down")
+    mocks["read_cache_stale"].return_value = (_GOLD_PROJECT, 99999.0)
+    runner = CliRunner()
+    result = runner.invoke(main, ["-q", "check", "PXD000001"])
+    assert result.exit_code == 0
+    assert "Metadata" not in result.stdout
+    assert "stale" in result.stderr.lower()
+    assert "Warning" in result.stderr
+
+
+def test_no_cache_help_mentions_reads_and_writes() -> None:
+    """--no-cache help must mention reads and writes."""
+    runner = CliRunner()
+    result = runner.invoke(main, ["check", "--help"])
+    assert result.exit_code == 0
+    assert "reads and writes" in result.output
+
+
+def test_refresh_help_mentions_still_write() -> None:
+    """--refresh help must say it still writes."""
+    runner = CliRunner()
+    result = runner.invoke(main, ["check", "--help"])
+    assert "Skip cache reads" in result.output
+    assert "write" in result.output.lower()
+
+
+def test_audit_single_forwards_cache_and_delay(mocks: dict, tmp_path: Path) -> None:
+    """_audit_single passes cache_dir, TTL, and request_delay through."""
+    from pxaudit.cli import _audit_single
+
+    _audit_single(
+        "PXD000001",
+        str(tmp_path / "db.sqlite"),
+        cache_dir=str(tmp_path / "cache"),
+        cache_ttl_seconds=123.0,
+        request_delay=0.0,
+    )
+    assert mocks["read_cache"].called
+    kwargs = mocks["read_cache"].call_args.kwargs
+    assert kwargs["cache_dir"] == tmp_path / "cache"
+    assert kwargs["max_age"] == 123.0
+    assert mocks["fetch_project"].call_args.kwargs.get("delay") == 0.0
+    assert mocks["write_cache"].called
+    write_kwargs = mocks["write_cache"].call_args.kwargs
+    assert write_kwargs["cache_dir"] == tmp_path / "cache"
+
+
+def test_audit_single_no_click_echo(
+    mocks: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """_audit_single must not call click.echo (warnings returned as data)."""
+    import pxaudit.cli as cli_mod
+    from pxaudit.cli import _audit_single
+
+    echoed: list[str] = []
+
+    def boom(*a: object, **k: object) -> None:
+        echoed.append(str(a))
+
+    monkeypatch.setattr(cli_mod.click, "echo", boom)
+    mocks["fetch_project"].side_effect = PrideAPIError("down")
+    mocks["read_cache_stale"].return_value = (_GOLD_PROJECT, 10.0)
+    data = _audit_single("PXD000001", str(tmp_path / "db.sqlite"), request_delay=0.0)
+    assert echoed == []
+    assert data.warnings
+    assert "stale" in data.warnings[0].lower()
+
+
+def test_bulk_skips_delay_on_full_cache_hit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """bulk_delay sleep skipped when network_used is False."""
+    sleeps: list[float] = []
+
+    def fake_audit(accession: str, db_path: str, **kw: object) -> AuditData:
+        r = AuditResult(accession=accession, tier="Gold", quant_tier="Partial")
+        return AuditData(r, {}, MagicMock(), [], "ts", [], [], False)
+
+    monkeypatch.setattr("pxaudit.cli._audit_single", MagicMock(side_effect=fake_audit))
+    monkeypatch.setattr("pxaudit.cli.time.sleep", lambda s: sleeps.append(s))
+    acc = tmp_path / "ids.txt"
+    acc.write_text("PXD000001\nPXD000002\n")
+    runner = CliRunner()
+    result = runner.invoke(main, ["bulk-audit", "--input", str(acc), "--delay", "2.5"])
+    assert result.exit_code == 0
+    assert sleeps == []
+
+
+def test_bulk_applies_delay_after_network(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """bulk_delay sleep runs when network_used is True."""
+    sleeps: list[float] = []
+
+    def fake_audit(accession: str, db_path: str, **kw: object) -> AuditData:
+        r = AuditResult(accession=accession, tier="Gold", quant_tier="Partial")
+        return AuditData(r, {}, MagicMock(), [], "ts", [], [], True)
+
+    monkeypatch.setattr("pxaudit.cli._audit_single", MagicMock(side_effect=fake_audit))
+    monkeypatch.setattr("pxaudit.cli.time.sleep", lambda s: sleeps.append(s))
+    acc = tmp_path / "ids.txt"
+    acc.write_text("PXD000001\n")
+    runner = CliRunner()
+    result = runner.invoke(main, ["bulk-audit", "--input", str(acc), "--delay", "2.5"])
+    assert result.exit_code == 0
+    assert sleeps == [2.5]
+
+
+def test_bulk_quiet_summary_one_line(bulk_mocks: dict, tmp_path: Path) -> None:
+    """Quiet bulk-audit: compact summary, no tier distribution block."""
+    acc = tmp_path / "ids.txt"
+    acc.write_text("PXD000001\nPXD000002\n")
+    runner = CliRunner()
+    result = runner.invoke(main, ["-q", "bulk-audit", "--input", str(acc)])
+    assert result.exit_code == 0
+    assert "bulk-audit" in result.output
+    assert "completed=" in result.output
+    assert "Batch audit complete" not in result.output
+
+
+def test_bulk_quiet_disables_tqdm(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Quiet mode must not construct tqdm."""
+    called: list[bool] = []
+
+    class Boom:
+        def __init__(self, *a: object, **k: object) -> None:
+            called.append(True)
+
+        def __iter__(self):  # noqa: ANN204
+            return iter([])
+
+    def fake_audit(accession: str, db_path: str, **kw: object) -> AuditData:
+        r = AuditResult(accession=accession, tier="Gold")
+        return AuditData(r, {}, MagicMock(), [], "ts", [], [], False)
+
+    monkeypatch.setattr("pxaudit.cli.tqdm", Boom)
+    monkeypatch.setattr("pxaudit.cli._audit_single", MagicMock(side_effect=fake_audit))
+    monkeypatch.setattr("pxaudit.cli.time.sleep", lambda _: None)
+    acc = tmp_path / "ids.txt"
+    acc.write_text("PXD000001\n")
+    runner = CliRunner()
+    result = runner.invoke(main, ["-q", "bulk-audit", "--input", str(acc)])
+    assert result.exit_code == 0
+    assert called == []
+
+
+def test_cache_info_empty(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """cache info on empty/missing dir exits 0 with zeros."""
+    monkeypatch.setenv("PXAUDIT_CONFIG", str(tmp_path / "none.toml"))
+    cache = tmp_path / "cache"
+    runner = CliRunner()
+    result = runner.invoke(main, ["--cache-dir", str(cache), "cache", "info"])
+    assert result.exit_code == 0
+    assert f"cache_dir={cache}" in result.output
+    assert "files=0" in result.output
+    assert "bytes=0" in result.output
+
+
+def test_cache_info_with_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """cache info reports count, bytes, oldest/newest."""
+    monkeypatch.setenv("PXAUDIT_CONFIG", str(tmp_path / "none.toml"))
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    f1 = cache / "a.json"
+    f2 = cache / "b.json"
+    f1.write_text("aa")
+    f2.write_text("bbbb")
+    runner = CliRunner()
+    result = runner.invoke(main, ["--cache-dir", str(cache), "cache", "info"])
+    assert result.exit_code == 0
+    assert "files=2" in result.output
+    assert "bytes=6" in result.output
+    assert "oldest=" in result.output
+    assert "newest=" in result.output
+    assert "n/a" not in result.output
+
+
+def test_cache_clear_yes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """cache clear --yes deletes files after printing path."""
+    monkeypatch.setenv("PXAUDIT_CONFIG", str(tmp_path / "none.toml"))
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    (cache / "x.json").write_text("{}")
+    runner = CliRunner()
+    result = runner.invoke(main, ["--cache-dir", str(cache), "cache", "clear", "--yes"])
+    assert result.exit_code == 0
+    assert f"cache_dir={cache}" in result.output
+    assert not (cache / "x.json").exists()
+    assert "Removed 1" in result.output
+
+
+def test_cache_clear_decline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Declining confirmation leaves files intact."""
+    monkeypatch.setenv("PXAUDIT_CONFIG", str(tmp_path / "none.toml"))
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    target = cache / "x.json"
+    target.write_text("{}")
+    runner = CliRunner()
+    result = runner.invoke(main, ["--cache-dir", str(cache), "cache", "clear"], input="n\n")
+    assert result.exit_code != 0 or target.exists()
+    assert target.exists()
+
+
+def test_cache_clear_missing_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """cache clear on missing dir is a no-op success."""
+    monkeypatch.setenv("PXAUDIT_CONFIG", str(tmp_path / "none.toml"))
+    cache = tmp_path / "missing"
+    runner = CliRunner()
+    result = runner.invoke(main, ["--cache-dir", str(cache), "cache", "clear", "--yes"])
+    assert result.exit_code == 0
+    assert "nothing to delete" in result.output.lower() or "does not exist" in result.output
+
+
+def test_db_flag_overrides_config(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mocks: dict
+) -> None:
+    """--db flag wins over config file db_path."""
+    cfg = tmp_path / "c.toml"
+    cfg.write_text('db_path = "from_file.db"\n')
+    monkeypatch.setenv("PXAUDIT_CONFIG", str(cfg))
+    runner = CliRunner()
+    result = runner.invoke(main, ["check", "PXD000001", "--db", str(tmp_path / "flag.db")])
+    assert result.exit_code == 0
+    assert mocks["get_or_create_db"].call_args.args[0] == str(tmp_path / "flag.db")
+
+
+def test_manifest_unaffected_by_quiet(tmp_path: Path) -> None:
+    """manifest under -q still emits pure TSV body."""
+    from pxaudit.db import get_or_create_db, insert_audit_record
+    from pxaudit.tier_engine import compute_audit
+
+    db = tmp_path / "m.db"
+    conn = get_or_create_db(str(db))
+    try:
+        project = {
+            "title": "t",
+            "organisms": [{"name": "Homo sapiens", "accession": "NEWT:9606"}],
+            "instruments": [{"name": "Orbitrap"}],
+            "submissionDate": "2020-01-01",
+        }
+        files = [
+            {
+                "fileName": "a.mzid",
+                "fileCategory": {"value": "RESULT"},
+                "fileSizeBytes": 1,
+                "publicFileLocations": [],
+            }
+        ]
+        result = compute_audit("PXD9", project, files, files_fetch_failed=False)
+        study = {
+            "accession": "PXD9",
+            "title": "t",
+            "organism": "Homo sapiens",
+            "organism_id": "NEWT:9606",
+            "instrument": "Orbitrap",
+            "submission_year": 2020,
+            "submission_type": None,
+            "keywords": None,
+            "repository": "PRIDE",
+            "fetched_at": "ts",
+        }
+        import pandas as pd
+
+        files_df = pd.DataFrame(
+            [
+                {
+                    "accession": "PXD9",
+                    "file_name": "a.mzid",
+                    "file_category": "RESULT",
+                    "file_extension": ".mzid",
+                    "ftp_location": None,
+                    "file_size": 1,
+                    "checksum": None,
+                    "checksum_type": None,
+                }
+            ]
+        )
+        insert_audit_record(conn, study, "PXD9", files_df, result.__dict__)
+    finally:
+        conn.close()
+
+    runner = CliRunner()
+    out = runner.invoke(main, ["-q", "manifest", "PXD9", "--db", str(db)])
+    assert out.exit_code == 0
+    assert "file_name" in out.output
+    assert "a.mzid" in out.output
+    assert "Metadata" not in out.output
+
+
+def test_cache_info_empty_existing_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Existing empty cache dir reports zeros and n/a mtimes."""
+    monkeypatch.setenv("PXAUDIT_CONFIG", str(tmp_path / "none.toml"))
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    runner = CliRunner()
+    result = runner.invoke(main, ["--cache-dir", str(cache), "cache", "info"])
+    assert result.exit_code == 0
+    assert "files=0" in result.output
+    assert "oldest=n/a" in result.output
+
+
+def test_cache_stats_stat_oserror(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """_cache_stats skips entries that raise OSError and returns n/a when none remain."""
+    from pxaudit.cli import _cache_stats
+
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    bad = cache / "bad.json"
+    bad.write_text("x")
+
+    real_is_file = Path.is_file
+
+    def flaky_is_file(self: Path) -> bool:
+        if self.name == "bad.json":
+            raise OSError("nope")
+        return real_is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", flaky_is_file)
+    count, total, oldest, newest = _cache_stats(cache)
+    assert count == 0
+    assert total == 0
+    assert oldest is None
+    assert newest is None
+
+
+def test_cache_stats_all_stat_fail(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """When is_file works but stat fails, mtimes empty branch is hit."""
+    from pxaudit.cli import _cache_stats
+
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    (cache / "a.json").write_text("x")
+
+    real_stat = Path.stat
+
+    def flaky_stat(self: Path, *a: object, **k: object):  # noqa: ANN202
+        if self.name == "a.json":
+            raise OSError("stat fail")
+        return real_stat(self, *a, **k)
+
+    monkeypatch.setattr(Path, "stat", flaky_stat)
+    # is_file may also call stat; force files list via monkeypatch on iterdir result handling
+    # by making is_file return True without stat:
+    monkeypatch.setattr(Path, "is_file", lambda self: self.name.endswith(".json"))
+    count, total, oldest, newest = _cache_stats(cache)
+    assert count == 0
+    assert oldest is None
+
+
+def test_bulk_quiet_with_export_skips_exported_line(bulk_mocks: dict, tmp_path: Path) -> None:
+    """Quiet bulk with export: no 'Exported N results' line."""
+    acc = tmp_path / "ids.txt"
+    acc.write_text("PXD000001\n")
+    out = tmp_path / "out.tsv"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["-q", "bulk-audit", "--input", str(acc), "--format", "tsv", "--output", str(out)],
+    )
+    assert result.exit_code == 0
+    assert "Exported" not in result.output
+    assert "export=" in result.output
+    assert out.exists()
+
+
+def test_cache_clear_skips_directories(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """cache clear only unlinks files, not subdirectories."""
+    monkeypatch.setenv("PXAUDIT_CONFIG", str(tmp_path / "none.toml"))
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    (cache / "x.json").write_text("{}")
+    (cache / "subdir").mkdir()
+    runner = CliRunner()
+    result = runner.invoke(main, ["--cache-dir", str(cache), "cache", "clear", "--yes"])
+    assert result.exit_code == 0
+    assert not (cache / "x.json").exists()
+    assert (cache / "subdir").is_dir()
+
+
+def test_config_warning_emitted_on_check(
+    mocks: dict, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Unknown config keys warn during check."""
+    cfg = tmp_path / "c.toml"
+    cfg.write_text('weird = 1\ndb_path = "x.db"\n')
+    monkeypatch.setenv("PXAUDIT_CONFIG", str(cfg))
+    runner = CliRunner()
+    result = runner.invoke(main, ["check", "PXD000001", "--db", str(tmp_path / "o.db")])
+    assert result.exit_code == 0
+    assert "weird" in result.output
+
+
+def test_bulk_verbose_continue_on_error_detail(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Verbose + continue-on-error emits skipped detail."""
+
+    def fake_audit(accession: str, db_path: str, **kw: object) -> AuditData:
+        raise PrideAPIError("boom")
+
+    monkeypatch.setattr("pxaudit.cli._audit_single", MagicMock(side_effect=fake_audit))
+    monkeypatch.setattr("pxaudit.cli.time.sleep", lambda _: None)
+    acc = tmp_path / "ids.txt"
+    acc.write_text("PXD000001\n")
+    runner = CliRunner()
+    result = runner.invoke(main, ["-v", "bulk-audit", "--input", str(acc), "--continue-on-error"])
+    assert result.exit_code == 0
+    assert "skipped: PXD000001" in result.output
+
+
+def test_bulk_emits_audit_warnings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Warnings returned by _audit_single are printed in bulk-audit."""
+
+    def fake_audit(accession: str, db_path: str, **kw: object) -> AuditData:
+        r = AuditResult(accession=accession, tier="Gold")
+        return AuditData(r, {}, MagicMock(), [], "ts", ["Warning: demo"], ["detail-x"], False)
+
+    monkeypatch.setattr("pxaudit.cli._audit_single", MagicMock(side_effect=fake_audit))
+    monkeypatch.setattr("pxaudit.cli.time.sleep", lambda _: None)
+    acc = tmp_path / "ids.txt"
+    acc.write_text("PXD000001\n")
+    runner = CliRunner()
+    result = runner.invoke(main, ["-v", "bulk-audit", "--input", str(acc)])
+    assert result.exit_code == 0
+    assert "Warning: demo" in result.output
+    assert "detail-x" in result.output
+
+
+def test_report_missing_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """report exits 2 when database is missing."""
+    monkeypatch.setenv("PXAUDIT_CONFIG", str(tmp_path / "none.toml"))
+    runner = CliRunner()
+    result = runner.invoke(main, ["report", "--db", str(tmp_path / "no.db")])
+    assert result.exit_code == 2
+    assert "database not found" in result.output
+
+
+def test_report_existing_output_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """report exits 2 when output dir exists without --overwrite."""
+    monkeypatch.setenv("PXAUDIT_CONFIG", str(tmp_path / "none.toml"))
+    db = tmp_path / "x.db"
+    db.write_text("")
+    out = tmp_path / "outdir"
+    out.mkdir()
+    runner = CliRunner()
+    result = runner.invoke(main, ["report", "--db", str(db), "--output", str(out)])
+    assert result.exit_code == 2
+    assert "already exists" in result.output
+
+
+def test_report_success_and_verbose(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """report success path and verbose detail."""
+    monkeypatch.setenv("PXAUDIT_CONFIG", str(tmp_path / "none.toml"))
+    db = tmp_path / "x.db"
+    db.write_text("")
+    out = tmp_path / "outdir"
+    monkeypatch.setattr(
+        "pxaudit.report.generate_report",
+        lambda *a, **k: str(out / "report.html"),
+    )
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["-v", "report", "--db", str(db), "--output", str(out), "--overwrite"],
+    )
+    assert result.exit_code == 0
+    assert "Report written to" in result.output
+    assert "report rows=" in result.output
+    assert "files=" in result.output
+
+
+@pytest.mark.parametrize(
+    ("exc", "code"),
+    [
+        (ValueError("bad"), 1),
+        (ImportError("no jinja"), 1),
+        (FileNotFoundError("gone"), 2),
+        (PermissionError("denied"), 2),
+    ],
+)
+def test_report_error_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exc: Exception, code: int
+) -> None:
+    """report maps generate_report exceptions to exit codes."""
+    monkeypatch.setenv("PXAUDIT_CONFIG", str(tmp_path / "none.toml"))
+    db = tmp_path / "x.db"
+    db.write_text("")
+    out = tmp_path / "outdir"
+
+    def boom(*a: object, **k: object) -> str:
+        raise exc
+
+    monkeypatch.setattr("pxaudit.report.generate_report", boom)
+    runner = CliRunner()
+    result = runner.invoke(main, ["report", "--db", str(db), "--output", str(out), "--overwrite"])
+    assert result.exit_code == code
+
+
+def test_report_sqlite_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """sqlite3.DatabaseError maps to exit 2."""
+    import sqlite3
+
+    monkeypatch.setenv("PXAUDIT_CONFIG", str(tmp_path / "none.toml"))
+    db = tmp_path / "x.db"
+    db.write_text("")
+    out = tmp_path / "outdir"
+
+    def boom(*a: object, **k: object) -> str:
+        raise sqlite3.DatabaseError("corrupt")
+
+    monkeypatch.setattr("pxaudit.report.generate_report", boom)
+    runner = CliRunner()
+    result = runner.invoke(main, ["report", "--db", str(db), "--output", str(out), "--overwrite"])
+    assert result.exit_code == 2
+
+
+def test_cache_stats_skips_directories(tmp_path: Path) -> None:
+    """Directories inside the cache are ignored by _cache_stats."""
+    from pxaudit.cli import _cache_stats
+
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    (cache / "subdir").mkdir()
+    (cache / "a.json").write_text("hi")
+    count, total, oldest, newest = _cache_stats(cache)
+    assert count == 1
+    assert total == 2
+    assert oldest is not None
+
+
+def test_check_trailing_quiet_flag_rejected(mocks: dict) -> None:
+    """Group flags after the subcommand are rejected by Click."""
+    runner = CliRunner()
+    result = runner.invoke(main, ["check", "-q", "PXD000001"])
+    assert result.exit_code == 2
+    assert "No such option" in result.output
+
+
+def test_main_help_mentions_global_flag_order() -> None:
+    """Group help epilog documents that global flags precede the subcommand."""
+    runner = CliRunner()
+    result = runner.invoke(main, ["--help"])
+    assert result.exit_code == 0
+    assert "before the subcommand" in result.output
+
+
+def test_bulk_delay_flag_overrides_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """--delay overrides config bulk_delay end-to-end."""
+    cfg = tmp_path / "c.toml"
+    cfg.write_text("bulk_delay = 9.0\n")
+    monkeypatch.setenv("PXAUDIT_CONFIG", str(cfg))
+    sleeps: list[float] = []
+
+    def fake_audit(accession: str, db_path: str, **kw: object) -> AuditData:
+        r = AuditResult(accession=accession, tier="Gold", quant_tier="Partial")
+        return AuditData(r, {}, MagicMock(), [], "ts", [], [], True)
+
+    monkeypatch.setattr("pxaudit.cli._audit_single", MagicMock(side_effect=fake_audit))
+    monkeypatch.setattr("pxaudit.cli.time.sleep", lambda s: sleeps.append(s))
+    acc = tmp_path / "ids.txt"
+    acc.write_text("PXD000001\n")
+    runner = CliRunner()
+    result = runner.invoke(main, ["bulk-audit", "--input", str(acc), "--delay", "2.5"])
+    assert result.exit_code == 0
+    assert sleeps == [2.5]
+
+
+def test_bulk_negative_delay_exits_two(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """--delay must be non-negative."""
+    monkeypatch.setenv("PXAUDIT_CONFIG", str(tmp_path / "none.toml"))
+    acc = tmp_path / "ids.txt"
+    acc.write_text("PXD000001\n")
+    runner = CliRunner()
+    result = runner.invoke(main, ["bulk-audit", "--input", str(acc), "--delay", "-1"])
+    assert result.exit_code == 2
+    assert "non-negative" in result.output
+
+
+def test_stale_fallback_sets_network_used_and_sleeps(
+    mocks: dict, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """API failure with stale cache still counts as network_used for bulk_delay."""
+    from pxaudit.cli import _audit_single
+
+    mocks["fetch_project"].side_effect = PrideAPIError("down")
+    mocks["read_cache_stale"].return_value = (_GOLD_PROJECT, 50.0)
+    mocks["read_cache"].return_value = None
+    data = _audit_single(
+        "PXD000001",
+        str(tmp_path / "db.sqlite"),
+        request_delay=0.0,
+    )
+    assert data.network_used is True
+    assert data.warnings
+
+
+def test_bulk_sleeps_after_stale_fallback(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """bulk-audit applies delay when _audit_single reports network_used after stale path."""
+    sleeps: list[float] = []
+
+    def fake_audit(accession: str, db_path: str, **kw: object) -> AuditData:
+        r = AuditResult(accession=accession, tier="Gold")
+        return AuditData(r, {}, MagicMock(), [], "ts", ["Warning: stale"], [], True)
+
+    monkeypatch.setattr("pxaudit.cli._audit_single", MagicMock(side_effect=fake_audit))
+    monkeypatch.setattr("pxaudit.cli.time.sleep", lambda s: sleeps.append(s))
+    acc = tmp_path / "ids.txt"
+    acc.write_text("PXD000001\n")
+    runner = CliRunner()
+    result = runner.invoke(main, ["bulk-audit", "--input", str(acc), "--delay", "1.5"])
+    assert result.exit_code == 0
+    assert sleeps == [1.5]
+
+
+def test_bulk_tqdm_used_when_tty(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """When stderr is a TTY and not quiet, tqdm wraps the accession list."""
+    called: list[bool] = []
+
+    class FakeTqdm:
+        def __init__(self, iterable: object, **kwargs: object) -> None:
+            called.append(True)
+            self._it = list(iterable)  # type: ignore[arg-type]
+
+        def __iter__(self):  # noqa: ANN204
+            return iter(self._it)
+
+    def fake_audit(accession: str, db_path: str, **kw: object) -> AuditData:
+        r = AuditResult(accession=accession, tier="Gold")
+        return AuditData(r, {}, MagicMock(), [], "ts", [], [], False)
+
+    monkeypatch.setattr("pxaudit.cli.tqdm", FakeTqdm)
+    monkeypatch.setattr("pxaudit.cli._stderr_is_tty", lambda: True)
+    monkeypatch.setattr("pxaudit.cli._audit_single", MagicMock(side_effect=fake_audit))
+    monkeypatch.setattr("pxaudit.cli.time.sleep", lambda _: None)
+    acc = tmp_path / "ids.txt"
+    acc.write_text("PXD000001\n")
+    runner = CliRunner()
+    result = runner.invoke(main, ["bulk-audit", "--input", str(acc)])
+    assert result.exit_code == 0
+    assert called == [True]
+
+
+def test_bulk_continue_on_error_applies_delay(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Hard PrideAPIError with --continue-on-error still applies bulk_delay."""
+    sleeps: list[float] = []
+
+    def boom(accession: str, db_path: str, **kw: object) -> AuditData:
+        raise PrideAPIError("down")
+
+    monkeypatch.setattr("pxaudit.cli._audit_single", MagicMock(side_effect=boom))
+    monkeypatch.setattr("pxaudit.cli.time.sleep", lambda s: sleeps.append(s))
+    acc = tmp_path / "ids.txt"
+    acc.write_text("PXD000001\nPXD000002\n")
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["bulk-audit", "--input", str(acc), "--continue-on-error", "--delay", "1.25"],
+    )
+    assert result.exit_code == 0
+    assert sleeps == [1.25, 1.25]
+
+
+def test_config_request_delay_reaches_fetch(
+    mocks: dict, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """TOML request_delay is forwarded to fetch_project via check."""
+    cfg = tmp_path / "c.toml"
+    cfg.write_text("request_delay = 0.0\n")
+    monkeypatch.setenv("PXAUDIT_CONFIG", str(cfg))
+    runner = CliRunner()
+    result = runner.invoke(main, ["check", "PXD000001", "--db", str(tmp_path / "o.db")])
+    assert result.exit_code == 0
+    assert mocks["fetch_project"].call_args.kwargs.get("delay") == 0.0
+
+
+def test_config_cache_ttl_reaches_read_cache(
+    mocks: dict, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """TOML cache_ttl_seconds is forwarded to read_cache max_age."""
+    cfg = tmp_path / "c.toml"
+    cfg.write_text("cache_ttl_seconds = 42\n")
+    monkeypatch.setenv("PXAUDIT_CONFIG", str(cfg))
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "--cache-dir",
+            str(tmp_path / "cache"),
+            "check",
+            "PXD000001",
+            "--db",
+            str(tmp_path / "o.db"),
+        ],
+    )
+    assert result.exit_code == 0
+    assert mocks["read_cache"].call_args.kwargs.get("max_age") == 42.0
+
+
+def test_config_export_format_triggers_bulk_export(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """TOML export_format alone causes bulk-audit to write an export file."""
+    cfg = tmp_path / "c.toml"
+    cfg.write_text('export_format = "tsv"\n')
+    monkeypatch.setenv("PXAUDIT_CONFIG", str(cfg))
+
+    def fake_audit(accession: str, db_path: str, **kw: object) -> AuditData:
+        r = AuditResult(accession=accession, tier="Gold", quant_tier="Partial")
+        return AuditData(r, {}, MagicMock(), [], "ts", [], [], False)
+
+    monkeypatch.setattr("pxaudit.cli._audit_single", MagicMock(side_effect=fake_audit))
+    monkeypatch.setattr("pxaudit.cli.time.sleep", lambda _: None)
+    monkeypatch.setattr(
+        "pxaudit.cli._default_export_path",
+        lambda fmt: str(tmp_path / f"from_config.{fmt}"),
+    )
+    acc = tmp_path / "ids.txt"
+    acc.write_text("PXD000001\n")
+    runner = CliRunner()
+    result = runner.invoke(main, ["bulk-audit", "--input", str(acc)])
+    assert result.exit_code == 0
+    assert (tmp_path / "from_config.tsv").exists()
+
+
+def test_manifest_unaffected_by_verbose(tmp_path: Path) -> None:
+    """manifest under -v still emits pure TSV body (no status chrome)."""
+    import pandas as pd
+
+    from pxaudit.db import get_or_create_db, insert_audit_record
+    from pxaudit.tier_engine import compute_audit
+
+    db = tmp_path / "m.db"
+    conn = get_or_create_db(str(db))
+    try:
+        project = {
+            "title": "t",
+            "organisms": [{"name": "Homo sapiens", "accession": "NEWT:9606"}],
+            "instruments": [{"name": "Orbitrap"}],
+            "submissionDate": "2020-01-01",
+        }
+        files = [
+            {
+                "fileName": "a.mzid",
+                "fileCategory": {"value": "RESULT"},
+                "fileSizeBytes": 1,
+                "publicFileLocations": [],
+            }
+        ]
+        result = compute_audit("PXD9", project, files, files_fetch_failed=False)
+        study = {
+            "accession": "PXD9",
+            "title": "t",
+            "organism": "Homo sapiens",
+            "organism_id": "NEWT:9606",
+            "instrument": "Orbitrap",
+            "submission_year": 2020,
+            "submission_type": None,
+            "keywords": None,
+            "repository": "PRIDE",
+            "fetched_at": "ts",
+        }
+        files_df = pd.DataFrame(
+            [
+                {
+                    "accession": "PXD9",
+                    "file_name": "a.mzid",
+                    "file_category": "RESULT",
+                    "file_extension": ".mzid",
+                    "ftp_location": None,
+                    "file_size": 1,
+                    "checksum": None,
+                    "checksum_type": None,
+                }
+            ]
+        )
+        insert_audit_record(conn, study, "PXD9", files_df, result.__dict__)
+    finally:
+        conn.close()
+
+    runner = CliRunner()
+    out = runner.invoke(main, ["-v", "manifest", "PXD9", "--db", str(db)])
+    assert out.exit_code == 0
+    assert "file_name" in out.stdout
+    assert "a.mzid" in out.stdout
+    assert "Metadata" not in out.stdout
+    assert "cache" not in out.stdout.lower()

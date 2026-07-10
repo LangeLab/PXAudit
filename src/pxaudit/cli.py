@@ -6,6 +6,9 @@ check        Audit a single Proteomics Exchange accession.
 bulk-audit   Audit multiple Proteomics Exchange accessions in batch.
 manifest     List files for an accession from the audit database.
 report       Generate a self-contained HTML report from a populated database.
+config show  Print effective configuration with source tags.
+cache info   Summarize the local API cache.
+cache clear  Delete cached API responses.
 """
 
 from __future__ import annotations
@@ -24,8 +27,14 @@ import click
 import pandas as pd
 from tqdm import tqdm
 
-from pxaudit import _PRIDE_PREFIX
+from pxaudit import _PRIDE_PREFIX, _output
 from pxaudit.cache import read_cache, read_cache_stale, write_cache
+from pxaudit.config import (
+    EffectiveConfig,
+    format_config_show,
+    load_file_config,
+    merge_config,
+)
 from pxaudit.db import get_or_create_db, insert_audit_record
 from pxaudit.pride_client import PrideAPIError, fetch_files, fetch_project
 from pxaudit.tier_engine import AuditResult, compute_audit
@@ -60,6 +69,13 @@ class AuditData(typing.NamedTuple):
         Raw file list from the PRIDE API response.
     fetched_at:
         ISO 8601 timestamp of when the data was fetched.
+    warnings:
+        Messages the CLI should emit via :func:`pxaudit._output.warn`.
+    details:
+        Verbose diagnostics the CLI should emit via :func:`pxaudit._output.detail`.
+    network_used:
+        True if any live API fetch was attempted for this accession
+        (including attempts that failed and fell back to stale cache).
     """
 
     result: AuditResult
@@ -67,12 +83,99 @@ class AuditData(typing.NamedTuple):
     files_df: pd.DataFrame
     files_data: list[dict]
     fetched_at: str
+    warnings: list[str]
+    details: list[str]
+    network_used: bool
 
 
-@click.group()
+def _emit_config_warnings(cfg: EffectiveConfig) -> None:
+    for message in cfg.warnings:
+        _output.warn(message)
+
+
+def _stderr_is_tty() -> bool:
+    """Return True when stderr is attached to a terminal."""
+    return sys.stderr.isatty()
+
+
+def _resolve_effective(
+    ctx: click.Context,
+    *,
+    db_path: str | None = None,
+    bulk_delay: float | None = None,
+    export_format: str | None = None,
+) -> EffectiveConfig:
+    """Merge file config with group-level and command-level CLI overrides."""
+    file_values = ctx.obj.get("file_values", {})
+    file_warnings = ctx.obj.get("file_warnings", ())
+    cache_dir = ctx.obj.get("cli_cache_dir")
+    cfg = merge_config(
+        file_values,
+        file_warnings=file_warnings,
+        cache_dir=cache_dir,
+        db_path=db_path,
+        bulk_delay=bulk_delay,
+        export_format=export_format,
+    )
+    return cfg
+
+
+@click.group(
+    epilog=(
+        "Global options (-q/--quiet, -v/--verbose, --no-color, --cache-dir) must "
+        "appear before the subcommand, e.g. 'pxaudit -q check PXD000001'."
+    ),
+)
 @click.version_option(importlib.metadata.version("pxaudit"))
-def main() -> None:
+@click.option(
+    "-q",
+    "--quiet",
+    is_flag=True,
+    default=False,
+    help="Compact output: one status line where applicable.",
+)
+@click.option(
+    "-v",
+    "--verbose",
+    is_flag=True,
+    default=False,
+    help="Include detail lines (cache hits, fetch steps).",
+)
+@click.option(
+    "--no-color",
+    is_flag=True,
+    default=False,
+    help="Disable ANSI colors.",
+)
+@click.option(
+    "--cache-dir",
+    "cache_dir",
+    default=None,
+    type=click.Path(),
+    help="Override API cache directory.",
+)
+@click.pass_context
+def main(
+    ctx: click.Context,
+    quiet: bool,
+    verbose: bool,
+    no_color: bool,
+    cache_dir: str | None,
+) -> None:
     """Audit Proteomics Exchange study metadata."""
+    if quiet and verbose:
+        click.echo("Error: --quiet and --verbose are mutually exclusive.", err=True)
+        sys.exit(2)
+
+    _output.configure(quiet=quiet, verbose=verbose, no_color=no_color)
+    file_values, file_warnings = load_file_config()
+    ctx.ensure_object(dict)
+    ctx.obj["quiet"] = quiet
+    ctx.obj["verbose"] = verbose
+    ctx.obj["no_color"] = no_color
+    ctx.obj["cli_cache_dir"] = cache_dir
+    ctx.obj["file_values"] = file_values
+    ctx.obj["file_warnings"] = file_warnings
 
 
 # ---------------------------------------------------------------------------
@@ -199,79 +302,90 @@ def _audit_single(
     *,
     no_cache: bool = False,
     refresh: bool = False,
+    cache_dir: str | Path | None = None,
+    cache_ttl_seconds: float | None = None,
+    request_delay: float = 0.5,
 ) -> AuditData:
     """Fetch, compute, persist, and return audit data for one accession.
 
     On network failure, serves stale cached data with a warning if available.
     Only raises ``PrideAPIError`` when no cache exists at all.
 
-    Parameters
-    ----------
-    accession:
-        PRIDE accession string, e.g. ``"PXD000001"``.
-    db_path:
-        Path to the SQLite database file.
-    no_cache:
-        Skip cache reads and writes.
-    refresh:
-        Skip cache reads but write fresh data.
-
-    Returns
-    -------
-    AuditData
-        Named tuple with result, study, files_df, files_data, and fetched_at.
-
-    Raises
-    ------
-    PrideAPIError
-        If the PRIDE API is unreachable and no cached data is available.
+    Does not write to the terminal. Warnings and verbose details are returned
+    for the CLI layer to emit.
     """
     fetched_at = datetime.now(UTC).isoformat()
     project_data: dict | None = None
     files_data: list[dict] | None = None
     files_fetch_failed = False
+    warnings: list[str] = []
+    details: list[str] = []
+    network_used = False
+
+    cache_kwargs: dict = {}
+    if cache_dir is not None:
+        cache_kwargs["cache_dir"] = Path(cache_dir)
+    ttl_kwargs: dict = dict(cache_kwargs)
+    if cache_ttl_seconds is not None:
+        ttl_kwargs["max_age"] = cache_ttl_seconds
 
     use_cache = not (no_cache or refresh)
     persist_cache = not no_cache  # --no-cache disables writes too
     if accession.upper().startswith(_PRIDE_PREFIX):
         if use_cache:
-            project_data = read_cache(accession, "project")  # type: ignore[assignment]
-            files_data = read_cache(accession, "files")  # type: ignore[assignment]
+            project_data = read_cache(accession, "project", **ttl_kwargs)  # type: ignore[assignment]
+            files_data = read_cache(accession, "files", **ttl_kwargs)  # type: ignore[assignment]
+            if project_data is not None:
+                details.append(f"cache hit: {accession} project")
+            else:
+                details.append(f"cache miss: {accession} project")
+            if files_data is not None:
+                details.append(f"cache hit: {accession} files")
+            else:
+                details.append(f"cache miss: {accession} files")
 
         if project_data is None:
             try:
-                project_data = fetch_project(accession)
+                details.append(f"fetch: {accession} project")
+                project_data = fetch_project(accession, delay=request_delay)
+                network_used = True
                 if persist_cache:
-                    write_cache(accession, "project", project_data)
+                    write_cache(accession, "project", project_data, **cache_kwargs)
             except PrideAPIError:
-                stale, age = read_cache_stale(accession, "project")
+                # Count the attempt so bulk-audit still applies bulk_delay.
+                network_used = True
+                stale, age = read_cache_stale(accession, "project", **cache_kwargs)
                 if stale is not None:
                     project_data = stale  # type: ignore[assignment]
-                    click.echo(
+                    warnings.append(
                         f"Warning: using stale cached project data for {accession} "
-                        f"(cache age: {age:.0f}s). API unreachable.",
-                        err=True,
+                        f"(cache age: {age:.0f}s). API unreachable."
                     )
+                    details.append(f"stale cache: {accession} project age={age:.0f}s")
                 else:
                     raise
 
         if files_data is None:
             try:
-                files_data = fetch_files(accession)
+                details.append(f"fetch: {accession} files")
+                files_data = fetch_files(accession, delay=request_delay)
+                network_used = True
                 if persist_cache:
-                    write_cache(accession, "files", files_data)
+                    write_cache(accession, "files", files_data, **cache_kwargs)
             except PrideAPIError:
-                stale, age = read_cache_stale(accession, "files")
+                network_used = True
+                stale, age = read_cache_stale(accession, "files", **cache_kwargs)
                 if stale is not None:
                     files_data = stale  # type: ignore[assignment]
-                    click.echo(
+                    warnings.append(
                         f"Warning: using stale cached file list for {accession} "
-                        f"(cache age: {age:.0f}s). API unreachable.",
-                        err=True,
+                        f"(cache age: {age:.0f}s). API unreachable."
                     )
+                    details.append(f"stale cache: {accession} files age={age:.0f}s")
                 else:
                     files_fetch_failed = True
                     files_data = []
+                    warnings.append("Warning: files endpoint failed; file flags are unreliable.")
 
     project_data = project_data or {}
     files_data = files_data or []
@@ -288,7 +402,16 @@ def _audit_single(
     finally:
         conn.close()
 
-    return AuditData(result, study, files_df, files_data, fetched_at)
+    return AuditData(
+        result,
+        study,
+        files_df,
+        files_data,
+        fetched_at,
+        warnings,
+        details,
+        network_used,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -388,6 +511,33 @@ def _write_export(results: list[AuditResult], path: str, fmt: str) -> None:
         _export_json(results, path)
 
 
+def _cache_stats(cache_dir: Path) -> tuple[int, int, float | None, float | None]:
+    """Return file count, total bytes, oldest mtime, newest mtime."""
+    if not cache_dir.exists():
+        return 0, 0, None, None
+    files: list[Path] = []
+    for path in cache_dir.iterdir():
+        try:
+            if path.is_file():
+                files.append(path)
+        except OSError:
+            continue
+    if not files:
+        return 0, 0, None, None
+    total = 0
+    mtimes: list[float] = []
+    for path in files:
+        try:
+            st = path.stat()
+        except OSError:
+            continue
+        total += st.st_size
+        mtimes.append(st.st_mtime)
+    if not mtimes:
+        return 0, 0, None, None
+    return len(mtimes), total, min(mtimes), max(mtimes)
+
+
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
@@ -395,29 +545,69 @@ def _write_export(results: list[AuditResult], path: str, fmt: str) -> None:
 
 @main.command("check")
 @click.argument("accession")
-@click.option("--refresh", is_flag=True, default=False, help="Force re-fetch, updating cache.")
-@click.option("--no-cache", "no_cache", is_flag=True, default=False, help="Skip cache reads.")
+@click.option(
+    "--refresh",
+    is_flag=True,
+    default=False,
+    help="Skip cache reads; still write fresh responses to the cache.",
+)
+@click.option(
+    "--no-cache",
+    "no_cache",
+    is_flag=True,
+    default=False,
+    help="Skip cache reads and writes.",
+)
 @click.option(
     "--db",
     "db_path",
-    default="pxaudit_results.db",
-    show_default=True,
-    help="SQLite output path.",
+    default=None,
+    help="SQLite output path (default: config or pxaudit_results.db).",
 )
-def check(accession: str, refresh: bool, no_cache: bool, db_path: str) -> None:
+@click.pass_context
+def check(
+    ctx: click.Context,
+    accession: str,
+    refresh: bool,
+    no_cache: bool,
+    db_path: str | None,
+) -> None:
     """Audit a single Proteomics Exchange accession."""
+    cfg = _resolve_effective(ctx, db_path=db_path)
+    _emit_config_warnings(cfg)
+    resolved_db = cfg.db_path
+
     if not accession or not accession[0].isalpha():
-        click.echo(f"Error: invalid accession {accession!r}", err=True)
+        _output.error(f"Error: invalid accession {accession!r}")
         sys.exit(2)
 
     try:
-        data = _audit_single(accession, db_path, no_cache=no_cache, refresh=refresh)
-        _print_result(data.result, data.study, len(data.files_data))
+        data = _audit_single(
+            accession,
+            resolved_db,
+            no_cache=no_cache,
+            refresh=refresh,
+            cache_dir=cfg.cache_dir,
+            cache_ttl_seconds=cfg.cache_ttl_seconds,
+            request_delay=cfg.request_delay,
+        )
+        for message in data.warnings:
+            _output.warn(message)
+        for message in data.details:
+            _output.detail(message)
+
+        if ctx.obj["quiet"]:
+            _output.status(
+                f"{data.result.accession}  {data.result.tier}  "
+                f"{data.result.quant_tier}  db={resolved_db}"
+            )
+        else:
+            _print_result(data.result, data.study, len(data.files_data))
     except PrideAPIError as exc:
-        click.echo(f"Error: {exc}", err=True)
+        _output.error(f"Error: {exc}")
         sys.exit(1)
     except KeyboardInterrupt:
-        click.echo("\nInterrupted.")
+        _output.error("\nInterrupted.")
         sys.exit(130)
 
 
@@ -431,16 +621,15 @@ def check(accession: str, refresh: bool, no_cache: bool, db_path: str) -> None:
 @click.option(
     "--db",
     "db_path",
-    default="pxaudit_results.db",
-    show_default=True,
-    help="SQLite output path.",
+    default=None,
+    help="SQLite output path (default: config or pxaudit_results.db).",
 )
 @click.option(
     "--format",
     "fmt",
     type=click.Choice(["tsv", "json", "csv"], case_sensitive=False),
     default=None,
-    help="Export format. Default: no export file written.",
+    help="Export format. Default: config export_format or no export file.",
 )
 @click.option(
     "--output",
@@ -450,10 +639,9 @@ def check(accession: str, refresh: bool, no_cache: bool, db_path: str) -> None:
 )
 @click.option(
     "--delay",
-    default=1.0,
+    default=None,
     type=float,
-    show_default=True,
-    help="Seconds to wait between API calls.",
+    help="Seconds to wait between accessions after a network fetch (bulk_delay).",
 )
 @click.option(
     "--continue-on-error",
@@ -468,116 +656,134 @@ def check(accession: str, refresh: bool, no_cache: bool, db_path: str) -> None:
     default=False,
     help="Overwrite existing export file.",
 )
+@click.pass_context
 def bulk_audit(
+    ctx: click.Context,
     input_path: str,
-    db_path: str,
+    db_path: str | None,
     fmt: str | None,
     export_path: str | None,
-    delay: float,
+    delay: float | None,
     continue_on_error: bool,
     overwrite: bool,
 ) -> None:
     """Audit multiple Proteomics Exchange accessions."""
-    # ------------------------------------------------------------------
-    # 1.  Read input
-    # ------------------------------------------------------------------
+    cfg = _resolve_effective(ctx, db_path=db_path, bulk_delay=delay, export_format=fmt)
+    _emit_config_warnings(cfg)
+    if delay is not None and delay < 0:
+        _output.error("Error: --delay must be non-negative.")
+        sys.exit(2)
+    resolved_db = cfg.db_path
+    bulk_delay = cfg.bulk_delay
+    quiet = ctx.obj["quiet"]
+
     try:
         raw_accessions = _read_accessions(input_path)
     except FileNotFoundError:
-        click.echo(f"Error: input file not found: {input_path}", err=True)
+        _output.error(f"Error: input file not found: {input_path}")
         sys.exit(2)
 
     if not raw_accessions:
-        click.echo("Warning: no accessions found in input.", err=True)
+        _output.warn("Warning: no accessions found in input.")
         sys.exit(0)
 
-    # ------------------------------------------------------------------
-    # 2.  Deduplicate
-    # ------------------------------------------------------------------
     seen: set[str] = set()
     accessions: list[str] = []
     for acc in raw_accessions:
         if acc in seen:
-            click.echo(f"Warning: duplicate accession {acc!r} skipped.", err=True)
+            _output.warn(f"Warning: duplicate accession {acc!r} skipped.")
         else:
             seen.add(acc)
             accessions.append(acc)
 
     total = len(accessions)
 
-    # ------------------------------------------------------------------
-    # 3.  Export setup
-    # ------------------------------------------------------------------
-    if fmt:
-        fmt = fmt.lower()
-        export_path = export_path or _default_export_path(fmt)
+    resolved_fmt = fmt.casefold() if fmt else cfg.export_format
+    if resolved_fmt:
+        resolved_fmt = resolved_fmt.casefold()
+        export_path = export_path or _default_export_path(resolved_fmt)
         if Path(export_path).exists() and not overwrite:
-            click.echo(
-                f"Error: output file {export_path!r} already exists. Use --overwrite to overwrite.",
-                err=True,
+            _output.error(
+                f"Error: output file {export_path!r} already exists. Use --overwrite to overwrite."
             )
             sys.exit(2)
     else:
         export_path = None
 
-    # ------------------------------------------------------------------
-    # 4.  Batch audit
-    # ------------------------------------------------------------------
     results: list[AuditResult] = []
     failed: list[str] = []
     start_time = time.time()
+    use_tqdm = (not quiet) and _stderr_is_tty()
+    iterator = tqdm(accessions, desc="Auditing", unit="accession") if use_tqdm else accessions
 
     try:
-        for accession in tqdm(accessions, desc="Auditing", unit="accession"):
+        for accession in iterator:
             try:
-                data = _audit_single(accession, db_path)
+                data = _audit_single(
+                    accession,
+                    resolved_db,
+                    cache_dir=cfg.cache_dir,
+                    cache_ttl_seconds=cfg.cache_ttl_seconds,
+                    request_delay=cfg.request_delay,
+                )
                 results.append(data.result)
+                for message in data.warnings:
+                    _output.warn(message)
+                for message in data.details:
+                    _output.detail(message)
+                if data.network_used:
+                    time.sleep(bulk_delay)
             except PrideAPIError as exc:
                 if continue_on_error:
-                    click.echo(f"\nWarning: {accession} failed ({exc}). Skipping.", err=True)
+                    _output.warn(f"\nWarning: {accession} failed ({exc}). Skipping.")
                     failed.append(accession)
+                    if ctx.obj["verbose"]:
+                        _output.detail(f"skipped: {accession}")
+                    # API was attempted; apply bulk_delay before the next accession.
+                    time.sleep(bulk_delay)
                 else:
-                    click.echo(f"\nError: {accession} failed ({exc}).", err=True)
-                    click.echo("Use --continue-on-error to skip failures.", err=True)
-                    # Write partial export before exiting.
+                    _output.error(f"\nError: {accession} failed ({exc}).")
+                    _output.error("Use --continue-on-error to skip failures.")
                     if results and export_path:
-                        _write_export(results, export_path, fmt or "tsv")
-                        click.echo(
+                        _write_export(results, export_path, resolved_fmt or "tsv")
+                        _output.status(
                             f"Partial export written to {export_path} "
                             f"({len(results)} accessions completed)."
                         )
                     elif results:
-                        click.echo(f"Partial results: {len(results)} accessions completed.")
+                        _output.status(f"Partial results: {len(results)} accessions completed.")
                     sys.exit(1)
 
-            time.sleep(delay)
-
     except KeyboardInterrupt:
-        click.echo("\nInterrupted. Partial results written to database.")
-        # Write partial export on interrupt as well.
+        _output.warn("\nInterrupted. Partial results written to database.")
         if results and export_path:
-            _write_export(results, export_path, fmt or "tsv")
-            click.echo(f"Partial export written to {export_path}")
+            _write_export(results, export_path, resolved_fmt or "tsv")
+            _output.status(f"Partial export written to {export_path}")
+        sys.exit(130)
 
-    # ------------------------------------------------------------------
-    # 5.  Export
-    # ------------------------------------------------------------------
     if results and export_path:
-        _write_export(results, export_path, fmt or "tsv")
-        click.echo(f"Exported {len(results)} results to {export_path}")
+        _write_export(results, export_path, resolved_fmt or "tsv")
+        if not quiet:
+            _output.status(f"Exported {len(results)} results to {export_path}")
 
-    # ------------------------------------------------------------------
-    # 6.  Summary
-    # ------------------------------------------------------------------
     elapsed = time.time() - start_time
-    click.echo(f"\nBatch audit complete ({elapsed:.1f}s)")
-    click.echo(f"  Total     : {total}")
-    click.echo(f"  Completed : {len(results)}")
-    click.echo(f"  Failed    : {len(failed)}")
-    if results:
-        tier_dist = pd.Series([r.tier for r in results]).value_counts()
-        for tier, count in tier_dist.items():
-            click.echo(f"    {tier:<12} {count}")
+    if quiet:
+        export_bit = f"  export={export_path}" if export_path else ""
+        _output.status(
+            f"bulk-audit  total={total}  completed={len(results)}  failed={len(failed)}{export_bit}"
+        )
+    else:
+        _output.status(f"\nBatch audit complete ({elapsed:.1f}s)")
+        _output.status(f"  Total     : {total}")
+        _output.status(f"  Completed : {len(results)}")
+        _output.status(f"  Failed    : {len(failed)}")
+        if results:
+            tier_dist = pd.Series([r.tier for r in results]).value_counts()
+            for tier, count in tier_dist.items():
+                _output.status(f"    {tier:<12} {count}")
+        for acc in failed:
+            if ctx.obj["verbose"]:
+                _output.detail(f"failed: {acc}")
 
 
 @main.command("manifest")
@@ -585,9 +791,8 @@ def bulk_audit(
 @click.option(
     "--db",
     "db_path",
-    default="pxaudit_results.db",
-    show_default=True,
-    help="SQLite database path.",
+    default=None,
+    help="SQLite database path (default: config or pxaudit_results.db).",
 )
 @click.option(
     "--format",
@@ -597,9 +802,14 @@ def bulk_audit(
     show_default=True,
     help="Output format.",
 )
-def manifest(accession: str, db_path: str, fmt: str) -> None:
+@click.pass_context
+def manifest(ctx: click.Context, accession: str, db_path: str | None, fmt: str) -> None:
     """List files for an accession from the audit database."""
-    conn = get_or_create_db(db_path)
+    cfg = _resolve_effective(ctx, db_path=db_path)
+    _emit_config_warnings(cfg)
+    resolved_db = cfg.db_path
+
+    conn = get_or_create_db(resolved_db)
     try:
         cursor = conn.execute(
             "SELECT file_name, file_category, file_extension, ftp_location, "
@@ -612,10 +822,7 @@ def manifest(accession: str, db_path: str, fmt: str) -> None:
         conn.close()
 
     if not rows:
-        click.echo(
-            f"No files found for {accession!r}. Run 'pxaudit check {accession}' first.",
-            err=True,
-        )
+        _output.error(f"No files found for {accession!r}. Run 'pxaudit check {accession}' first.")
         sys.exit(1)
 
     columns = [
@@ -656,35 +863,117 @@ def manifest(accession: str, db_path: str, fmt: str) -> None:
     default=False,
     help="Overwrite existing output directory.",
 )
-def report(db_path: str, output_dir: str, title: str, overwrite: bool) -> None:
+@click.pass_context
+def report(
+    ctx: click.Context,
+    db_path: str,
+    output_dir: str,
+    title: str,
+    overwrite: bool,
+) -> None:
     """Generate a self-contained HTML report from a populated database."""
     from pxaudit.report import generate_report
 
+    _emit_config_warnings(_resolve_effective(ctx))
+
     if not Path(db_path).exists():
-        click.echo(f"Error: database not found: {db_path}", err=True)
+        _output.error(f"Error: database not found: {db_path}")
         sys.exit(2)
 
     out = Path(output_dir)
     if out.exists() and not overwrite:
-        click.echo(
-            f"Error: output directory {output_dir!r} already exists. Use --overwrite to overwrite.",
-            err=True,
+        _output.error(
+            f"Error: output directory {output_dir!r} already exists. Use --overwrite to overwrite."
         )
         sys.exit(2)
 
     try:
         report_path = generate_report(db_path, output_dir, title)
     except ValueError as exc:
-        click.echo(f"Error: {exc}", err=True)
+        _output.error(f"Error: {exc}")
         sys.exit(1)
     except ImportError as exc:
-        click.echo(f"Error: {exc}", err=True)
+        _output.error(f"Error: {exc}")
         sys.exit(1)
     except FileNotFoundError as exc:
-        click.echo(f"Error: {exc}", err=True)
+        _output.error(f"Error: {exc}")
         sys.exit(2)
     except (PermissionError, sqlite3.DatabaseError) as exc:
-        click.echo(f"Error: {exc}", err=True)
+        _output.error(f"Error: {exc}")
         sys.exit(2)
 
-    click.echo(f"Report written to {report_path}")
+    _output.status(f"Report written to {report_path}")
+    if ctx.obj["verbose"]:
+        conn = get_or_create_db(db_path)
+        try:
+            n_audit = conn.execute("SELECT COUNT(*) FROM audit").fetchone()[0]
+            n_files = conn.execute("SELECT COUNT(*) FROM study_files").fetchone()[0]
+        finally:
+            conn.close()
+        _output.detail(f"report rows={n_audit} files={n_files} db={db_path} output={report_path}")
+
+
+@main.group("config")
+def config_group() -> None:
+    """Inspect effective configuration."""
+
+
+@config_group.command("show")
+@click.pass_context
+def config_show(ctx: click.Context) -> None:
+    """Print effective settings with source tags (default / config / flag)."""
+    cfg = _resolve_effective(ctx)
+    _emit_config_warnings(cfg)
+    click.echo(format_config_show(cfg))
+
+
+@main.group("cache")
+def cache_group() -> None:
+    """Inspect or clear the local API cache."""
+
+
+@cache_group.command("info")
+@click.pass_context
+def cache_info(ctx: click.Context) -> None:
+    """Print cache path, file count, size, and oldest/newest mtimes."""
+    cfg = _resolve_effective(ctx)
+    _emit_config_warnings(cfg)
+    cache_dir = Path(cfg.cache_dir)
+    count, total, oldest, newest = _cache_stats(cache_dir)
+    _output.status(f"cache_dir={cache_dir}")
+    _output.status(f"files={count}")
+    _output.status(f"bytes={total}")
+    if oldest is None or newest is None:
+        _output.status("oldest=n/a")
+        _output.status("newest=n/a")
+    else:
+        _output.status(f"oldest={datetime.fromtimestamp(oldest, tz=UTC).isoformat()}")
+        _output.status(f"newest={datetime.fromtimestamp(newest, tz=UTC).isoformat()}")
+
+
+@cache_group.command("clear")
+@click.option("--yes", is_flag=True, default=False, help="Skip confirmation prompt.")
+@click.pass_context
+def cache_clear(ctx: click.Context, yes: bool) -> None:
+    """Delete all files in the configured cache directory."""
+    cfg = _resolve_effective(ctx)
+    _emit_config_warnings(cfg)
+    cache_dir = Path(cfg.cache_dir)
+    _output.status(f"cache_dir={cache_dir}")
+
+    if not yes:
+        click.confirm(
+            f"Delete all cached files under {cache_dir}?",
+            abort=True,
+        )
+
+    if not cache_dir.exists():
+        _output.status("Cache directory does not exist; nothing to delete.")
+        return
+
+    removed = 0
+    for path in cache_dir.iterdir():
+        if path.is_file():
+            path.unlink()
+            removed += 1
+    _output.status(f"Removed {removed} file(s).")

@@ -242,6 +242,17 @@ def test_timeout_raises_api_error_after_retries_exhausted(
 
 @patch("pxaudit.pride_client.requests.Session")
 @patch("pxaudit.pride_client.time")
+def test_connection_error_raises_pride_api_error(
+    mock_time: Mock, MockSession: Mock
+) -> None:
+    """Proxy/connection failures become PrideAPIError after retries."""
+    _setup_session(MockSession, side_effect=requests.ConnectionError("proxy down"))
+    with pytest.raises(PrideAPIError, match="PRIDE API request failed"):
+        fetch_project("PXD000001", delay=0)
+
+
+@patch("pxaudit.pride_client.requests.Session")
+@patch("pxaudit.pride_client.time")
 def test_timeout_retry_count_is_three(mock_time: Mock, MockSession: Mock) -> None:
     """Repeated timeouts must trigger the full 3-attempt cycle."""
     inst = _setup_session(MockSession, side_effect=requests.Timeout())

@@ -9,7 +9,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.12--3.14-2D7D46?style=flat-square&logo=python&logoColor=white" alt="Python 3.12-3.14">
-  <img src="https://img.shields.io/badge/version-0.4.0-8B5CF6?style=flat-square" alt="v0.4.0">
+  <img src="https://img.shields.io/badge/version-0.5.0-8B5CF6?style=flat-square" alt="v0.5.0">
   <img src="https://img.shields.io/badge/status-beta-C17D10?style=flat-square" alt="Beta">
   <img src="https://img.shields.io/github/actions/workflow/status/LangeLab/PXAudit/ci.yml?branch=main&style=flat-square&logo=github&label=CI" alt="CI">
   <img src="https://img.shields.io/badge/coverage-100%25-22C55E?style=flat-square" alt="100% branch coverage">
@@ -61,9 +61,21 @@ uv run pxaudit check PXD004683 --no-cache   # bypass local cache
 uv run pxaudit check PXD004683 --db ~/audits/lab.db
 ```
 
-Options: `--refresh` (re-fetch, update cache), `--no-cache` (skip cache reads), `--db PATH` (SQLite output path, default `pxaudit_results.db`).
+Options: `--refresh` (skip cache reads, still write), `--no-cache` (skip cache reads and writes), `--db PATH` (SQLite output path; config or `pxaudit_results.db`).
 
 Non-PRIDE accessions (`MSV`, `JPST`, `IPX`) are accepted without error and assigned the _Unverifiable_ tier; PXAudit only has access to the PRIDE API.
+
+### Global options
+
+```bash
+uv run pxaudit -q check PXD004683          # one-line summary
+uv run pxaudit -v check PXD004683          # checklist + detail
+uv run pxaudit --no-color check PXD004683  # plain text
+uv run pxaudit config show                 # effective settings
+uv run pxaudit cache info                  # cache summary
+```
+
+Optional user config: `~/.pxaudit.toml` (see the wiki CLI Reference).
 
 ### `pxaudit bulk-audit`
 
@@ -247,8 +259,12 @@ The default run excludes integration tests (`-m 'not integration'` is set in `py
 
 ## Roadmap
 
-- **Reporting**: `pxaudit report --db results.db` generating tier distributions, metadata completeness, cohort analysis, and dataset explorer as self-contained HTML reports.
-- **Multi-repository**: plugin adapters for MassIVE, jPOST, and iProX so non-PRIDE accessions are audited rather than marked Unverifiable.
+- CLI polish, configuration defaults, and quieter/script-friendly output
+- Publish to PyPI (PRIDE-only; the public API may still evolve before 1.0)
+- Multi-repository adapters for MassIVE, jPOST, and iProX
+- A 1.0 release that freezes the public CLI and library API
+
+Panorama Public and PeptideAtlas/PASSEL are out of scope for now.
 
 Contributions and issue reports are welcome.
 
@@ -263,7 +279,7 @@ If you use PXAudit in your research, please cite it as:
   author   = {Ergin, Enes Kemal},
   title    = {{PXAudit}: A command-line tool for auditing {Proteomics Exchange} study metadata},
   year     = {2026},
-  version  = {0.4.0},
+  version  = {0.5.0},
   url      = {https://github.com/LangeLab/PXAudit},
   license  = {MIT},
 }

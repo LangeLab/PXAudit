@@ -2,7 +2,43 @@
 
 ## Global flags
 
-`--help` and `--version` work on every command.
+These options belong on the `pxaudit` group and apply to every subcommand.
+Place them **before** the subcommand name (Click does not accept them after it):
+
+```bash
+pxaudit -q check PXD004683          # correct
+pxaudit check -q PXD004683          # error: No such option: -q
+```
+
+| Flag                   | Description                                              |
+| ---------------------- | -------------------------------------------------------- |
+| `-q` / `--quiet`       | Compact output (one status line where applicable)        |
+| `-v` / `--verbose`     | Extra detail lines (cache hits, fetch steps)             |
+| `--no-color`           | Disable ANSI colors (also honors `NO_COLOR` and non-TTY) |
+| `--cache-dir PATH`     | Override the API cache directory                         |
+| `--help` / `--version` | Standard Click help and version                          |
+
+`-q` and `-v` are mutually exclusive.
+
+---
+
+## Configuration
+
+PXAudit reads optional settings from `~/.pxaudit.toml` (or the path in `PXAUDIT_CONFIG`).
+
+Supported keys (flat only; nested TOML tables are ignored with a warning): `cache_dir`, `cache_ttl_seconds`, `db_path`, `request_delay`, `bulk_delay`, `export_format`.
+
+`request_delay`, `bulk_delay`, and `cache_ttl_seconds` must be non-negative numbers (booleans are rejected).
+
+Precedence: CLI flag > config file > built-in default.
+
+`request_delay` is the politeness sleep inside each PRIDE request. `bulk_delay` is the pause between accessions in `bulk-audit` (also set by `--delay`). They are separate knobs.
+
+```bash
+pxaudit config show
+```
+
+Prints each effective value with a source tag: `default`, `config`, or `flag`.
 
 ---
 
@@ -14,12 +50,12 @@ Audit a single accession.
 pxaudit check [OPTIONS] ACCESSION
 ```
 
-- **Options**
-    - `--refresh`: force re-fetch from PRIDE, update the local cache
-    - `--no-cache`: skip cache entirely, always fetch fresh
-    - `--db PATH`: SQLite output path (default: `pxaudit_results.db`)
+- **Options:**
+    - `--refresh`: skip cache reads; still write fresh responses to the cache
+    - `--no-cache`: skip cache reads and writes
+    - `--db PATH`: SQLite output path (default: config or `pxaudit_results.db`)
 
-**Examples**
+**Examples:**
 
 ```bash
 # Quick check
@@ -44,19 +80,19 @@ Audit many accessions in one run.
 pxaudit bulk-audit [OPTIONS]
 ```
 
-**Options**
+**Options:**
 
-| Flag                  | Default              | Description                                            |
-| --------------------- | -------------------- | ------------------------------------------------------ |
-| `--input PATH`        | required             | Path to accession list (one per line) or `-` for stdin |
-| `--db PATH`           | `pxaudit_results.db` | SQLite output path                                     |
-| `--format FMT`        | none                 | Export results: `tsv`, `json`, or `csv`                |
-| `--output PATH`       | auto-generated       | Export file path                                       |
-| `--delay SEC`         | `1.0`                | Seconds to wait between API calls                      |
-| `--continue-on-error` | off                  | Skip accessions that fail and keep going               |
-| `--overwrite`         | off                  | Overwrite an existing export file                      |
+| Flag                  | Default                       | Description                                                |
+| --------------------- | ----------------------------- | ---------------------------------------------------------- |
+| `--input PATH`        | required                      | Path to accession list (one per line) or `-` for stdin     |
+| `--db PATH`           | config / `pxaudit_results.db` | SQLite output path                                         |
+| `--format FMT`        | config / none                 | Export results: `tsv`, `json`, or `csv`                    |
+| `--output PATH`       | auto-generated                | Export file path                                           |
+| `--delay SEC`         | config / `1.0`                | Inter-accession pause after a network fetch (`bulk_delay`) |
+| `--continue-on-error` | off                           | Skip accessions that fail and keep going                   |
+| `--overwrite`         | off                           | Overwrite an existing export file                          |
 
-**Examples**
+**Examples:**
 
 ```bash
 # Basic batch
@@ -72,7 +108,7 @@ cat accessions.txt | pxaudit bulk-audit --input - --continue-on-error
 pxaudit bulk-audit --input ids.txt --delay 2
 ```
 
-Shows a progress bar via `tqdm` while processing. When finished, prints a summary with total, completed, failed counts and a tier distribution breakdown.
+Shows a progress bar via `tqdm` on a TTY (disabled under `--quiet` or when not a TTY). Skips the inter-accession delay when both project and files come from a fresh cache hit. When finished, prints a summary with total, completed, failed counts and a tier distribution breakdown (one compact line under `--quiet`).
 
 **Handy one-liner for exploring a cohort:**
 
@@ -93,11 +129,11 @@ List files for an accession from the database.
 pxaudit manifest [OPTIONS] ACCESSION
 ```
 
-- **Options**
-    - `--db PATH`: SQLite database path (default: `pxaudit_results.db`)
+- **Options:**
+    - `--db PATH`: SQLite database path (default: config or `pxaudit_results.db`)
     - `--format FMT`: output format: `tsv` (default) or `json`
 
-**Examples**
+**Examples:**
 
 ```bash
 # Default TSV output
@@ -111,6 +147,30 @@ The accession must have been audited first (via `check` or `bulk-audit`). Output
 
 ---
 
+## `pxaudit cache info`
+
+Summarize the local API cache.
+
+```bash
+pxaudit cache info
+```
+
+Prints the resolved cache directory, file count, total bytes, and oldest/newest modification times. Respects `--cache-dir` and config `cache_dir`.
+
+---
+
+## `pxaudit cache clear`
+
+Delete cached API responses.
+
+```bash
+pxaudit cache clear [--yes]
+```
+
+Always prints the resolved cache path first. Prompts for confirmation unless `--yes` is set.
+
+---
+
 ## `pxaudit report`
 
 Generate a self-contained HTML report from a populated database.
@@ -119,16 +179,16 @@ Generate a self-contained HTML report from a populated database.
 pxaudit report [OPTIONS]
 ```
 
-**Options**
+**Options:**
 
-| Flag           | Default          | Description                              |
-| -------------- | ---------------- | ---------------------------------------- |
-| `--db PATH`    | required         | SQLite database path                     |
-| `--output DIR` | `.`              | Output directory for the HTML report     |
-| `--title TEXT` | `PXAudit Report` | Report title shown in the page header    |
-| `--overwrite`  | off              | Overwrite an existing output directory   |
+| Flag           | Default          | Description                            |
+| -------------- | ---------------- | -------------------------------------- |
+| `--db PATH`    | required         | SQLite database path                   |
+| `--output DIR` | `.`              | Output directory for the HTML report   |
+| `--title TEXT` | `PXAudit Report` | Report title shown in the page header  |
+| `--overwrite`  | off              | Overwrite an existing output directory |
 
-**Examples**
+**Examples:**
 
 ```bash
 # Basic report in current directory

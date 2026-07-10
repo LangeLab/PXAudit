@@ -55,7 +55,7 @@ Note: `report.py` requires `jinja2` and `matplotlib` (optional deps). Install wi
 
 ## Style guide
 
-See `plan/STYLE.md` for conventions on docstrings, comments, imports, naming, error handling, and testing.
+Conventions are enforced by `ruff`, `mypy`, and pre-commit (see Development Setup above). Prefer reStructuredText docstrings, `from __future__ import annotations`, double quotes, and line length 100. Library code raises typed exceptions; the CLI validates input and exits with a status code.
 
 ## Adding documentation
 

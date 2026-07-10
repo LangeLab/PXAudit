@@ -3,7 +3,7 @@
 Public API
 ----------
 compute_audit(accession, project_data, files_data, *, files_fetch_failed)
-    → AuditResult
+    -> AuditResult
 
 Flag computation mixes two strategies:
 - Project-level flags are derived directly from the ``project_data`` dict.
@@ -14,7 +14,7 @@ Flag computation mixes two strategies:
   all filenames simultaneously.
 
 The tier derivation mirrors the SQL CASE expression in
-plan/database_schema.md exactly.
+the project wiki Database Schema page exactly.
 
 The ``None`` tier applies when mandatory fields (title, organism, or
 instrument) are missing. For live PRIDE accessions, these fields are
@@ -286,7 +286,7 @@ def compute_audit(
         has_mztab = bool(stripped_names.str.casefold().str.endswith(".mztab").any())
 
     # ------------------------------------------------------------------
-    # 6.  Tier derivation  (mirrors SQL CASE in plan/database_schema.md)
+    # 6.  Tier derivation  (mirrors SQL CASE in the wiki Database Schema page)
     # ------------------------------------------------------------------
     # 7-tier FAIR ladder.  Each tier adds one more requirement:
     #   None     : missing basic metadata (title / organism / instrument)

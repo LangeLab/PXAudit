@@ -104,6 +104,9 @@ def _request(
         except requests.Timeout as exc:
             last_exc = exc
             continue
+        except requests.RequestException as exc:
+            last_exc = PrideAPIError(f"PRIDE API request failed: {exc}")
+            continue
 
         if resp.status_code == 200:
             return resp.json()

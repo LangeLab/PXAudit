@@ -6,6 +6,35 @@ All notable changes to PXAudit are documented here. The format follows [Keep a C
 
 ---
 
+## [0.5.0] - 2026-07-10 - [Unreleased]
+
+CLI polish, user configuration, and cache management.
+
+### Added
+
+- Group flags: `-q`/`--quiet`, `-v`/`--verbose`, `--no-color`, and `--cache-dir`.
+- Structured terminal helpers for status, warnings, detail, and errors (optional ANSI; respects `NO_COLOR` and non-TTY).
+- User config file `~/.pxaudit.toml` (override path with `PXAUDIT_CONFIG`) with keys: `cache_dir`, `cache_ttl_seconds`, `db_path`, `request_delay`, `bulk_delay`, `export_format`.
+- `pxaudit config show`: effective settings with source tags (`default` / `config` / `flag`).
+- `pxaudit cache info` and `pxaudit cache clear` (`--yes` skips confirmation).
+- Quiet `check` / `bulk-audit` compact one-line summaries; verbose detail lines for cache/fetch steps.
+
+### Changed
+
+- `--no-cache` skips cache reads **and** writes; `--refresh` skips reads only and still writes (help text matches behavior).
+- `bulk-audit --delay` is the inter-accession `bulk_delay`; `request_delay` remains the per-request politeness delay (config-primary).
+- Inter-accession delay is skipped when an accession needs no network fetch (full fresh cache hit).
+- `_audit_single` no longer prints to the terminal; warnings are returned for the CLI to emit.
+
+### Fixed
+
+- Cache and DB defaults can be set in the user config and overridden by CLI flags (flag > config > default).
+- Config rejects boolean and negative `request_delay` / `bulk_delay` / `cache_ttl_seconds` values.
+- `bulk-audit` applies inter-accession delay after failed API attempts that fall back to stale cache.
+- `bulk-audit` exits 130 on KeyboardInterrupt (same as `check`).
+- Nested TOML tables in the config file warn that only flat keys are supported.
+- Connection/proxy failures from `requests` are wrapped as `PrideAPIError` so the CLI exits cleanly.
+
 ## [0.4.0] - 2026-06-22 - [Tagged]
 
 ### Added
@@ -17,7 +46,7 @@ All notable changes to PXAudit are documented here. The format follows [Keep a C
 - Tier Reference: two-column grid with accurate descriptions for all tiers.
 - Dataset Explorer: sortable table with colored tier badges, flag indicators, and title tooltips.
 - Publication-quality matplotlib plots: 150 DPI, proper typography, clean layouts.
-- `temp/generate_demo.py`: realistic demo database generator with 150+ synthetic datasets.
+- Local demo database generator for report screenshots (150+ synthetic datasets).
 - `test_report.py`: 38 tests covering all query functions, chart rendering, and HTML output.
 
 ### Changed
@@ -48,7 +77,7 @@ Schema provenance, file manifest, cache versioning, stale-cache fallback, public
 - `AuditData` NamedTuple: typed return value for `_audit_single()`, replacing the positional 5-tuple.
 - `__all__` exports defined in every public module.
 - Expanded module docstrings in `cli.py` and `db.py`.
-- `STYLE.md` in `plan/`: code-writing guide, docstring conventions, comment standards, and emoji policy.
+- Project style guide: docstring conventions, comment standards, and emoji policy.
 - CI matrix expanded to Ubuntu, macOS, and Windows across Python 3.12-3.14. `astral-sh/setup-uv` bumped to v6.
 - Integration test for live checksum and `fetched_at` verification against the PRIDE API.
 - 455 unit tests (+27 from v0.2.0), 100% branch coverage.
@@ -122,7 +151,7 @@ Cache hardening, bug fixes, and doc improvements.
 ### Changed
 
 - `None` tier documented as reserved for non-PRIDE repositories in `tier_engine.py` docstring (#5).
-- `has_organism_id` column annotated in SQL and `database_schema.md` as tracked but not tier-gating (#9).
+- `has_organism_id` column annotated in SQL as tracked but not tier-gating (#9).
 
 ---
 
