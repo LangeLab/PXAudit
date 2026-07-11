@@ -58,6 +58,7 @@ bulk_audit()
 from __future__ import annotations
 
 import json
+from collections.abc import Generator, Iterable, Iterator
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -86,7 +87,7 @@ from pxaudit.tier_engine import AuditResult
 
 
 @pytest.fixture(autouse=True)
-def _reset_output_mode() -> None:
+def _reset_output_mode() -> Generator[None, None, None]:
     from pxaudit import _output
 
     _output.configure(quiet=False, verbose=False, no_color=False)
@@ -1473,7 +1474,7 @@ def test_bulk_quiet_disables_tqdm(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
         def __init__(self, *a: object, **k: object) -> None:
             called.append(True)
 
-        def __iter__(self):  # noqa: ANN204
+        def __iter__(self) -> Iterator[object]:
             return iter([])
 
     def fake_audit(accession: str, db_path: str, **kw: object) -> AuditData:
@@ -1681,10 +1682,10 @@ def test_cache_stats_all_stat_fail(tmp_path: Path, monkeypatch: pytest.MonkeyPat
 
     real_stat = Path.stat
 
-    def flaky_stat(self: Path, *a: object, **k: object):  # noqa: ANN202
+    def flaky_stat(self: Path, *a: object, follow_symlinks: bool = True) -> object:
         if self.name == "a.json":
             raise OSError("stat fail")
-        return real_stat(self, *a, **k)
+        return real_stat(self, follow_symlinks=follow_symlinks)
 
     monkeypatch.setattr(Path, "stat", flaky_stat)
     # is_file may also call stat; force files list via monkeypatch on iterdir result handling
@@ -1965,11 +1966,11 @@ def test_bulk_tqdm_used_when_tty(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     called: list[bool] = []
 
     class FakeTqdm:
-        def __init__(self, iterable: object, **kwargs: object) -> None:
+        def __init__(self, iterable: Iterable[object], **kwargs: object) -> None:
             called.append(True)
-            self._it = list(iterable)  # type: ignore[arg-type]
+            self._it = list(iterable)
 
-        def __iter__(self):  # noqa: ANN204
+        def __iter__(self) -> Iterator[object]:
             return iter(self._it)
 
     def fake_audit(accession: str, db_path: str, **kw: object) -> AuditData:

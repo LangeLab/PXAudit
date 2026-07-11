@@ -29,7 +29,7 @@ def test_load_valid_keys(tmp_path: Path) -> None:
     """Known keys load and normalize."""
     path = tmp_path / "cfg.toml"
     path.write_text(
-        'cache_dir = "/tmp/pxa"\n'
+        'cache_dir = "pxa_cache"\n'
         "cache_ttl_seconds = 60\n"
         'db_path = "custom.db"\n'
         "request_delay = 0.25\n"
@@ -38,7 +38,7 @@ def test_load_valid_keys(tmp_path: Path) -> None:
     )
     values, warnings = load_file_config(path)
     assert warnings == ()
-    assert values["cache_dir"] == "/tmp/pxa"
+    assert values["cache_dir"] == "pxa_cache"
     assert values["cache_ttl_seconds"] == 60.0
     assert values["db_path"] == "custom.db"
     assert values["request_delay"] == 0.25
@@ -175,8 +175,9 @@ def test_oserror_on_read(tmp_path: Path) -> None:
 
 
 def test_cache_dir_expanduser(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """cache_dir expands ~."""
+    """cache_dir expands ~ (HOME on POSIX, USERPROFILE on Windows)."""
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     path = tmp_path / "cfg.toml"
     path.write_text('cache_dir = "~/mycache"\n')
     values, _ = load_file_config(path)

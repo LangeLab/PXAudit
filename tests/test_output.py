@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import sys
+from collections.abc import Generator
 from pathlib import Path
 
 import pytest
@@ -12,7 +13,7 @@ from pxaudit import _output
 
 
 @pytest.fixture(autouse=True)
-def _reset_output() -> None:
+def _reset_output() -> Generator[None, None, None]:
     _output.configure(quiet=False, verbose=False, no_color=False)
     yield
     _output.configure(quiet=False, verbose=False, no_color=False)
