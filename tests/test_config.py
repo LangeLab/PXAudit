@@ -157,21 +157,22 @@ def test_config_show_flag_cache_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     assert "cache_dir=" in result.output
 
 
-def test_oserror_on_read(tmp_path: Path) -> None:
-    """Unreadable config path warns and returns empty."""
+def test_oserror_on_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unreadable config path warns and returns empty.
+
+    Uses a monkeypatched ``read_text`` so the ``OSError`` branch is hit on
+    Windows as well (``chmod(0)`` does not deny owner reads on NTFS).
+    """
     path = tmp_path / "x.toml"
     path.write_text('db_path = "a.db"\n')
-    path.chmod(0)
 
-    try:
-        values, warnings = load_file_config(path)
-    finally:
-        path.chmod(0o644)
+    def boom(self: Path, *args: object, **kwargs: object) -> str:
+        raise OSError("permission denied")
 
-    # Some environments still allow root/owner read; accept either outcome
-    # but if OSError path triggers, values must be empty with warning.
-    if values == {}:
-        assert any("could not read" in w or "could not parse" in w for w in warnings)
+    monkeypatch.setattr(Path, "read_text", boom)
+    values, warnings = load_file_config(path)
+    assert values == {}
+    assert any("could not read" in w for w in warnings)
 
 
 def test_cache_dir_expanduser(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
