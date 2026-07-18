@@ -1,144 +1,163 @@
-"""Tests for pxaudit._output (status/warn/detail/error and color contract)."""
+"""Terminal routing, verbosity, color, and dependency-boundary contracts."""
 
 from __future__ import annotations
 
+import ast
 import io
 import sys
-from collections.abc import Generator
+from itertools import product
 from pathlib import Path
 
+import click
 import pytest
 
 from pxaudit import _output
 
 
-@pytest.fixture(autouse=True)
-def _reset_output() -> Generator[None, None, None]:
-    _output.configure(quiet=False, verbose=False, no_color=False)
-    yield
-    _output.configure(quiet=False, verbose=False, no_color=False)
+class _TTYStream(io.StringIO):
+    """In-memory text stream with a controlled terminal identity."""
+
+    def __init__(self, *, is_tty: bool) -> None:
+        super().__init__()
+        self._is_tty = is_tty
+
+    def isatty(self) -> bool:
+        """Return the configured terminal identity."""
+        return self._is_tty
 
 
-def test_status_writes_stdout(capsys: pytest.CaptureFixture[str]) -> None:
-    """status() emits on stdout only."""
-    _output.status("hello-status")
+@pytest.mark.parametrize(("quiet", "verbose"), tuple(product((False, True), repeat=2)))
+def test_primary_messages_use_exact_streams_in_every_output_mode(
+    quiet: bool, verbose: bool, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Status remains on stdout while warnings and errors remain on stderr."""
+    _output.configure(quiet=quiet, verbose=verbose)
+
+    _output.status("status")
+    _output.warn("warning")
+    _output.error("error")
+
     captured = capsys.readouterr()
-    assert "hello-status" in captured.out
+    assert captured.out == "status\n"
+    assert captured.err == "warning\nerror\n"
+
+
+@pytest.mark.parametrize(
+    ("quiet", "verbose", "expected"),
+    [
+        (False, False, ""),
+        (False, True, "detail\n"),
+        (True, False, ""),
+        (True, True, ""),
+    ],
+)
+def test_detail_obeys_complete_quiet_verbose_truth_table(
+    quiet: bool,
+    verbose: bool,
+    expected: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Detail emits only when verbose is enabled and quiet is disabled."""
+    _output.configure(quiet=quiet, verbose=verbose)
+
+    _output.detail("detail")
+
+    captured = capsys.readouterr()
+    assert captured.out == expected
     assert captured.err == ""
 
 
-def test_warn_and_error_write_stderr(capsys: pytest.CaptureFixture[str]) -> None:
-    """warn/error emit on stderr only."""
-    _output.warn("w")
-    _output.error("e")
+@pytest.mark.parametrize(
+    "message", ["", "first\nsecond", "\nleading", "trailing\n", "Unicode: αβγ"]
+)
+def test_status_preserves_edge_message_content(
+    message: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Empty, multiline, and Unicode status messages retain their exact content."""
+    _output.status(message)
+
     captured = capsys.readouterr()
-    assert captured.out == ""
-    assert "w" in captured.err
-    assert "e" in captured.err
+    assert captured.out == f"{message}\n"
+    assert captured.err == ""
 
 
-def test_detail_default_silent(capsys: pytest.CaptureFixture[str]) -> None:
-    """detail() is silent when not verbose."""
-    _output.detail("secret")
-    assert capsys.readouterr().out == ""
+@pytest.mark.parametrize(
+    ("no_color", "no_color_environment", "is_tty"),
+    tuple(product((False, True), (None, "", "1", "0"), (False, True))),
+)
+def test_color_precedence_truth_table(
+    no_color: bool,
+    no_color_environment: str | None,
+    is_tty: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ANSI appears only on a TTY without either color suppression mechanism."""
+    stream = _TTYStream(is_tty=is_tty)
+    monkeypatch.setattr(sys, "stderr", stream)
+    if no_color_environment is None:
+        monkeypatch.delenv("NO_COLOR", raising=False)
+    else:
+        monkeypatch.setenv("NO_COLOR", no_color_environment)
+    _output.configure(no_color=no_color)
+
+    _output.warn("message")
+
+    rendered = stream.getvalue()
+    expected_color = is_tty and not no_color and not no_color_environment
+    assert ("\x1b[" in rendered) is expected_color
+    assert click.unstyle(rendered) == "message\n"
 
 
-def test_detail_verbose_emits(capsys: pytest.CaptureFixture[str]) -> None:
-    """detail() emits when verbose is on."""
+def test_emitters_use_exact_documented_tty_styles(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Warning, error, and detail use yellow, red, and cyan while status stays plain."""
+    stdout = _TTYStream(is_tty=True)
+    stderr = _TTYStream(is_tty=True)
+    monkeypatch.setattr(sys, "stdout", stdout)
+    monkeypatch.setattr(sys, "stderr", stderr)
+    monkeypatch.delenv("NO_COLOR", raising=False)
     _output.configure(verbose=True)
-    _output.detail("verbose-line")
-    assert "verbose-line" in capsys.readouterr().out
+
+    _output.status("status")
+    _output.detail("detail")
+    _output.warn("warning")
+    _output.error("error")
+
+    assert stdout.getvalue() == "status\n\x1b[36mdetail\x1b[0m\n"
+    assert stderr.getvalue() == "\x1b[33mwarning\x1b[0m\n\x1b[31merror\x1b[0m\n"
 
 
-def test_detail_quiet_suppresses_even_if_verbose(capsys: pytest.CaptureFixture[str]) -> None:
-    """Quiet wins over verbose for detail lines."""
-    _output.configure(quiet=True, verbose=True)
-    _output.detail("nope")
-    assert capsys.readouterr().out == ""
+def test_public_api_is_explicit_and_stable() -> None:
+    """The module exports only the five supported terminal operations."""
+    assert set(_output.__all__) == {"configure", "detail", "error", "status", "warn"}
+    assert len(_output.__all__) == 5
 
 
-def test_status_still_emits_when_quiet(capsys: pytest.CaptureFixture[str]) -> None:
-    """Quiet mode still allows status one-liners (gate O3)."""
-    _output.configure(quiet=True)
-    _output.status("compact")
-    assert "compact" in capsys.readouterr().out
+def test_output_module_imports_no_domain_or_storage_modules() -> None:
+    """The terminal primitive remains independent of non-presentation modules."""
+    source_path = Path(_output.__file__)
+    tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
+    imported_modules: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported_modules.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            if (node.level and node.module is None) or node.module == "pxaudit":
+                imported_modules.update(alias.name for alias in node.names)
+            elif node.module is not None:
+                imported_modules.add(node.module)
+    imported_roots = {
+        module.removeprefix("pxaudit.").split(".", 1)[0] for module in imported_modules
+    }
+    forbidden = {
+        "accession",
+        "cache",
+        "cli",
+        "config",
+        "db",
+        "file_classifier",
+        "pride_client",
+        "report",
+        "tier_engine",
+    }
 
-
-def test_warn_not_suppressed_by_quiet(capsys: pytest.CaptureFixture[str]) -> None:
-    """Warnings always appear on stderr under quiet."""
-    _output.configure(quiet=True)
-    _output.warn("still-here")
-    assert "still-here" in capsys.readouterr().err
-
-
-def test_no_color_flag_strips_ansi(monkeypatch: pytest.MonkeyPatch) -> None:
-    """--no-color must prevent ANSI even on a TTY."""
-    fake_err = io.StringIO()
-    fake_err.isatty = lambda: True  # type: ignore[method-assign]
-    monkeypatch.setattr(sys, "stderr", fake_err)
-    monkeypatch.delenv("NO_COLOR", raising=False)
-    _output.configure(no_color=True)
-    _output.warn("plain")
-    assert "\x1b" not in fake_err.getvalue()
-    assert "\033" not in fake_err.getvalue()
-    assert "plain" in fake_err.getvalue()
-
-
-def test_no_color_env_strips_ansi(monkeypatch: pytest.MonkeyPatch) -> None:
-    """NO_COLOR env var disables ANSI on a TTY."""
-    fake_err = io.StringIO()
-    fake_err.isatty = lambda: True  # type: ignore[method-assign]
-    monkeypatch.setattr(sys, "stderr", fake_err)
-    monkeypatch.setenv("NO_COLOR", "1")
-    _output.configure(no_color=False)
-    _output.error("plain")
-    assert "\x1b" not in fake_err.getvalue()
-    assert "plain" in fake_err.getvalue()
-
-
-def test_non_tty_strips_ansi(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Non-TTY stderr disables color without --no-color."""
-    fake_err = io.StringIO()
-    fake_err.isatty = lambda: False  # type: ignore[method-assign]
-    monkeypatch.setattr(sys, "stderr", fake_err)
-    monkeypatch.delenv("NO_COLOR", raising=False)
-    _output.configure(no_color=False)
-    _output.warn("plain")
-    assert "\x1b" not in fake_err.getvalue()
-
-
-def test_tty_allows_ansi(monkeypatch: pytest.MonkeyPatch) -> None:
-    """TTY + color enabled may include ANSI from click.style."""
-    fake_err = io.StringIO()
-    fake_err.isatty = lambda: True  # type: ignore[method-assign]
-    monkeypatch.setattr(sys, "stderr", fake_err)
-    monkeypatch.delenv("NO_COLOR", raising=False)
-    _output.configure(no_color=False)
-    _output.warn("colored")
-    out = fake_err.getvalue()
-    assert "colored" in out
-    assert "\x1b" in out
-
-
-def test_color_enabled_false_without_isatty(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Streams without isatty() disable color."""
-
-    class NoIsatty(io.StringIO):
-        pass
-
-    fake = NoIsatty()
-    monkeypatch.setattr(sys, "stdout", fake)
-    monkeypatch.delenv("NO_COLOR", raising=False)
-    _output.configure(no_color=False)
-    assert _output._color_enabled(fake) is False
-
-
-def test_output_module_has_no_heavy_imports() -> None:
-    """_output must not pull network/DB/cache/tier modules."""
-    import pxaudit._output as mod
-
-    # Assert the module source does not import heavy dependencies.
-    source = Path(mod.__file__).read_text(encoding="utf-8")
-    for name in ("cache", "db", "pride_client", "tier_engine", "config"):
-        assert f"pxaudit.{name}" not in source
-        assert f"import {name}" not in source
+    assert imported_roots.isdisjoint(forbidden)

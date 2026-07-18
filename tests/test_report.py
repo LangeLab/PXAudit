@@ -1,15 +1,13 @@
-"""Tests for pxaudit.report : HTML report generation.
-
-Coverage target: 100% branch coverage on report.py.
-"""
+"""Database, rendering, filesystem, and CLI contracts for HTML reports."""
 
 from __future__ import annotations
 
 import importlib.metadata as importlib_metadata
 import logging
+import sqlite3
 import sys
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -17,11 +15,10 @@ import pandas as pd
 import pytest
 from click.testing import CliRunner
 
+from pxaudit import report as report_mod
 from pxaudit.cli import main
-from pxaudit.db import get_or_create_db
-from pxaudit.report import (
-    generate_report,
-)
+from pxaudit.db import get_or_create_db, insert_audit, insert_study
+from pxaudit.report import generate_report
 
 
 def _make_study_row(
@@ -81,9 +78,14 @@ def _make_audit_row(
     }
 
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
+def _insert_record(
+    conn: sqlite3.Connection,
+    study: dict[str, str | int],
+    audit: dict[str, str | int | None],
+) -> None:
+    """Insert one study and its audit through the production persistence API."""
+    insert_study(conn, study)
+    insert_audit(conn, audit)
 
 
 @pytest.fixture()
@@ -91,11 +93,8 @@ def realistic_db(tmp_path: Path) -> Path:
     """Database with diverse tiers, quant tiers, organisms, and instruments."""
     db_path = tmp_path / "realistic.db"
     conn = get_or_create_db(db_path)
-    from pxaudit.db import _AUDIT_COLS, _STUDY_COLS
 
-    # (accession, tier, quant_tier, organism, instrument, year, extra_flags)
     scenarios = [
-        # Qualitative tier coverage
         (
             "PXD000001",
             "Diamond",
@@ -197,7 +196,7 @@ def realistic_db(tmp_path: Path) -> Path:
         (
             "PXD000007",
             "Gold",
-            "No Quant",
+            "Partial",
             "Drosophila melanogaster",
             "Orbitrap",
             2020,
@@ -212,7 +211,7 @@ def realistic_db(tmp_path: Path) -> Path:
         (
             "PXD000008",
             "Silver",
-            "No Quant",
+            "Partial",
             "Homo sapiens",
             "Q Exactive",
             2020,
@@ -221,7 +220,7 @@ def realistic_db(tmp_path: Path) -> Path:
         (
             "PXD000009",
             "Silver",
-            "No Quant",
+            "Partial",
             "Mus musculus",
             "Orbitrap",
             2019,
@@ -291,26 +290,19 @@ def realistic_db(tmp_path: Path) -> Path:
             instrument=instrument,
             submission_year=year,
         )
+        if extra_flags.get("has_title") == 0:
+            study["title"] = ""
+        if extra_flags.get("has_organism") == 0:
+            study["organism"] = ""
         audit = _make_audit_row(acc, tier=tier, quant_tier=quant_tier, flags=extra_flags)
-
-        ph_s = ", ".join("?" for _ in _STUDY_COLS)
-        cols_s = ", ".join(_STUDY_COLS)
-        conn.execute(
-            f"INSERT OR REPLACE INTO study ({cols_s}) VALUES ({ph_s})",
-            tuple(study[c] for c in _STUDY_COLS),
-        )
-        ph_a = ", ".join("?" for _ in _AUDIT_COLS)
-        cols_a = ", ".join(_AUDIT_COLS)
-        conn.execute(
-            f"INSERT OR REPLACE INTO audit ({cols_a}) VALUES ({ph_a})",
-            tuple(audit[c] for c in _AUDIT_COLS),
-        )
+        _insert_record(conn, study, audit)
     conn.close()
     return db_path
 
 
 @pytest.fixture()
 def empty_db(tmp_path: Path) -> Path:
+    """Return a schema-valid database without audit rows."""
     db_path = tmp_path / "empty.db"
     get_or_create_db(db_path).close()
     return db_path
@@ -318,44 +310,39 @@ def empty_db(tmp_path: Path) -> Path:
 
 @pytest.fixture()
 def all_unverifiable_db(tmp_path: Path) -> Path:
+    """Return a database containing only unverifiable audit rows."""
     db_path = tmp_path / "unver.db"
     conn = get_or_create_db(db_path)
-    for i in range(3):
-        conn.execute(
-            "INSERT OR REPLACE INTO audit (accession, tier, quant_tier, is_unverifiable, "
-            "has_title, has_organism, has_instrument, has_result_files, "
-            "has_psi_results, has_open_spectra, has_organism_part, has_publication, "
-            "has_tabular_quant, has_quant_metadata, has_sdrf, has_mztab, "
-            "has_organism_id, files_fetch_failed, tier_logic_version) "
-            "VALUES (?, 'Unverifiable', 'Unverifiable', 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 'v2.1')",
-            (f"PXD{i:06d}",),
+    for accession in ("MSV000000001", "JPST000001", "IPX000001"):
+        audit = _make_audit_row(
+            accession,
+            tier="Unverifiable",
+            quant_tier="Unverifiable",
+            flags={
+                "has_title": 0,
+                "has_organism": 0,
+                "has_organism_id": 0,
+                "has_instrument": 0,
+                "has_result_files": 0,
+                "is_unverifiable": 1,
+            },
         )
+        insert_audit(conn, audit)
     conn.close()
     return db_path
 
 
 @pytest.fixture()
 def null_flag_db(tmp_path: Path) -> Path:
+    """Return a database with present, missing, and NULL result-file flags."""
     db_path = tmp_path / "nullflag.db"
     conn = get_or_create_db(db_path)
-    from pxaudit.db import _AUDIT_COLS, _STUDY_COLS
 
     for i, hr in [(1, 1), (2, 0), (3, None)]:
         acc = f"PXD{i:06d}"
         study = _make_study_row(acc)
         audit = _make_audit_row(acc, flags={"has_result_files": hr})
-        ph_s = ", ".join("?" for _ in _STUDY_COLS)
-        cols_s = ", ".join(_STUDY_COLS)
-        conn.execute(
-            f"INSERT OR REPLACE INTO study ({cols_s}) VALUES ({ph_s})",
-            tuple(study[c] for c in _STUDY_COLS),
-        )
-        ph_a = ", ".join("?" for _ in _AUDIT_COLS)
-        cols_a = ", ".join(_AUDIT_COLS)
-        conn.execute(
-            f"INSERT OR REPLACE INTO audit ({cols_a}) VALUES ({ph_a})",
-            tuple(audit[c] for c in _AUDIT_COLS),
-        )
+        _insert_record(conn, study, audit)
     conn.close()
     return db_path
 
@@ -365,10 +352,17 @@ def unknown_tier_db(tmp_path: Path) -> Path:
     """Database containing tier values outside the current report vocabulary."""
     db_path = tmp_path / "unknown-tier.db"
     conn = get_or_create_db(db_path)
-    conn.execute(
-        "INSERT INTO audit (accession, tier, quant_tier, is_unverifiable) "
-        "VALUES ('PXD000001', 'Future Tier', 'Future Quant', 0)"
+    hostile_values: tuple[tuple[str | None, str | None], ...] = (
+        ("Future Tier", "Future Quant"),
+        (None, None),
+        ("", ""),
+        ("<script>", '" onmouseover="alert(1)'),
     )
+    for index, (tier, quant_tier) in enumerate(hostile_values, start=1):
+        audit = _make_audit_row(f"PXD{index:06d}")
+        audit["tier"] = tier
+        audit["quant_tier"] = quant_tier
+        insert_audit(conn, audit)
     conn.close()
     return db_path
 
@@ -376,15 +370,15 @@ def unknown_tier_db(tmp_path: Path) -> Path:
 @pytest.fixture()
 def all_gaps_db(tmp_path: Path) -> Path:
     """Database whose one verifiable row is missing every report flag."""
-    from pxaudit.report import _FLAG_COLUMNS
-
     db_path = tmp_path / "all-gaps.db"
     conn = get_or_create_db(db_path)
-    columns = [column for _label, column in _FLAG_COLUMNS]
-    conn.execute(
-        f"INSERT INTO audit (accession, tier, quant_tier, is_unverifiable, "
-        f"{', '.join(columns)}) VALUES ({', '.join('?' for _ in range(4 + len(columns)))})",
-        ("PXD000001", "None", "No Quant", 0, *([0] * len(columns))),
+    insert_audit(
+        conn,
+        _make_audit_row(
+            "PXD000001",
+            tier="None",
+            flags={column: 0 for _label, column in report_mod._FLAG_COLUMNS},
+        ),
     )
     conn.close()
     return db_path
@@ -392,31 +386,20 @@ def all_gaps_db(tmp_path: Path) -> Path:
 
 @pytest.fixture()
 def xss_db(tmp_path: Path) -> Path:
+    """Return a database containing markup in a persisted study title."""
     db_path = tmp_path / "xss.db"
     conn = get_or_create_db(db_path)
     study = _make_study_row("PXD000001")
     study["title"] = "<script>alert('xss')</script>"
     audit = _make_audit_row("PXD000001")
-    from pxaudit.db import _AUDIT_COLS, _STUDY_COLS
-
-    ph_s = ", ".join("?" for _ in _STUDY_COLS)
-    cols_s = ", ".join(_STUDY_COLS)
-    conn.execute(
-        f"INSERT OR REPLACE INTO study ({cols_s}) VALUES ({ph_s})",
-        tuple(study[c] for c in _STUDY_COLS),
-    )
-    ph_a = ", ".join("?" for _ in _AUDIT_COLS)
-    cols_a = ", ".join(_AUDIT_COLS)
-    conn.execute(
-        f"INSERT OR REPLACE INTO audit ({cols_a}) VALUES ({ph_a})",
-        tuple(audit[c] for c in _AUDIT_COLS),
-    )
+    _insert_record(conn, study, audit)
     conn.close()
     return db_path
 
 
 @pytest.fixture()
 def corrupted_db(tmp_path: Path) -> Path:
+    """Return a regular file that is not a SQLite database."""
     db_path = tmp_path / "corrupt.db"
     db_path.write_text("not a sqlite database", encoding="utf-8")
     return db_path
@@ -424,192 +407,188 @@ def corrupted_db(tmp_path: Path) -> Path:
 
 @pytest.fixture()
 def output_dir(tmp_path: Path) -> Path:
+    """Return an absent report output path."""
     return tmp_path / "report_out"
 
 
 @pytest.fixture()
-def many_organisms_db(tmp_path: Path) -> Path:
-    """Database with 12 equal-sized organisms for deterministic top-ten selection."""
-    db_path = tmp_path / "many_orgs.db"
+def many_cohorts_db(tmp_path: Path) -> Path:
+    """Database with 12 equal-sized organism and instrument cohorts."""
+    db_path = tmp_path / "many_cohorts.db"
     conn = get_or_create_db(db_path)
-    from pxaudit.db import _AUDIT_COLS, _STUDY_COLS
 
-    organisms = [f"Organism_{i}" for i in range(12)]
-    for i, org in enumerate(organisms):
+    for i in range(12):
         acc = f"PXD{i:06d}"
-        study = _make_study_row(acc, organism=org)
+        study = _make_study_row(
+            acc,
+            organism=f"Organism_{i}",
+            instrument=f"Instrument_{i}",
+        )
         audit = _make_audit_row(acc, tier="Gold")
-        ph_s = ", ".join("?" for _ in _STUDY_COLS)
-        cols_s = ", ".join(_STUDY_COLS)
-        conn.execute(
-            f"INSERT OR REPLACE INTO study ({cols_s}) VALUES ({ph_s})",
-            tuple(study[c] for c in _STUDY_COLS),
-        )
-        ph_a = ", ".join("?" for _ in _AUDIT_COLS)
-        cols_a = ", ".join(_AUDIT_COLS)
-        conn.execute(
-            f"INSERT OR REPLACE INTO audit ({cols_a}) VALUES ({ph_a})",
-            tuple(audit[c] for c in _AUDIT_COLS),
-        )
+        _insert_record(conn, study, audit)
     conn.close()
     return db_path
 
 
-# ---------------------------------------------------------------------------
-# Query function tests
-# ---------------------------------------------------------------------------
-
-
 class TestQueryFunctions:
-    def test_tier_distribution_counts(self, realistic_db: Path) -> None:
-        from pxaudit.report import _query_tier_distribution
+    """Contracts for SQL aggregation and row normalization."""
 
-        conn = get_or_create_db(realistic_db)
-        df = _query_tier_distribution(conn)
-        total_in_db = int(conn.execute("SELECT COUNT(*) FROM audit").fetchone()[0])
-        conn.close()
-        assert int(df["count"].sum()) == total_in_db
-        assert abs(df["percentage"].sum() - 100.0) < 0.5
-
-    def test_tier_distribution_covers_multiple_tiers(self, realistic_db: Path) -> None:
-        from pxaudit.report import _query_tier_distribution
-
-        conn = get_or_create_db(realistic_db)
-        df = _query_tier_distribution(conn)
-        conn.close()
-        present_tiers = set(df[df["count"] > 0]["tier"])
-        assert "Diamond" in present_tiers
-        assert "Gold" in present_tiers
-        assert "Silver" in present_tiers
-        assert "Bronze" in present_tiers
-        assert "Raw" in present_tiers
-        assert "None" in present_tiers
-
-    def test_quant_tier_distribution(self, realistic_db: Path) -> None:
-        from pxaudit.report import _query_quant_tier_distribution
-
-        conn = get_or_create_db(realistic_db)
-        df = _query_quant_tier_distribution(conn)
-        conn.close()
-        assert not df.empty
-        assert abs(df["percentage"].sum() - 100.0) < 0.5
-
-    def test_quant_tier_distribution_covers_multiple_tiers(self, realistic_db: Path) -> None:
-        from pxaudit.report import _query_quant_tier_distribution
-
-        conn = get_or_create_db(realistic_db)
-        df = _query_quant_tier_distribution(conn)
-        conn.close()
-        present_tiers = set(df[df["count"] > 0]["quant_tier"])
-        assert "Quant-Complete" in present_tiers
-        assert "Quant-Ready" in present_tiers
-        assert "Partial" in present_tiers
-        assert "No Quant" in present_tiers
-
-    def test_cohort_organism_data(self, realistic_db: Path) -> None:
-        from pxaudit.report import _query_cohort_organism
-
-        conn = get_or_create_db(realistic_db)
-        df = _query_cohort_organism(conn)
-        conn.close()
-        organisms = set(df["organism"])
-        assert "Homo sapiens" in organisms
-        assert "Mus musculus" in organisms
-
-    def test_cohort_instrument_data(self, realistic_db: Path) -> None:
-        from pxaudit.report import _query_cohort_instrument
-
-        conn = get_or_create_db(realistic_db)
-        df = _query_cohort_instrument(conn)
-        conn.close()
-        instruments = set(df["instrument"])
-        assert "Orbitrap" in instruments
-        assert "Q Exactive" in instruments
-
-    def test_cohort_queries_return_top_ten_with_deterministic_ties(
-        self, many_organisms_db: Path
+    @pytest.mark.parametrize(
+        ("query", "column", "expected"),
+        [
+            (
+                report_mod._query_tier_distribution,
+                "tier",
+                {
+                    "Diamond": 2,
+                    "Platinum": 2,
+                    "Gold": 3,
+                    "Silver": 2,
+                    "Bronze": 2,
+                    "Raw": 2,
+                    "None": 2,
+                    "Unverifiable": 0,
+                    "Unknown": 0,
+                },
+            ),
+            (
+                report_mod._query_quant_tier_distribution,
+                "quant_tier",
+                {
+                    "Quant-Complete": 2,
+                    "Quant-Ready": 2,
+                    "Partial": 6,
+                    "No Quant": 5,
+                    "Unverifiable": 0,
+                    "Unknown": 0,
+                },
+            ),
+        ],
+        ids=("qualitative", "quantitative"),
+    )
+    def test_distributions_preserve_order_counts_and_percentages(
+        self,
+        realistic_db: Path,
+        query: Callable[[sqlite3.Connection], pd.DataFrame],
+        column: str,
+        expected: dict[str, int],
     ) -> None:
-        from pxaudit.report import _query_cohort_organism
-
-        conn = get_or_create_db(many_organisms_db)
-        df = _query_cohort_organism(conn)
-        conn.close()
-
-        assert set(df["organism"]) == set(sorted(f"Organism_{i}" for i in range(12))[:10])
-
-    def test_metadata_gaps_populated(self, realistic_db: Path) -> None:
-        from pxaudit.report import _query_metadata_gaps
-
+        """Each distribution returns its complete vocabulary, exact counts, and total share."""
         conn = get_or_create_db(realistic_db)
-        gaps = _query_metadata_gaps(conn)
+        distribution = query(conn)
         conn.close()
-        assert len(gaps) > 0
-        assert all("field" in g and "missing" in g and "severity" in g for g in gaps)
+
+        assert dict(zip(distribution[column], distribution["count"], strict=True)) == expected
+        assert list(distribution[column]) == list(expected)
+        assert int(distribution["count"].sum()) == 15
+        assert distribution["percentage"].sum() == pytest.approx(100.0, abs=0.5)
+
+    @pytest.mark.parametrize(
+        ("query", "column", "expected"),
+        [
+            (report_mod._query_cohort_organism, "organism", {"Homo sapiens", "Mus musculus"}),
+            (report_mod._query_cohort_instrument, "instrument", {"Orbitrap", "Q Exactive"}),
+        ],
+        ids=("organism", "instrument"),
+    )
+    def test_cohort_queries_preserve_known_groups(
+        self,
+        realistic_db: Path,
+        query: Callable[[sqlite3.Connection], pd.DataFrame],
+        column: str,
+        expected: set[str],
+    ) -> None:
+        """Both cohort dimensions retain representative groups from stored studies."""
+        conn = get_or_create_db(realistic_db)
+        cohorts = query(conn)
+        conn.close()
+
+        assert expected <= set(cohorts[column])
+
+    @pytest.mark.parametrize(
+        ("query", "column", "prefix"),
+        [
+            (report_mod._query_cohort_organism, "organism", "Organism"),
+            (report_mod._query_cohort_instrument, "instrument", "Instrument"),
+        ],
+        ids=("organism", "instrument"),
+    )
+    def test_cohort_queries_return_top_ten_with_deterministic_ties(
+        self,
+        many_cohorts_db: Path,
+        query: Callable[[sqlite3.Connection], pd.DataFrame],
+        column: str,
+        prefix: str,
+    ) -> None:
+        """Both equal-sized cohort dimensions select the alphabetically first ten."""
+        conn = get_or_create_db(many_cohorts_db)
+        df = query(conn)
+        conn.close()
+
+        assert set(df[column]) == set(sorted(f"{prefix}_{i}" for i in range(12))[:10])
 
     def test_unknown_tiers_are_counted_and_normalized(self, unknown_tier_db: Path) -> None:
-        from pxaudit.report import (
-            _query_all_accessions,
-            _query_cohort_organism,
-            _query_quant_tier_distribution,
-            _query_tier_distribution,
-        )
-
+        """Future qualitative and quantitative values remain visible as unknown."""
         conn = get_or_create_db(unknown_tier_db)
-        tier_dist = _query_tier_distribution(conn)
-        quant_dist = _query_quant_tier_distribution(conn)
-        cohort_dist = _query_cohort_organism(conn)
-        rows = _query_all_accessions(conn)
+        tier_dist = report_mod._query_tier_distribution(conn)
+        quant_dist = report_mod._query_quant_tier_distribution(conn)
+        cohort_dist = report_mod._query_cohort_organism(conn)
+        rows = report_mod._query_all_accessions(conn)
         conn.close()
 
-        assert int(tier_dist.loc[tier_dist["tier"] == "Unknown", "count"].iloc[0]) == 1
-        assert int(quant_dist.loc[quant_dist["quant_tier"] == "Unknown", "count"].iloc[0]) == 1
+        assert int(tier_dist.loc[tier_dist["tier"] == "Unknown", "count"].iloc[0]) == 4
+        assert int(quant_dist.loc[quant_dist["quant_tier"] == "Unknown", "count"].iloc[0]) == 4
         assert cohort_dist[["tier", "count"]].to_dict(orient="records") == [
-            {"tier": "Unknown", "count": 1}
+            {"tier": "Unknown", "count": 4}
         ]
-        assert rows[0]["tier"] == rows[0]["quant_tier"] == "Unknown"
+        assert [row["accession"] for row in rows] == [f"PXD{index:06d}" for index in range(1, 5)]
+        assert all(row["tier"] == row["quant_tier"] == "Unknown" for row in rows)
 
-    def test_all_accessions_sorted(self, realistic_db: Path) -> None:
-        from pxaudit.report import _TIER_ORDER, _query_all_accessions
-
+    def test_all_accessions_preserve_sort_and_quant_tiers(self, realistic_db: Path) -> None:
+        """Accession rows sort by quality then identity and retain all quant tiers."""
         conn = get_or_create_db(realistic_db)
-        rows = _query_all_accessions(conn)
+        rows = report_mod._query_all_accessions(conn)
         conn.close()
-        assert len(rows) > 0
-        prev_rank = -1
-        for r in rows:
-            rank = _TIER_ORDER.index(r["tier"]) if r["tier"] in _TIER_ORDER else 99
-            assert rank >= prev_rank
-            prev_rank = rank
 
-    def test_all_accessions_have_quant_tier(self, realistic_db: Path) -> None:
-        from pxaudit.report import _query_all_accessions
-
-        conn = get_or_create_db(realistic_db)
-        rows = _query_all_accessions(conn)
-        conn.close()
-        quant_tiers = {r["quant_tier"] for r in rows}
-        assert "Quant-Complete" in quant_tiers
-        assert "Quant-Ready" in quant_tiers
-        assert "Partial" in quant_tiers
-        assert "No Quant" in quant_tiers
+        keys = [(report_mod._TIER_ORDER.index(row["tier"]), row["accession"]) for row in rows]
+        assert keys == sorted(keys)
+        assert {row["quant_tier"] for row in rows} == {
+            "Quant-Complete",
+            "Quant-Ready",
+            "Partial",
+            "No Quant",
+        }
 
 
 class TestEmptyDataFrames:
-    def test_empty_tier_dist(self, tmp_path: Path) -> None:
-        from pxaudit.report import _query_tier_distribution
+    """Contracts for empty and NULL distribution inputs."""
 
-        db_path = tmp_path / "empty_audit.db"
-        get_or_create_db(db_path).close()
-        conn = get_or_create_db(db_path)
-        df = _query_tier_distribution(conn)
+    @pytest.mark.parametrize(
+        ("query", "column", "expected"),
+        [
+            (report_mod._query_tier_distribution, "tier", report_mod._TIER_ORDER),
+            (report_mod._query_quant_tier_distribution, "quant_tier", report_mod._QUANT_TIER_ORDER),
+        ],
+        ids=("qualitative", "quantitative"),
+    )
+    def test_empty_distributions_retain_zero_filled_vocabulary(
+        self,
+        empty_db: Path,
+        query: Callable[[sqlite3.Connection], pd.DataFrame],
+        column: str,
+        expected: list[str],
+    ) -> None:
+        """An empty audit table returns every tier with zero count and percentage."""
+        conn = get_or_create_db(empty_db)
+        distribution = query(conn)
         conn.close()
-        # Returns full tier list with zero counts, not empty.
-        assert not df.empty
-        assert int(df["count"].sum()) == 0
+
+        assert distribution[column].tolist() == expected
+        assert distribution["count"].tolist() == [0] * len(expected)
+        assert distribution["percentage"].tolist() == [0.0] * len(expected)
 
     def test_empty_quant_dist(self, tmp_path: Path) -> None:
-        from pxaudit.report import _query_quant_tier_distribution
-
+        """A stored NULL quant tier contributes to the unknown bucket."""
         db_path = tmp_path / "noquant.db"
         conn = get_or_create_db(db_path)
         conn.execute(
@@ -617,59 +596,90 @@ class TestEmptyDataFrames:
         )
         conn.close()
         conn = get_or_create_db(db_path)
-        df = _query_quant_tier_distribution(conn)
+        df = report_mod._query_quant_tier_distribution(conn)
         conn.close()
-        # A NULL stored value is retained as unknown rather than disappearing.
-        assert not df.empty
         assert int(df["count"].sum()) == 1
         assert int(df.loc[df["quant_tier"] == "Unknown", "count"].iloc[0]) == 1
 
-    def test_empty_tier_chart(self) -> None:
-        from pxaudit.report import _render_tier_chart
+    @pytest.mark.parametrize(
+        ("render", "column"),
+        [
+            (report_mod._render_tier_chart, "tier"),
+            (report_mod._render_quant_tier_chart, "quant_tier"),
+        ],
+        ids=("qualitative", "quantitative"),
+    )
+    def test_empty_distribution_charts_render_placeholder(
+        self,
+        render: Callable[[pd.DataFrame], str],
+        column: str,
+    ) -> None:
+        """Both empty distribution charts render an explicit no-data placeholder."""
+        html = render(pd.DataFrame(columns=[column, "count", "percentage"]))
 
-        out = _render_tier_chart(pd.DataFrame(columns=["tier", "count", "percentage"]))
-        assert "No data" in out
-
-    def test_empty_quant_chart(self) -> None:
-        from pxaudit.report import _render_quant_tier_chart
-
-        out = _render_quant_tier_chart(pd.DataFrame(columns=["quant_tier", "count", "percentage"]))
-        assert "No data" in out
-
-
-# ---------------------------------------------------------------------------
-# Edge case tests
-# ---------------------------------------------------------------------------
+        assert html == '<p class="placeholder">No data available.</p>'
 
 
 class TestEdgeCases:
+    """Security, resource, and malformed-input report contracts."""
+
+    def test_collection_failure_closes_database(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A query failure closes the report's read-only database connection."""
+        db_path = tmp_path / "input.db"
+        db_path.touch()
+        connection = Mock()
+        failure = sqlite3.DatabaseError("query failed")
+        monkeypatch.setattr(report_mod, "_open_db", Mock(return_value=connection))
+        monkeypatch.setattr(report_mod, "_collect_report_data", Mock(side_effect=failure))
+
+        with pytest.raises(sqlite3.DatabaseError, match="query failed") as caught:
+            generate_report(db_path, tmp_path / "out", "X")
+
+        assert caught.value is failure
+        connection.close.assert_called_once_with()
+        assert not (tmp_path / "out").exists()
+
     def test_empty_database_error(self, empty_db: Path, output_dir: Path) -> None:
+        """A schema-valid database without audits cannot produce a misleading report."""
         with pytest.raises(ValueError, match="no audited accessions"):
             generate_report(empty_db, output_dir, "X")
 
     def test_all_unverifiable(self, all_unverifiable_db: Path, output_dir: Path) -> None:
+        """An all-unverifiable cohort renders all three stored rows explicitly."""
         out = generate_report(all_unverifiable_db, output_dir, "Unver")
         html = out.read_text(encoding="utf-8")
-        assert "Unverifiable" in html
+
+        assert html.count('class="tier-Unverifiable"') == 6
+        assert "fewer than 10 audited accessions" in html
 
     def test_unknown_tier_report_renders(self, unknown_tier_db: Path, output_dir: Path) -> None:
         """Unknown stored tiers remain renderable in every report section."""
         out = generate_report(unknown_tier_db, output_dir, "Unknown")
 
-        assert out.read_text(encoding="utf-8").startswith("<!DOCTYPE html>")
+        html = out.read_text(encoding="utf-8")
+        assert 'class="tier-Unknown">Unknown</span>' in html
+        assert html.count('class="tier-Unknown"') == 8
+        assert "<script>" not in html
+        assert "onmouseover" not in html
 
     def test_xss_escaped(self, xss_db: Path, output_dir: Path) -> None:
+        """Stored study titles are HTML-escaped in text and tooltip contexts."""
         out = generate_report(xss_db, output_dir, "X")
         html = out.read_text(encoding="utf-8")
+
         assert "<script>alert" not in html
         assert "&lt;script&gt;" in html
+        assert "&#39;xss&#39;" in html
 
     def test_null_flags(self, null_flag_db: Path, output_dir: Path) -> None:
-        from pxaudit.report import _query_metadata_gaps
-
+        """Present, missing, and unknown flags remain distinct in queries and HTML."""
         conn = get_or_create_db(null_flag_db)
         result_files = next(
-            item for item in _query_metadata_gaps(conn) if item["field"] == "result_files"
+            item
+            for item in report_mod._query_metadata_gaps(conn)
+            if item["field"] == "result_files"
         )
         conn.close()
 
@@ -683,34 +693,40 @@ class TestEdgeCases:
         }
         out = generate_report(null_flag_db, output_dir, "Null")
         html = out.read_text(encoding="utf-8")
-        assert "?" in html
-        assert "+" in html
-        assert "-" in html
+        assert '<span class="badge badge-unknown">?</span>' in html
+        assert '<span class="badge badge-ok">+</span>' in html
+        assert '<span class="badge badge-missing">-</span>' in html
 
     def test_every_missing_flag_reports_one_hundred_percent(self, all_gaps_db: Path) -> None:
-        from pxaudit.report import _query_metadata_gaps
-
+        """Every confirmed missing flag reports 100 percent without unknowns or presents."""
         conn = get_or_create_db(all_gaps_db)
-        gaps = _query_metadata_gaps(conn)
+        gaps = report_mod._query_metadata_gaps(conn)
         conn.close()
 
+        assert len(gaps) == len(report_mod._FLAG_COLUMNS)
         assert all(item["pct_missing"] == 100.0 for item in gaps)
         assert all(item["present"] == 0 and item["unknown"] == 0 for item in gaps)
 
     def test_direct_filenotfound(self, tmp_path: Path) -> None:
-        with pytest.raises(FileNotFoundError, match="database not found"):
-            generate_report(tmp_path / "nope.db", tmp_path, "X")
+        """Direct generation rejects a missing database without creating it."""
+        missing = tmp_path / "nope.db"
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="chmod has no effect on NTFS")
-    def test_permission_error_mkdir(self, realistic_db: Path, tmp_path: Path) -> None:
-        readonly = tmp_path / "ro"
-        readonly.mkdir()
-        readonly.chmod(0o555)
-        try:
-            with pytest.raises(PermissionError, match="cannot create"):
-                generate_report(realistic_db, readonly / "sub", "X")
-        finally:
-            readonly.chmod(0o755)
+        with pytest.raises(FileNotFoundError, match="database not found"):
+            generate_report(missing, tmp_path, "X")
+
+        assert not missing.exists()
+
+    def test_permission_error_mkdir(
+        self, realistic_db: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A directory permission refusal retains its output context and cause."""
+        refusal = PermissionError("denied")
+        monkeypatch.setattr(Path, "mkdir", Mock(side_effect=refusal))
+
+        with pytest.raises(PermissionError, match="cannot create output directory") as caught:
+            generate_report(realistic_db, tmp_path / "out", "X")
+
+        assert caught.value.__cause__ is refusal
 
     def test_output_directory_creation_os_error(
         self, realistic_db: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -718,26 +734,29 @@ class TestEdgeCases:
         """A non-permission directory failure retains output context."""
         monkeypatch.setattr(Path, "mkdir", Mock(side_effect=OSError("filesystem unavailable")))
 
-        with pytest.raises(OSError, match="cannot create output directory"):
+        with pytest.raises(OSError, match="cannot create output directory") as caught:
             generate_report(realistic_db, tmp_path / "out", "X")
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="chmod has no effect on NTFS")
-    def test_permission_error_write(self, realistic_db: Path, tmp_path: Path) -> None:
-        """PermissionError when report.html can't be written."""
-        readonly = tmp_path / "ro2"
-        readonly.mkdir()
-        readonly.chmod(0o555)
-        try:
-            with pytest.raises(PermissionError):
-                generate_report(realistic_db, readonly, "X")
-        finally:
-            readonly.chmod(0o755)
+        assert isinstance(caught.value.__cause__, OSError)
+
+    def test_permission_error_write(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """A temporary-file permission refusal becomes a contextual write error."""
+        refusal = PermissionError("denied")
+        monkeypatch.setattr(
+            report_mod.tempfile,
+            "NamedTemporaryFile",
+            Mock(side_effect=refusal),
+        )
+
+        with pytest.raises(PermissionError, match="cannot write") as caught:
+            report_mod._write_report(tmp_path / "report.html", "content")
+
+        assert caught.value.__cause__ is refusal
 
     def test_atomic_write_failure_preserves_report_and_cleans_temporary(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        import pxaudit.report as report_mod
-
+        """Failed atomic replacement preserves the report and removes its temporary file."""
         report = tmp_path / "report.html"
         report.write_text("keep", encoding="utf-8")
         monkeypatch.setattr(report_mod.os, "replace", Mock(side_effect=OSError("disk full")))
@@ -754,8 +773,7 @@ class TestEdgeCases:
         tmp_path: Path,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        import pxaudit.report as report_mod
-
+        """A secondary cleanup refusal is logged without hiding the primary write failure."""
         report = tmp_path / "report.html"
         original_unlink = Path.unlink
 
@@ -772,23 +790,17 @@ class TestEdgeCases:
 
         assert "Could not remove report temporary file" in caplog.text
 
-    def test_many_organisms_generate_top_ten_cohort_chart(
-        self, many_organisms_db: Path, output_dir: Path
-    ) -> None:
-        from pxaudit.report import generate_report
-
-        path = generate_report(many_organisms_db, output_dir, "X")
-        assert path.exists()
-        assert "Cohort Analysis" in path.read_text(encoding="utf-8")
-
 
 class TestReportComponent:
+    """CLI-to-database-to-report component contracts."""
+
     pytestmark = pytest.mark.component
 
     def _runner(self) -> CliRunner:
         return CliRunner()
 
     def test_nonexistent_db(self, tmp_path: Path) -> None:
+        """A missing CLI database is a usage error and leaves no artifact."""
         r = self._runner().invoke(
             main, ["report", "--db", str(tmp_path / "nope.db"), "--output", str(tmp_path)]
         )
@@ -797,6 +809,7 @@ class TestReportComponent:
         assert list(tmp_path.iterdir()) == []
 
     def test_empty_db(self, empty_db: Path, tmp_path: Path) -> None:
+        """A schema-valid database without audits is an operational CLI failure."""
         r = self._runner().invoke(
             main, ["report", "--db", str(empty_db), "--output", str(tmp_path / "out")]
         )
@@ -804,12 +817,14 @@ class TestReportComponent:
         assert "no audited accessions" in r.output
 
     def test_output_dir_created(self, realistic_db: Path, tmp_path: Path) -> None:
+        """The CLI creates a missing nested output directory and report."""
         d = tmp_path / "new" / "nested"
         r = self._runner().invoke(main, ["report", "--db", str(realistic_db), "--output", str(d)])
         assert r.exit_code == 0
         assert (d / "report.html").exists()
 
     def test_overwrite_guard(self, realistic_db: Path, output_dir: Path) -> None:
+        """Without overwrite, an existing report remains byte-for-byte unchanged."""
         output_dir.mkdir()
         report = output_dir / "report.html"
         report.write_text("keep", encoding="utf-8")
@@ -823,6 +838,7 @@ class TestReportComponent:
     def test_existing_output_directory_preserves_unrelated_files(
         self, realistic_db: Path, output_dir: Path
     ) -> None:
+        """An existing output directory retains unrelated user files."""
         output_dir.mkdir()
         unrelated = output_dir / "notes.txt"
         unrelated.write_text("keep", encoding="utf-8")
@@ -838,6 +854,7 @@ class TestReportComponent:
     def test_default_output_writes_report_in_current_directory(
         self, realistic_db: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """The default output writes report.html into the isolated current directory."""
         monkeypatch.chdir(tmp_path)
 
         r = self._runner().invoke(main, ["report", "--db", str(realistic_db)])
@@ -846,6 +863,7 @@ class TestReportComponent:
         assert (tmp_path / "report.html").exists()
 
     def test_overwrite_flag(self, realistic_db: Path, output_dir: Path) -> None:
+        """Overwrite replaces only report.html and preserves neighboring files."""
         output_dir.mkdir()
         report = output_dir / "report.html"
         report.write_text("old", encoding="utf-8")
@@ -861,6 +879,7 @@ class TestReportComponent:
         assert unrelated.read_text(encoding="utf-8") == "keep"
 
     def test_output_path_must_be_directory(self, realistic_db: Path, tmp_path: Path) -> None:
+        """A regular-file output path is rejected without replacing its contents."""
         output = tmp_path / "not-a-directory"
         output.write_text("keep", encoding="utf-8")
 
@@ -898,166 +917,120 @@ class TestReportComponent:
         assert unrelated.read_text(encoding="utf-8") == "keep"
 
     def test_corrupted_db(self, corrupted_db: Path, tmp_path: Path) -> None:
+        """A corrupt SQLite input becomes a stable operational CLI error."""
         r = self._runner().invoke(
             main, ["report", "--db", str(corrupted_db), "--output", str(tmp_path / "out")]
         )
         assert r.exit_code == 1
         assert "not a database" in r.output
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="chmod has no effect on NTFS")
-    def test_permission_denied_dir(self, realistic_db: Path, tmp_path: Path) -> None:
-        readonly = tmp_path / "ro_cli"
-        readonly.mkdir()
-        readonly.chmod(0o555)
-        try:
-            r = self._runner().invoke(
-                main, ["report", "--db", str(realistic_db), "--output", str(readonly / "sub")]
-            )
-            assert r.exit_code == 1
-            assert "Permission" in r.output
-        finally:
-            readonly.chmod(0o755)
-
 
 class TestReportErrorContracts:
-    def test_missing_jinja2(self, realistic_db: Path, output_dir: Path) -> None:
-        with (
-            patch.dict(sys.modules, {"jinja2": None}),
-            pytest.raises(ImportError, match="jinja2 is required"),
-        ):
+    """Optional dependency and CLI error translation contracts."""
+
+    @pytest.mark.parametrize(
+        ("module", "message"),
+        [
+            ("jinja2", "jinja2 is required"),
+            ("matplotlib", "matplotlib is required"),
+        ],
+    )
+    def test_missing_report_dependency_has_install_guidance(
+        self,
+        realistic_db: Path,
+        output_dir: Path,
+        module: str,
+        message: str,
+    ) -> None:
+        """Each optional report dependency fails with targeted installation guidance."""
+        with patch.dict(sys.modules, {module: None}), pytest.raises(ImportError, match=message):
             generate_report(realistic_db, output_dir, "X")
 
-    def test_missing_matplotlib(self, realistic_db: Path, output_dir: Path) -> None:
-        with (
-            patch.dict(sys.modules, {"matplotlib": None}),
-            pytest.raises(ImportError, match="matplotlib is required"),
-        ):
-            generate_report(realistic_db, output_dir, "X")
-
-    def test_cli_import_error(self, realistic_db: Path, tmp_path: Path) -> None:
-        """CLI reports ImportError from generate_report."""
-        with patch("pxaudit.report.generate_report", side_effect=ImportError("jinja2 is required")):
-            r = CliRunner().invoke(
-                main, ["report", "--db", str(realistic_db), "--output", str(tmp_path / "ie")]
+    @pytest.mark.parametrize(
+        ("error", "message"),
+        [
+            (ImportError("jinja2 is required"), "jinja2 is required"),
+            (FileNotFoundError("db vanished"), "db vanished"),
+            (PermissionError("Permission denied"), "Permission denied"),
+        ],
+        ids=("dependency", "disappeared-input", "filesystem"),
+    )
+    def test_cli_translates_generation_failures(
+        self,
+        realistic_db: Path,
+        tmp_path: Path,
+        error: Exception,
+        message: str,
+    ) -> None:
+        """Expected generation failures produce exit code one and their actionable message."""
+        with patch("pxaudit.report.generate_report", side_effect=error):
+            result = CliRunner().invoke(
+                main, ["report", "--db", str(realistic_db), "--output", str(tmp_path / "out")]
             )
-        assert r.exit_code == 1
-        assert "jinja2 is required" in r.output
 
-    def test_cli_filenotfound_error(self, realistic_db: Path, tmp_path: Path) -> None:
-        """CLI reports FileNotFoundError from generate_report."""
-
-        def fake(*a: object, **kw: object) -> None:
-            raise FileNotFoundError("db vanished")
-
-        with patch("pxaudit.report.generate_report", fake):
-            r = CliRunner().invoke(
-                main, ["report", "--db", str(realistic_db), "--output", str(tmp_path / "fnf")]
-            )
-        assert r.exit_code == 1
-        assert "db vanished" in r.output
-
-
-# ---------------------------------------------------------------------------
-# HTML output tests
-# ---------------------------------------------------------------------------
+        assert result.exit_code == 1
+        assert message in result.output
 
 
 class TestHtmlOutput:
-    def test_all_sections_present(self, realistic_db: Path, output_dir: Path) -> None:
-        out = generate_report(realistic_db, output_dir, "Full")
-        html = out.read_text(encoding="utf-8")
-        assert "Quality Distribution" in html
-        assert "Metadata Completeness" in html
-        assert "Cohort Analysis" in html
-        assert "Tier Reference" in html
-        assert "All Accessions" in html
+    """Self-contained HTML and concurrent rendering contracts."""
 
-    def test_charts_embedded(self, realistic_db: Path, output_dir: Path) -> None:
-        out = generate_report(realistic_db, output_dir, "C")
-        html = out.read_text(encoding="utf-8")
-        count = html.count("data:image/png;base64,")
-        assert count >= 2
+    def test_generated_report_preserves_complete_html_contract(
+        self, realistic_db: Path, output_dir: Path
+    ) -> None:
+        """One generated artifact contains escaped, styled, embedded, and complete content."""
+        out = generate_report(realistic_db, output_dir, "Cohort <Review>")
 
-    def test_metadata_header(self, realistic_db: Path, output_dir: Path) -> None:
-        out = generate_report(realistic_db, output_dir, "M")
         html = out.read_text(encoding="utf-8")
-        assert "PXAudit version" in html
-        assert str(realistic_db) in html
+        required_fragments = [
+            "<title>Cohort &lt;Review&gt;</title>",
+            "Quality Distribution",
+            "Metadata Completeness",
+            "Cohort Analysis",
+            "Tier Reference",
+            "FAIR Ladder",
+            "All Accessions",
+            "PXAudit version",
+            str(realistic_db),
+            "By Organism",
+            "By Instrument",
+            "<details open>",
+            '<summary class="table-summary">',
+            'title="Study PXD000001"',
+        ]
+        required_classes = [
+            "tier-Diamond",
+            "tier-Platinum",
+            "tier-Gold",
+            "tier-Silver",
+            "tier-Bronze",
+            "tier-Raw",
+            "tier-None",
+            "tier-Quant-Complete",
+            "tier-Quant-Ready",
+            "tier-Partial",
+            "tier-No-Quant",
+        ]
 
-    def test_flag_badges(self, realistic_db: Path, output_dir: Path) -> None:
-        out = generate_report(realistic_db, output_dir, "F")
-        html = out.read_text(encoding="utf-8")
-        assert "badge-ok" in html
-        assert "badge-missing" in html
-        assert "badge-unknown" in html
-
-    def test_custom_title(self, realistic_db: Path, output_dir: Path) -> None:
-        out = generate_report(realistic_db, output_dir, "Custom Title Here")
-        html = out.read_text(encoding="utf-8")
-        assert "<title>Custom Title Here</title>" in html
-
-    def test_summary_cards(self, realistic_db: Path, output_dir: Path) -> None:
-        out = generate_report(realistic_db, output_dir, "S")
-        html = out.read_text(encoding="utf-8")
-        assert "Total" in html
-        assert "Verifiable" in html
-        assert "Unverifiable" in html
-
-    def test_no_external_assets(self, realistic_db: Path, output_dir: Path) -> None:
-        out = generate_report(realistic_db, output_dir, "SA")
-        html = out.read_text(encoding="utf-8")
+        assert html.startswith("<!DOCTYPE html>")
+        assert html.endswith("</html>")
+        assert all(fragment in html for fragment in required_fragments)
+        assert all(f'class="{css_class}"' in html for css_class in required_classes)
+        assert html.count("data:image/png;base64,") == 5
+        assert "Cohort <Review>" not in html
         assert 'src="http' not in html
         assert 'href="http' not in html
-
-    def test_quant_tier_styled(self, realistic_db: Path, output_dir: Path) -> None:
-        out = generate_report(realistic_db, output_dir, "QT")
-        html = out.read_text(encoding="utf-8")
-        assert "tier-Partial" in html or "tier-Quant" in html
-
-    def test_tier_classes_in_table(self, realistic_db: Path, output_dir: Path) -> None:
-        out = generate_report(realistic_db, output_dir, "TC")
-        html = out.read_text(encoding="utf-8")
-        assert "tier-Diamond" in html
-        assert "tier-Gold" in html
-        assert "tier-Silver" in html
-        assert "tier-Bronze" in html
-        assert "tier-Raw" in html
-        assert "tier-None" in html
-        assert "tier-Quant-Complete" in html
-        assert "tier-Quant-Ready" in html
-        assert "tier-No-Quant" in html
-
-    def test_cohort_charts_present(self, realistic_db: Path, output_dir: Path) -> None:
-        out = generate_report(realistic_db, output_dir, "CC")
-        html = out.read_text(encoding="utf-8")
-        assert "By Organism" in html
-        assert "By Instrument" in html
-
-    def test_title_tooltip(self, realistic_db: Path, output_dir: Path) -> None:
-        out = generate_report(realistic_db, output_dir, "TT")
-        html = out.read_text(encoding="utf-8")
-        assert 'title="' in html
-
-    def test_tier_legend(self, realistic_db: Path, output_dir: Path) -> None:
-        out = generate_report(realistic_db, output_dir, "TL")
-        html = out.read_text(encoding="utf-8")
-        assert "Tier Reference" in html
-        assert "FAIR Ladder" in html
-
-    def test_collapsible_table(self, realistic_db: Path, output_dir: Path) -> None:
-        out = generate_report(realistic_db, output_dir, "CT")
-        html = out.read_text(encoding="utf-8")
-        assert "<details" in html
-        assert "<summary" in html
+        assert "fewer than 10 audited accessions" not in html
 
     def test_concurrent_calls(self, realistic_db: Path, tmp_path: Path) -> None:
+        """Concurrent writers produce one complete report without leaked temporary files."""
         errors: list[str] = []
 
         def run(out: str) -> None:
             try:
                 generate_report(realistic_db, Path(out), "C")
-            except Exception as e:
-                errors.append(str(e))
+            except Exception as exc:
+                errors.append(str(exc))
 
         output = tmp_path / "shared"
         t1 = threading.Thread(target=run, args=(str(output),))
@@ -1066,6 +1039,7 @@ class TestHtmlOutput:
         t2.start()
         t1.join(timeout=30)
         t2.join(timeout=30)
+        assert not t1.is_alive() and not t2.is_alive()
         assert not errors
         html = (output / "report.html").read_text(encoding="utf-8")
         assert html.startswith("<!DOCTYPE html>")
@@ -1074,8 +1048,10 @@ class TestHtmlOutput:
 
 
 class TestVersionFallback:
+    """Installed-version fallback contracts."""
+
     def test_version_unknown(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import pxaudit.report as report_mod
+        """An uninstalled package reports an explicit unknown version."""
 
         def _raise(_name: str) -> str:
             raise importlib_metadata.PackageNotFoundError(_name)

@@ -239,9 +239,7 @@ _QUANT_MATRIX_PATTERNS: re.Pattern[str] = re.compile(
 
 # PSM / scan-level identification lists (granular, without quant summary).
 _ID_LIST_PATTERNS: re.Pattern[str] = re.compile(
-    r"psm\.tsv$"  # general PSM table (FragPipe and others)
-    r"|psm\.txt$"  # PSM table: .txt variant (some tools output .txt)
-    r"|psms\.txt$",  # PSM table: plural .txt variant
+    r"(?:^|[-_.])(?:psm\.tsv|psm\.txt|psms\.txt)$",
     re.IGNORECASE,
 )
 
@@ -308,11 +306,9 @@ class FileTypeClassifier:
 
         Precedence (first match wins):
 
-        1a. Extension registry on the original filename
-            (catches compound format extensions like ``.sky.zip`` before ``.zip``
-            is stripped by ``strip_compression``)
-        1b. Extension registry on the de-compressed filename
-            (handles ``.mzml.gz``, ``.raw.gz``, ``.mzid.gz`` etc.)
+        1.  Extension registry at every compression layer
+            (preserves format extensions like ``.sky.zip`` while handling
+            ``.mzml.gz``, ``.raw.gz``, and nested wrappers)
         2.  Exact-stem map (MaxQuant fixed names + custom)
         3.  SDRF token and category/extension rules
         4.  Processed-result basename patterns → FileClass.SEARCH
@@ -323,7 +319,7 @@ class FileTypeClassifier:
 
         All pattern checks (steps 3-6) operate on the *de-compressed*, lower-case
         base filename so that e.g. ``report.tsv.gz`` correctly matches step 5 after
-        strip_compression() removes the ``.gz`` wrapper.
+        its ``.gz`` wrapper is removed.
 
         Parameters
         ----------
@@ -339,23 +335,20 @@ class FileTypeClassifier:
         FileClass
             The first matching semantic file class, or :attr:`FileClass.OTHER`.
         """
-        # Step 1a: Extension registry on the ORIGINAL filename.
-        # Must run before strip_compression so compound format extensions that happen
-        # to end with .zip (e.g. .sky.zip, Skyline native format) are recognised as
-        # format identifiers before .zip is mistakenly stripped as a compression wrapper.
-        lower_filename = filename.lower()
-        ext = self._extract_ext(lower_filename)
-        if ext and ext in self._ext_map:
-            return self._ext_map[ext]
+        base = filename
+        while True:
+            lower_base = base.lower()
+            ext = self._extract_ext(lower_base)
+            if ext and ext in self._ext_map:
+                return self._ext_map[ext]
 
-        # Strip compression wrappers to reveal the true extension / basename.
-        base = strip_compression(filename)
-        lower_base = base.lower()
-
-        # Step 1b: Extension registry on the de-compressed filename (.mzml.gz, .raw.gz …).
-        ext = self._extract_ext(lower_base)
-        if ext and ext in self._ext_map:
-            return self._ext_map[ext]
+            # Checking between layers keeps .sky.zip meaningful beneath an outer wrapper.
+            for compression_ext in _COMPRESSION_EXTS:
+                if lower_base.endswith(compression_ext):
+                    base = base[: -len(compression_ext)]
+                    break
+            else:
+                break
 
         # Step 2: Exact stem (MaxQuant fixed-output filenames like proteinGroups.txt).
         stem = lower_base.rsplit(".", 1)[0] if "." in lower_base else lower_base

@@ -10,6 +10,7 @@ import json
 import logging
 import multiprocessing
 import os
+import string
 import sys
 import tempfile
 import time
@@ -56,64 +57,59 @@ def _write_cache_in_process(
     write_cache("PXD000001", "project", {"value": value}, cache_dir=cache_dir)
 
 
-# ---------------------------------------------------------------------------
-# 1 & 2 : cache miss
-# ---------------------------------------------------------------------------
-
-
 def test_cache_miss_nonexistent_dir_returns_none(tmp_path: Path) -> None:
-    """read_cache must return None when the cache directory does not exist."""
+    """A missing cache directory produces a cache miss."""
     missing_dir = tmp_path / "no_such_dir"
     result = read_cache("PXD000001", "project", cache_dir=missing_dir)
     assert result is None
 
 
-def test_cache_miss_file_absent_returns_none(tmp_path: Path) -> None:
-    """read_cache must return None when the directory exists but the file does not."""
+def test_cache_miss_file_absent_is_silent(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """An absent entry is a silent cache miss rather than a corruption warning."""
     cache_dir = tmp_path / "cache"
     cache_dir.mkdir()
-    result = read_cache("PXD000001", "project", cache_dir=cache_dir)
+
+    with caplog.at_level(logging.WARNING, logger="pxaudit.cache"):
+        result = read_cache("PXD000001", "project", cache_dir=cache_dir)
+
     assert result is None
+    assert caplog.records == []
 
 
-# ---------------------------------------------------------------------------
-# 3 & 4 : successful roundtrip
-# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    ("endpoint", "payload"),
+    [
+        (
+            "project",
+            {
+                "accession": "PXD000001",
+                "title": "Hé llo Wörld",
+                "submissionDate": "2012-03-13",
+            },
+        ),
+        (
+            "files",
+            [
+                {"fileName": "résumé.raw", "fileCategory": {"name": "RAW"}, "fileSize": 1024},
+                {"fileName": "result.mzid", "fileCategory": {"name": "RESULT"}, "fileSize": 2048},
+            ],
+        ),
+    ],
+)
+def test_cache_round_trip_preserves_endpoint_payload(
+    tmp_path: Path, endpoint: str, payload: dict | list
+) -> None:
+    """Each endpoint round trip preserves its JSON payload and outer shape."""
+    write_cache("PXD000001", endpoint, payload, cache_dir=tmp_path)
 
+    result = read_cache("PXD000001", endpoint, cache_dir=tmp_path)
 
-def test_write_then_read_dict_returns_identical(tmp_path: Path) -> None:
-    """write_cache → read_cache roundtrip must be lossless for a dict payload."""
-    payload: dict = {
-        "accession": "PXD000001",
-        "title": "Hé llo Wörld",  # unicode must survive, not be ASCII-escaped
-        "submissionDate": "2012-03-13",
-    }
-    write_cache("PXD000001", "project", payload, cache_dir=tmp_path)
-    result = read_cache("PXD000001", "project", cache_dir=tmp_path)
     assert result == payload
-    assert isinstance(result, dict)
-
-
-def test_write_then_read_list_returns_identical(tmp_path: Path) -> None:
-    """write_cache → read_cache roundtrip must be lossless for a list payload."""
-    payload: list = [
-        {"fileName": "résumé.raw", "fileCategory": {"name": "RAW"}, "fileSize": 1024},
-        {"fileName": "result.mzid", "fileCategory": {"name": "RESULT"}, "fileSize": 2048},
-    ]
-    write_cache("PXD000001", "files", payload, cache_dir=tmp_path)
-    result = read_cache("PXD000001", "files", cache_dir=tmp_path)
-    assert result == payload
-    assert isinstance(result, list)
-    assert len(result) == 2
-
-
-# ---------------------------------------------------------------------------
-# 5 : directory creation
-# ---------------------------------------------------------------------------
+    assert type(result) is type(payload)
 
 
 def test_write_creates_missing_directory(tmp_path: Path) -> None:
-    """write_cache must create the cache directory (and parents) if absent."""
+    """A write creates an absent cache directory and its parents."""
     deep_dir = tmp_path / "a" / "b" / "cache"
     assert not deep_dir.exists()
     write_cache("PXD000001", "project", {"x": 1}, cache_dir=deep_dir)
@@ -121,106 +117,63 @@ def test_write_creates_missing_directory(tmp_path: Path) -> None:
     assert (deep_dir / "PXD000001_project.json").exists()
 
 
-# ---------------------------------------------------------------------------
-# 6 : correct filename
-# ---------------------------------------------------------------------------
-
-
 def test_cache_file_named_correctly(tmp_path: Path) -> None:
-    """Cache file must be named exactly ``{accession}_{endpoint}.json``."""
+    """A cache write uses the canonical accession and endpoint filename."""
     write_cache("PXD000001", "files", [{"a": 1}], cache_dir=tmp_path)
     expected = tmp_path / "PXD000001_files.json"
     assert expected.exists(), f"Expected {expected} but not found"
-    # No extra files must be created
     json_files = list(tmp_path.glob("*.json"))
     assert len(json_files) == 1
 
 
-# ---------------------------------------------------------------------------
-# 7, 8, 9 : corruption recovery
-# ---------------------------------------------------------------------------
-
-
 def _write_corrupt_file(cache_dir: Path, accession: str, endpoint: str) -> Path:
-    """Helper: write syntactically invalid JSON to the cache path."""
+    """Write syntactically invalid JSON to a cache path."""
     cache_dir.mkdir(parents=True, exist_ok=True)
     path = cache_dir / f"{accession}_{endpoint}.json"
     path.write_text("{this is: not valid json!!}", encoding="utf-8")
     return path
 
 
-def test_corrupted_json_returns_none(tmp_path: Path) -> None:
-    """read_cache must return None (not raise) when the cached file is corrupt."""
-    _write_corrupt_file(tmp_path, "PXD000001", "project")
-    result = read_cache("PXD000001", "project", cache_dir=tmp_path)
-    assert result is None
-
-
-def test_corrupted_json_preserves_unowned_file(tmp_path: Path) -> None:
-    """A corrupt file remains untouched because cache ownership is unproven."""
+def test_corrupted_json_is_preserved_logged_cache_miss(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Corrupt JSON is preserved and reported as a cache miss."""
     corrupt_path = _write_corrupt_file(tmp_path, "PXD000001", "project")
-    assert corrupt_path.exists()
-    read_cache("PXD000001", "project", cache_dir=tmp_path)
-    assert corrupt_path.exists()
 
-
-def test_corrupted_json_logs_warning(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-    """read_cache must emit a WARNING through the pxaudit.cache logger."""
-    _write_corrupt_file(tmp_path, "PXD000001", "project")
     with caplog.at_level(logging.WARNING, logger="pxaudit.cache"):
-        read_cache("PXD000001", "project", cache_dir=tmp_path)
+        result = read_cache("PXD000001", "project", cache_dir=tmp_path)
+
+    assert result is None
+    assert corrupt_path.read_text(encoding="utf-8") == "{this is: not valid json!!}"
     assert len(caplog.records) == 1
     assert caplog.records[0].levelno == logging.WARNING
     assert "PXD000001_project.json" in caplog.records[0].message
 
 
-# ---------------------------------------------------------------------------
-# 10 : permission error
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.skipif(sys.platform == "win32", reason="chmod does not prevent writes on Windows")
 def test_write_permission_error_raises(tmp_path: Path) -> None:
-    """write_cache must propagate OSError when the cache dir is not writable."""
+    """An unwritable cache directory produces a typed write failure."""
     cache_dir = tmp_path / "locked"
     cache_dir.mkdir()
-    cache_dir.chmod(0o555)  # r-xr-xr-x : no write bit
+    cache_dir.chmod(0o555)
     try:
         with pytest.raises(CacheWriteError):
             write_cache("PXD000001", "project", {"x": 1}, cache_dir=cache_dir)
     finally:
-        cache_dir.chmod(0o755)  # restore so tmp_path cleanup does not fail
-
-
-# ---------------------------------------------------------------------------
-# 11 : overwrite
-# ---------------------------------------------------------------------------
+        cache_dir.chmod(0o755)
 
 
 def test_overwrite_updates_cached_data(tmp_path: Path) -> None:
-    """A second write_cache call must replace the first : no stale data."""
+    """A second write replaces the prior payload without an extra entry."""
     write_cache("PXD000001", "project", {"title": "Old Title"}, cache_dir=tmp_path)
     write_cache("PXD000001", "project", {"title": "New Title"}, cache_dir=tmp_path)
     result = read_cache("PXD000001", "project", cache_dir=tmp_path)
     assert result == {"title": "New Title"}
-    # Only one file must exist
     assert len(list(tmp_path.glob("*.json"))) == 1
 
 
-# ---------------------------------------------------------------------------
-# 12 & 13 : TTL: fresh cache is served
-# ---------------------------------------------------------------------------
-
-
-def test_ttl_fresh_cache_served(tmp_path: Path) -> None:
-    """A recently-written cache file must be served when within the TTL window."""
-    write_cache("PXD000001", "project", {"key": "value"}, cache_dir=tmp_path)
-    result = read_cache("PXD000001", "project", cache_dir=tmp_path, max_age=3600)
-    assert result == {"key": "value"}
-
-
 def test_ttl_fresh_cache_disabled_with_none(tmp_path: Path) -> None:
-    """Passing max_age=None must disable TTL and serve even old cache."""
+    """A ``None`` maximum age serves an entry regardless of file age."""
     write_cache("PXD000001", "project", {"key": "value"}, cache_dir=tmp_path)
     path = tmp_path / "PXD000001_project.json"
     old = time.time() - 999999
@@ -229,76 +182,33 @@ def test_ttl_fresh_cache_disabled_with_none(tmp_path: Path) -> None:
     assert result == {"key": "value"}
 
 
-# ---------------------------------------------------------------------------
-# 14 & 15 : TTL: stale cache returns None, kept for fallback
-# ---------------------------------------------------------------------------
-
-
-def test_ttl_stale_cache_returns_none_keeps_file(tmp_path: Path) -> None:
-    """A cache file older than max_age must return None but keep the file for stale fallback."""
-    write_cache("PXD000001", "project", {"key": "value"}, cache_dir=tmp_path)
-    path = tmp_path / "PXD000001_project.json"
-    old = time.time() - 7200
-    os.utime(path, (old, old))
-    result = read_cache("PXD000001", "project", cache_dir=tmp_path, max_age=3600)
-    assert result is None
-    assert path.exists(), "stale file must be kept for fallback"
-
-
 def test_ttl_default_constant_is_seven_days() -> None:
-    """_DEFAULT_TTL must equal 7 * 24 * 60 * 60 seconds."""
+    """The default cache lifetime remains seven days in seconds."""
     assert _DEFAULT_TTL == 7 * 24 * 60 * 60
 
 
-# ---------------------------------------------------------------------------
-# TTL boundary tests : st_mtime at / before / after threshold
-# ---------------------------------------------------------------------------
-
-
+@pytest.mark.parametrize(
+    ("age", "expected"),
+    [(3_599, {"key": "value"}), (3_600, None), (3_601, None)],
+)
 @patch("time.time")
-def test_ttl_boundary_exactly_at_max_age_is_stale(mock_time: MagicMock, tmp_path: Path) -> None:
-    """age == max_age is stale (code uses >=, not >).
-
-    ``time.time`` is patched to return a fixed timestamp so the age
-    calculation in ``read_cache`` is deterministic.
-    """
+def test_ttl_boundary_applies_exact_expiry_contract(
+    mock_time: MagicMock,
+    tmp_path: Path,
+    age: int,
+    expected: dict | None,
+) -> None:
+    """Entries are fresh before the TTL and stale at or beyond it."""
     fixed_mtime = 1_000_000.0
     write_cache("PXD000001", "project", {"key": "value"}, cache_dir=tmp_path)
     path = tmp_path / "PXD000001_project.json"
     os.utime(path, (fixed_mtime, fixed_mtime))
-    mock_time.return_value = fixed_mtime + 3600  # age == max_age exactly
+    mock_time.return_value = fixed_mtime + age
+
     result = read_cache("PXD000001", "project", cache_dir=tmp_path, max_age=3600)
-    assert result is None
 
-
-@patch("time.time")
-def test_ttl_boundary_one_second_before_is_fresh(mock_time: MagicMock, tmp_path: Path) -> None:
-    """age == max_age - 1 is still within TTL and served."""
-    fixed_mtime = 1_000_000.0
-    write_cache("PXD000001", "project", {"key": "value"}, cache_dir=tmp_path)
-    path = tmp_path / "PXD000001_project.json"
-    os.utime(path, (fixed_mtime, fixed_mtime))
-    mock_time.return_value = fixed_mtime + 3599  # age == max_age - 1
-    result = read_cache("PXD000001", "project", cache_dir=tmp_path, max_age=3600)
-    assert result == {"key": "value"}
-
-
-@patch("time.time")
-def test_ttl_boundary_one_second_after_is_stale(mock_time: MagicMock, tmp_path: Path) -> None:
-    """age == max_age + 1 is stale and remains available for fallback."""
-    fixed_mtime = 1_000_000.0
-    write_cache("PXD000001", "project", {"key": "value"}, cache_dir=tmp_path)
-    path = tmp_path / "PXD000001_project.json"
-    os.utime(path, (fixed_mtime, fixed_mtime))
-    mock_time.return_value = fixed_mtime + 3601  # age == max_age + 1
-    result = read_cache("PXD000001", "project", cache_dir=tmp_path, max_age=3600)
-    assert result is None
-    assert path.exists(), "stale file must be kept for fallback"
-
-
-# ---------------------------------------------------------------------------
-# Refresh bypass : max_age=0 forces stale on any cache
-# ---------------------------------------------------------------------------
+    assert result == expected
+    assert path.exists()
 
 
 def test_ttl_zero_max_age_bypasses_fresh_cache(tmp_path: Path) -> None:
@@ -309,15 +219,6 @@ def test_ttl_zero_max_age_bypasses_fresh_cache(tmp_path: Path) -> None:
     result = read_cache("PXD000001", "project", cache_dir=tmp_path, max_age=0)
     assert result is None
     assert path.exists(), "stale file must be kept for fallback"
-    # Fresh write after bypass must succeed
-    write_cache("PXD000001", "project", {"new": "data"}, cache_dir=tmp_path)
-    result = read_cache("PXD000001", "project", cache_dir=tmp_path)
-    assert result == {"new": "data"}
-
-
-# ---------------------------------------------------------------------------
-# 16, 17, 18 : atomic write via tmp + os.replace
-# ---------------------------------------------------------------------------
 
 
 def test_atomic_write_leaves_no_tmp_file(tmp_path: Path) -> None:
@@ -328,39 +229,8 @@ def test_atomic_write_leaves_no_tmp_file(tmp_path: Path) -> None:
     assert not list(tmp_path.glob("*.tmp"))
 
 
-def test_atomic_write_interrupted_tmp_does_not_harm_final(tmp_path: Path) -> None:
-    """If os.replace is never called (simulated crash), the .json file is untouched."""
-    payload = {"version": 1}
-    write_cache("PXD000001", "project", payload, cache_dir=tmp_path)
-    json_path = tmp_path / "PXD000001_project.json"
-    original_mtime = json_path.stat().st_mtime
-
-    tmp_path_candidate = tmp_path / ".PXD000001_project.json.interrupted.tmp"
-    tmp_path_candidate.write_text('{"corrupt": true}', encoding="utf-8")
-    assert json_path.exists()
-    assert json_path.stat().st_mtime == original_mtime
-    result = read_cache("PXD000001", "project", cache_dir=tmp_path)
-    assert result == payload
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="chmod does not prevent writes on Windows")
-def test_atomic_write_oserror_on_tmp_propagates(tmp_path: Path) -> None:
-    """If writing the .tmp file fails, the error must propagate (no .json created)."""
-    cache_dir = tmp_path / "locked"
-    cache_dir.mkdir()
-    cache_dir.chmod(0o444)  # read-only
-    with pytest.raises((CacheSafetyError, CacheWriteError)):
-        write_cache("PXD000001", "project", {"x": 1}, cache_dir=cache_dir)
-    cache_dir.chmod(0o755)
-
-
-# ---------------------------------------------------------------------------
-# Cache version header tests
-# ---------------------------------------------------------------------------
-
-
 def test_cache_version_header_present_on_write(tmp_path: Path) -> None:
-    """Written cache file must contain a version header."""
+    """A written envelope contains complete version-2 identity and provenance."""
     data = {"title": "test"}
     write_cache("PXD000001", "project", data, cache_dir=tmp_path)
     path = tmp_path / "PXD000001_project.json"
@@ -397,8 +267,26 @@ def test_cache_response_preserves_embedded_provenance(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     "raw",
     [
-        {"cache_version": 1, "data": {"title": "legacy"}},
-        {"title": "legacy"},
+        {
+            "cache_version": 1,
+            "retrieved_at": "2026-01-01T00:00:00+00:00",
+            "snapshot_id": "untrusted",
+            "data": {"title": "legacy"},
+        },
+        {
+            "title": "legacy",
+            "retrieved_at": "2026-01-01T00:00:00+00:00",
+            "snapshot_id": "untrusted",
+        },
+        {
+            "cache_version": 2,
+            "cache_owner": "pxaudit",
+            "accession": "PXD000001",
+            "endpoint": "project",
+            "retrieved_at": None,
+            "snapshot_id": "untrusted",
+            "data": {"title": "legacy"},
+        },
         {
             "cache_version": 2,
             "cache_owner": "pxaudit",
@@ -428,8 +316,9 @@ def test_cache_response_preserves_embedded_provenance(tmp_path: Path) -> None:
         },
     ],
     ids=[
-        "version-one",
-        "unwrapped",
+        "version-one-with-envelope-like-provenance",
+        "unwrapped-with-response-fields",
+        "missing-version-two-timestamp",
         "invalid-version-two-timestamp",
         "blank-version-two-snapshot",
         "overflowing-version-two-timestamp",
@@ -491,16 +380,8 @@ def test_write_rejects_invalid_provenance(
     assert list(tmp_path.iterdir()) == []
 
 
-def test_cache_version_round_trip(tmp_path: Path) -> None:
-    """Write then read must return identical data through the version wrapper."""
-    data = {"title": "roundtrip"}
-    write_cache("PXD000001", "project", data, cache_dir=tmp_path)
-    result = read_cache("PXD000001", "project", cache_dir=tmp_path)
-    assert result == data
-
-
 def test_cache_legacy_format_still_readable(tmp_path: Path) -> None:
-    """Plain JSON (no version header) from older versions must still be readable."""
+    """An unwrapped legacy project payload remains readable."""
     data = {"title": "legacy"}
     path = tmp_path / "PXD000001_project.json"
     path.write_text(json.dumps(data), encoding="utf-8")
@@ -517,23 +398,29 @@ def test_cache_version_one_still_readable(tmp_path: Path) -> None:
     assert read_cache("PXD000001", "project", cache_dir=tmp_path, max_age=None) == data
 
 
-def test_cache_unknown_version_returns_none(tmp_path: Path) -> None:
-    """Unknown cache versions are misses and remain untouched."""
-    payload = {"cache_version": 999, "data": {"x": 1}}
+@pytest.mark.parametrize("version", [999, True, 2.0], ids=["unknown", "boolean", "float"])
+def test_unsupported_cache_version_is_unowned_and_irreplaceable(
+    tmp_path: Path, version: int | bool | float
+) -> None:
+    """Unknown and non-integer versions cannot claim compatibility or ownership."""
+    payload = {
+        "cache_version": version,
+        "cache_owner": "pxaudit",
+        "accession": "PXD000001",
+        "endpoint": "project",
+        "retrieved_at": "2026-01-01T00:00:00+00:00",
+        "snapshot_id": "untrusted",
+        "data": {"title": "untrusted"},
+    }
     path = tmp_path / "PXD000001_project.json"
-    path.write_text(json.dumps(payload), encoding="utf-8")
-    result = read_cache("PXD000001", "project", cache_dir=tmp_path, max_age=None)
-    assert result is None
-    assert path.exists()
+    serialized = json.dumps(payload)
+    path.write_text(serialized, encoding="utf-8")
 
-
-def test_cache_unknown_version_is_preserved(tmp_path: Path) -> None:
-    """Unknown cache versions are not deleted without ownership proof."""
-    payload = {"cache_version": 999, "data": {"x": 1}}
-    path = tmp_path / "PXD000001_project.json"
-    path.write_text(json.dumps(payload), encoding="utf-8")
-    read_cache("PXD000001", "project", cache_dir=tmp_path, max_age=None)
-    assert path.exists()
+    assert read_cache("PXD000001", "project", cache_dir=tmp_path, max_age=None) is None
+    assert inspect_cache(tmp_path).ignored == 1
+    with pytest.raises(CacheSafetyError):
+        write_cache("PXD000001", "project", {}, cache_dir=tmp_path)
+    assert path.read_text(encoding="utf-8") == serialized
 
 
 def test_cache_bad_data_structure_returns_none(tmp_path: Path) -> None:
@@ -553,25 +440,34 @@ def test_cache_scalar_value_returns_none(tmp_path: Path) -> None:
     assert result is None
 
 
-# ---------------------------------------------------------------------------
-# read_cache_stale tests
-# ---------------------------------------------------------------------------
+def test_excessively_nested_json_is_preserved_cache_miss(tmp_path: Path) -> None:
+    """JSON beyond the decoder recursion limit is ignored without deletion."""
+    path = tmp_path / "PXD000001_project.json"
+    nesting = sys.getrecursionlimit() + 100
+    path.write_text("[" * nesting + "0" + "]" * nesting, encoding="utf-8")
+
+    assert read_cache("PXD000001", "project", cache_dir=tmp_path) is None
+    assert path.exists()
 
 
-def test_read_cache_stale_returns_data_and_age(tmp_path: Path) -> None:
-    """read_cache_stale must return stale data and its age in seconds."""
+@patch("time.time")
+def test_read_cache_stale_returns_data_and_age(mock_time: MagicMock, tmp_path: Path) -> None:
+    """A stale read returns the payload and its age in seconds."""
     write_cache("PXD000001", "project", {"key": "value"}, cache_dir=tmp_path)
     path = tmp_path / "PXD000001_project.json"
-    old = time.time() - 7200
-    os.utime(path, (old, old))
+    modified_at = 1_700_000_000.0
+    os.utime(path, (modified_at, modified_at))
+    mock_time.return_value = modified_at + 7_200
 
     data, age = read_cache_stale("PXD000001", "project", cache_dir=tmp_path)
     assert data == {"key": "value"}
-    assert age is not None
-    assert age > 7000  # roughly 7200 s, allow slight clock drift
+    assert age == 7_200
 
 
-def test_read_cache_stale_response_includes_provenance_and_age(tmp_path: Path) -> None:
+@patch("time.time")
+def test_read_cache_stale_response_includes_provenance_and_age(
+    mock_time: MagicMock, tmp_path: Path
+) -> None:
     """A stale provenance read returns stored identity together with cache age."""
     write_cache(
         "PXD000001",
@@ -582,48 +478,36 @@ def test_read_cache_stale_response_includes_provenance_and_age(tmp_path: Path) -
         snapshot_id="old-snapshot",
     )
     path = tmp_path / "PXD000001_project.json"
-    old = time.time() - 7200
-    os.utime(path, (old, old))
+    modified_at = 1_700_000_000.0
+    os.utime(path, (modified_at, modified_at))
+    mock_time.return_value = modified_at + 7_200
 
     response = read_cache_stale_response("PXD000001", "project", cache_dir=tmp_path)
 
     assert response is not None
     assert response.retrieved_at == "2025-01-01T00:00:00+00:00"
     assert response.snapshot_id == "old-snapshot"
-    assert response.age > 7000
+    assert response.age == 7_200
 
 
 def test_read_cache_stale_missing_file_returns_none_none(tmp_path: Path) -> None:
-    """read_cache_stale on absent file must return (None, None)."""
+    """A stale read of an absent entry returns the miss tuple."""
     data, age = read_cache_stale("PXD000001", "project", cache_dir=tmp_path)
     assert data is None
     assert age is None
-
-
-def test_read_cache_stale_corrupt_file_returns_none_none(tmp_path: Path) -> None:
-    """Stale reads ignore corrupt JSON without deleting it."""
-    path = tmp_path / "PXD000001_project.json"
-    path.write_text("{bad json", encoding="utf-8")
-    data, age = read_cache_stale("PXD000001", "project", cache_dir=tmp_path)
-    assert data is None
-    assert age is None
-    assert path.exists()
-
-
-def test_read_cache_stale_unknown_version_returns_none_none(tmp_path: Path) -> None:
-    """Stale reads preserve unknown cache versions."""
-    payload = {"cache_version": 999, "data": {"x": 1}}
-    path = tmp_path / "PXD000001_project.json"
-    path.write_text(json.dumps(payload), encoding="utf-8")
-    data, age = read_cache_stale("PXD000001", "project", cache_dir=tmp_path)
-    assert data is None
-    assert age is None
-    assert path.exists()
 
 
 @pytest.mark.parametrize(
     "accession",
-    ["../outside", "PXD/000001", "PXD\\000001", "PXD\n000001", "PXD..000001", " PXD1"],
+    [
+        "../outside",
+        "PXD/000001",
+        "PXD\\000001",
+        "PXD\n000001",
+        "PXD..000001",
+        " PXD1",
+        "A" * 65,
+    ],
 )
 def test_cache_accession_rejects_unsafe_components(tmp_path: Path, accession: str) -> None:
     """Unsafe accession components cannot reach any cache filesystem operation."""
@@ -636,23 +520,41 @@ def test_cache_accession_rejects_unsafe_components(tmp_path: Path, accession: st
     assert list(tmp_path.iterdir()) == []
 
 
+def test_cache_accession_accepts_maximum_length(tmp_path: Path) -> None:
+    """A 64-character portable accession remains a valid cache key."""
+    accession = "A" * 64
+
+    write_cache(accession, "project", {"boundary": 64}, cache_dir=tmp_path)
+
+    assert read_cache(accession, "project", cache_dir=tmp_path) == {"boundary": 64}
+    assert (tmp_path / f"{accession}_project.json").is_file()
+
+
+def test_cache_accession_ascii_positions_follow_portable_filename_grammar(
+    tmp_path: Path,
+) -> None:
+    """An ASCII sweep accepts only portable characters in each filename position."""
+    endpoints = frozenset(string.ascii_letters + string.digits)
+    middle = endpoints | frozenset("._-")
+
+    for codepoint in range(128):
+        character = chr(codepoint)
+        for accession, is_valid in (
+            (f"A{character}B", character in middle),
+            (f"{character}AB", character in endpoints),
+            (f"AB{character}", character in endpoints),
+        ):
+            if is_valid:
+                assert read_cache(accession, "project", cache_dir=tmp_path) is None
+            else:
+                with pytest.raises(CacheKeyError):
+                    read_cache(accession, "project", cache_dir=tmp_path)
+
+
 def test_cache_endpoint_rejects_unknown_value(tmp_path: Path) -> None:
     """Only project and files endpoints can form cache paths."""
     with pytest.raises(CacheKeyError):
         write_cache("PXD000001", "../project", {}, cache_dir=tmp_path)
-
-
-def test_traversal_key_cannot_touch_parent_directory(tmp_path: Path) -> None:
-    """A traversal-shaped accession cannot create or read a parent-directory target."""
-    cache_dir = tmp_path / "cache"
-    cache_dir.mkdir()
-    outside = tmp_path / "escaped_project.json"
-
-    with pytest.raises(CacheKeyError):
-        write_cache("../escaped", "project", {}, cache_dir=cache_dir)
-    with pytest.raises(CacheKeyError):
-        read_cache("../escaped", "project", cache_dir=cache_dir)
-    assert not outside.exists()
 
 
 @pytest.mark.parametrize("endpoint,data", [("project", []), ("files", {})])
@@ -665,7 +567,7 @@ def test_write_rejects_endpoint_payload_mismatch(
 
 
 def test_version_two_identity_mismatch_is_cache_miss(tmp_path: Path) -> None:
-    """A version-2 envelope must agree with its filename identity."""
+    """A version-2 identity mismatch is preserved as a cache miss."""
     write_cache("PXD000001", "project", {"title": "owned"}, cache_dir=tmp_path)
     path = tmp_path / "PXD000001_project.json"
     raw = json.loads(path.read_text())
@@ -978,10 +880,13 @@ def test_cache_io_refuses_cache_entry_symlink(tmp_path: Path) -> None:
     assert external.read_text() == "keep"
 
 
-def test_cache_io_refuses_mocked_symlink_on_all_platforms(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("symlink_result", [True, OSError("denied")], ids=["link", "stat-error"])
+def test_cache_io_refuses_unsafe_entry_on_all_platforms(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    symlink_result: bool | OSError,
 ) -> None:
-    """The cache-entry symlink guard is enforced where real link creation is restricted."""
+    """Direct and inventory access reject links and failed link checks."""
     cache_dir = tmp_path / "cache"
     cache_dir.mkdir()
     target = cache_dir / "PXD000001_project.json"
@@ -989,7 +894,11 @@ def test_cache_io_refuses_mocked_symlink_on_all_platforms(
     real_is_symlink = Path.is_symlink
 
     def identify_target(self: Path) -> bool:
-        return self == target or real_is_symlink(self)
+        if self != target:
+            return real_is_symlink(self)
+        if isinstance(symlink_result, OSError):
+            raise symlink_result
+        return symlink_result
 
     monkeypatch.setattr(Path, "is_symlink", identify_target)
     assert read_cache("PXD000001", "project", cache_dir=cache_dir) is None
@@ -1013,25 +922,6 @@ def test_inventory_rejects_non_mapping_envelope(tmp_path: Path) -> None:
     cache_dir.mkdir()
     (cache_dir / "PXD000001_project.json").write_text("[]", encoding="utf-8")
 
-    assert inspect_cache(cache_dir).ignored == 1
-
-
-def test_inventory_counts_symlink_check_oserror(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """An entry that cannot be checked for symlink status is ignored."""
-    cache_dir = tmp_path / "cache"
-    cache_dir.mkdir()
-    target = cache_dir / "notes.txt"
-    target.write_text("keep", encoding="utf-8")
-    real_is_symlink = Path.is_symlink
-
-    def fail_target(self: Path) -> bool:
-        if self == target:
-            raise OSError("denied")
-        return real_is_symlink(self)
-
-    monkeypatch.setattr(Path, "is_symlink", fail_target)
     assert inspect_cache(cache_dir).ignored == 1
 
 

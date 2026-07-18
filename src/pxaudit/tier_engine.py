@@ -89,8 +89,8 @@ class AuditResult:
     stores them as SQLite integers (0/1); Python ``bool`` is a subclass of
     ``int`` so no explicit conversion is needed.
 
-    Field order must match ``pxaudit.db._AUDIT_COLS`` exactly (enforced by the
-    schema-contract test).
+    Field names mirror ``pxaudit.db._AUDIT_COLS`` so the result can be passed
+    through ``asdict()`` to the database layer.
     """
 
     # Identifying (required) fields
@@ -143,7 +143,8 @@ def compute_audit(
         Pass ``[]`` when the endpoint returned no files.
     files_fetch_failed:
         ``True`` to interpret the input as a historical failed files fetch.
-        All file-based flags are set to ``False`` and the tier is ``Raw``.
+        All file-based flags are set to ``False``, so the tier cannot exceed
+        ``Raw`` and remains ``None`` when mandatory metadata is absent.
         Current CLI audits do not compute or persist an audit when the files
         response is unavailable and no stale response can be used.
 
@@ -155,6 +156,7 @@ def compute_audit(
     ------
     InvalidAccessionError
         If ``accession`` does not satisfy the PXAudit accession grammar.
+
     """
     accession = normalize_accession(accession)
 

@@ -1,17 +1,12 @@
-"""Proteomics Exchange metadata audit tool.
-
-Public exports:
-  __version__    : package version read from installed metadata.
-  _PRIDE_PREFIX  : string prefix that identifies PRIDE accessions ("PXD").
-"""
+"""Expose the PXAudit package version and shared PRIDE accession prefix."""
 
 from __future__ import annotations
 
-try:
-    from importlib.metadata import version as _metadata_version
+import importlib.metadata
 
-    __version__ = _metadata_version("pxaudit")
-except Exception:  # pragma: no cover
+try:
+    __version__ = importlib.metadata.version("pxaudit")
+except importlib.metadata.PackageNotFoundError:
     __version__ = "0.0.0"
 
 _PRIDE_PREFIX = "PXD"

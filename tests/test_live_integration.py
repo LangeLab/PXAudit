@@ -1,268 +1,271 @@
-"""Live PRIDE API integration tests.
+"""Explicit live verification against PRIDE Archive REST API v3.
 
-These tests make real network requests to the PRIDE Archive REST API (v3) and
-verify that ``compute_audit()`` returns the expected ``tier`` and ``quant_tier``
-for six well-known submissions. When ``PXAUDIT_LIVE_RECORD`` is set, the run
-writes a JSON record containing its date, API version, inventory, completeness,
-and changes.
+The reviewed baseline is dated 2026-07-18 UTC and covers six representative
+submissions. Set ``PXAUDIT_LIVE_RECORD`` to write a JSON record of observed tier
+and evidence drift.
 
-Run with:
-    uv run pytest -m integration -v --no-cov
-
-Excluded from the default test suite (``-m 'not integration'`` in addopts) to
-avoid network dependency during CI and offline development.
-
-Accession inventory
--------------------
-PXD057701   PARTIAL, 1 070 files (RAW + OTHER only)          → Raw / No Quant
-PXD002244   PARTIAL, 18 files (SEARCH + RAW + PEAK)          → Bronze / No Quant
-PXD000001   COMPLETE, 8 files (RESULT+PEAK, no SDRF)         → Silver / Partial
-PXD004683   COMPLETE, 289 files (RESULT+PEAK+SDRF+refs)      → Diamond / Partial
-PXD073444   COMPLETE, 30 files (RESULT+PEAK+SDRF, pubmed=0)  → Platinum / Partial
-PXD075811   COMPLETE, 14 files (RESULT+PEAK+SDRF, no pub)    → Platinum / Partial
-
-Quant-tier notes
-----------------
-All verified accessions produce either "No Quant" or "Partial" because none
-carry a QUANT_MATRIX / ID_LIST file (proteinGroups.txt, etc.).  The
-Quant-Ready and Quant-Complete values are covered by unit tests in
-``test_tier_engine.py`` section 14 using synthetic payloads.
+Run with ``uv run pytest -m integration -v --no-cov``. These tests are excluded
+from default offline runs.
 """
 
 from __future__ import annotations
 
+import csv
 import json
 import os
+import sqlite3
 from collections.abc import Iterator
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import cache
 from pathlib import Path
 
 import pytest
+from click.testing import CliRunner
 
+from pxaudit.cli import _extract_files_df, main
 from pxaudit.pride_client import fetch_files, fetch_project
-from pxaudit.tier_engine import compute_audit
+from pxaudit.tier_engine import AuditResult, compute_audit
 
-# ---------------------------------------------------------------------------
-# Parametrized tier + quant_tier table
-# ---------------------------------------------------------------------------
+pytestmark = pytest.mark.integration
 
-_LIVE_CASES = [
-    # (accession, expected_tier, expected_quant_tier)
-    ("PXD057701", "Raw", "No Quant"),
-    ("PXD002244", "Bronze", "No Quant"),
-    ("PXD000001", "Silver", "Partial"),
-    ("PXD004683", "Diamond", "Partial"),
-    ("PXD073444", "Platinum", "Partial"),
-    ("PXD075811", "Platinum", "Partial"),
-]
+_BASELINE_DATE = "2026-07-18"
 
-_LIVE_OBSERVATIONS: list[dict[str, str | bool]] = []
+
+@dataclass(frozen=True)
+class _LiveCase:
+    """Reviewed tier profile for one live accession."""
+
+    accession: str
+    tier: str
+    quant_tier: str
+    evidence: tuple[tuple[str, bool], ...]
+
+
+_LIVE_CASES = (
+    _LiveCase(
+        "PXD057701",
+        "Raw",
+        "No Quant",
+        (
+            ("has_result_files", False),
+            ("has_psi_results", False),
+            ("has_tabular_quant", False),
+        ),
+    ),
+    _LiveCase(
+        "PXD002244",
+        "Bronze",
+        "No Quant",
+        (
+            ("has_result_files", True),
+            ("has_psi_results", False),
+            ("has_tabular_quant", False),
+        ),
+    ),
+    _LiveCase(
+        "PXD000001",
+        "Silver",
+        "Partial",
+        (
+            ("has_result_files", True),
+            ("has_psi_results", True),
+            ("has_sdrf", False),
+            ("has_tabular_quant", False),
+        ),
+    ),
+    _LiveCase(
+        "PXD004683",
+        "Diamond",
+        "Partial",
+        (
+            ("has_result_files", True),
+            ("has_psi_results", True),
+            ("has_sdrf", True),
+            ("has_open_spectra", True),
+            ("has_organism_part", True),
+            ("has_publication", True),
+            ("has_tabular_quant", False),
+        ),
+    ),
+    _LiveCase(
+        "PXD073444",
+        "Platinum",
+        "Partial",
+        (
+            ("has_result_files", True),
+            ("has_psi_results", True),
+            ("has_sdrf", True),
+            ("has_open_spectra", True),
+            ("has_organism_part", True),
+            ("has_publication", False),
+            ("has_tabular_quant", False),
+        ),
+    ),
+    _LiveCase(
+        "PXD075811",
+        "Platinum",
+        "Partial",
+        (
+            ("has_result_files", True),
+            ("has_psi_results", True),
+            ("has_sdrf", True),
+            ("has_open_spectra", True),
+            ("has_organism_part", True),
+            ("has_publication", False),
+            ("has_tabular_quant", False),
+        ),
+    ),
+)
+
+_LIVE_OBSERVATIONS: list[dict[str, object]] = []
+
+
+@cache
+def _fetch_live_audit(accession: str) -> tuple[list[dict], AuditResult]:
+    """Fetch one accession once and compute its audit profile."""
+    project = fetch_project(accession)
+    files = fetch_files(accession)
+    return files, compute_audit(accession, project, files)
 
 
 @pytest.fixture(scope="module", autouse=True)
 def _write_live_verification_record() -> Iterator[None]:
-    """Write machine-readable live evidence when the caller requests it."""
+    """Write requested live evidence even when the observed profile has drifted."""
+    _fetch_live_audit.cache_clear()
     _LIVE_OBSERVATIONS.clear()
     yield
 
     destination = os.environ.get("PXAUDIT_LIVE_RECORD")
     if not destination:
         return
+
     observations = sorted(_LIVE_OBSERVATIONS, key=lambda item: str(item["accession"]))
     observed_accessions = [str(item["accession"]) for item in observations]
-    missing_accessions = [case[0] for case in _LIVE_CASES if case[0] not in observed_accessions]
+    missing_accessions = [
+        case.accession for case in _LIVE_CASES if case.accession not in observed_accessions
+    ]
     record = {
         "run_date": datetime.now(UTC).date().isoformat(),
+        "baseline_date": _BASELINE_DATE,
         "api_version": "PRIDE Archive REST API v3",
         "api_base_url": "https://www.ebi.ac.uk/pride/ws/archive/v3",
-        "accession_inventory": [case[0] for case in _LIVE_CASES],
+        "accession_inventory": [case.accession for case in _LIVE_CASES],
         "observed_accessions": observed_accessions,
         "missing_accessions": missing_accessions,
         "complete": not missing_accessions,
         "observations": observations,
-        "tier_changes": [item for item in observations if item["changed"]],
+        "tier_changes": [item for item in observations if item["tier_changed"]],
+        "evidence_changes": [item for item in observations if item["evidence_changed"]],
     }
     record_path = Path(destination)
     record_path.parent.mkdir(parents=True, exist_ok=True)
     record_path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
 
 
-@pytest.mark.integration
-@pytest.mark.parametrize(
-    "accession, expected_tier, expected_quant_tier",
-    _LIVE_CASES,
-    ids=[c[0] for c in _LIVE_CASES],
-)
-def test_live_tier_and_quant_tier(
-    accession: str,
-    expected_tier: str,
-    expected_quant_tier: str,
-) -> None:
-    """Tier and quant_tier must match manually-verified values for live PRIDE data."""
-    project = fetch_project(accession)
-    files = fetch_files(accession)
-    result = compute_audit(accession, project, files)
+@pytest.mark.parametrize("case", _LIVE_CASES, ids=lambda case: case.accession)
+def test_live_audit_profiles_match_reviewed_baseline(case: _LiveCase) -> None:
+    """Live tiers and their driving evidence match the dated reviewed profile."""
+    _, result = _fetch_live_audit(case.accession)
+    expected_evidence = dict(case.evidence)
+    observed_evidence = {field: getattr(result, field) for field in expected_evidence}
+    tier_changed = (result.tier, result.quant_tier) != (case.tier, case.quant_tier)
+    evidence_changed = any(
+        observed_evidence[field] is not expected for field, expected in case.evidence
+    )
     _LIVE_OBSERVATIONS.append(
         {
-            "accession": accession,
-            "expected_tier": expected_tier,
+            "accession": case.accession,
+            "expected_tier": case.tier,
             "observed_tier": result.tier,
-            "expected_quant_tier": expected_quant_tier,
+            "expected_quant_tier": case.quant_tier,
             "observed_quant_tier": result.quant_tier,
-            "changed": result.tier != expected_tier or result.quant_tier != expected_quant_tier,
+            "expected_evidence": expected_evidence,
+            "observed_evidence": observed_evidence,
+            "tier_changed": tier_changed,
+            "evidence_changed": evidence_changed,
         }
     )
 
-    assert result.tier == expected_tier, (
-        f"{accession}: tier : got {result.tier!r}, expected {expected_tier!r}\n"
-        f"  has_result_files={result.has_result_files}, has_psi_results={result.has_psi_results},\n"
-        f"  has_sdrf={result.has_sdrf}, has_open_spectra={result.has_open_spectra},\n"
-        f"  has_organism_part={result.has_organism_part}, has_publication={result.has_publication}"
-    )
-    assert result.quant_tier == expected_quant_tier, (
-        f"{accession}: quant_tier : got {result.quant_tier!r}, expected {expected_quant_tier!r}\n"
-        f"  has_psi_results={result.has_psi_results}, "
-        f"has_tabular_quant={result.has_tabular_quant},\n"
-        f"  has_quant_metadata={result.has_quant_metadata}"
-    )
+    assert (result.tier, result.quant_tier) == (case.tier, case.quant_tier)
+    assert all(type(value) is bool for value in observed_evidence.values())
+    assert not evidence_changed
 
 
-# ---------------------------------------------------------------------------
-# Spot-check: specific flag values confirmed from the live API
-# ---------------------------------------------------------------------------
+def test_live_bulk_audit_persists_exact_export_and_provenance(tmp_path: Path) -> None:
+    """A live bulk run writes exact TSV, audit, file, and retrieval-time records."""
+    accession_file = tmp_path / "accessions.txt"
+    accession_file.write_text("PXD000001\nPXD075811\nMSV000079514\n", encoding="utf-8")
+    database = tmp_path / "results.db"
+    export = tmp_path / "bulk_results.tsv"
 
-
-@pytest.mark.integration
-def test_live_pxd000001_silver_has_psi_no_sdrf() -> None:
-    """PXD000001 must have PSI results (mzid) but no SDRF : the Silver criteria."""
-    project = fetch_project("PXD000001")
-    files = fetch_files("PXD000001")
-    result = compute_audit("PXD000001", project, files)
-    assert result.has_psi_results is True
-    assert result.has_sdrf is False
-    assert result.tier == "Silver"
-
-
-@pytest.mark.integration
-def test_live_pxd004683_diamond_all_fair_flags() -> None:
-    """PXD004683 must satisfy every FAIR tier flag that Diamond requires."""
-    project = fetch_project("PXD004683")
-    files = fetch_files("PXD004683")
-    result = compute_audit("PXD004683", project, files)
-    assert result.has_result_files is True
-    assert result.has_psi_results is True
-    assert result.has_sdrf is True
-    assert result.has_open_spectra is True
-    assert result.has_organism_part is True
-    assert result.has_publication is True
-    assert result.tier == "Diamond"
-
-
-@pytest.mark.integration
-def test_live_pxd057701_raw_no_result_files() -> None:
-    """PXD057701 is a PARTIAL submission with no result/search files → Raw."""
-    project = fetch_project("PXD057701")
-    files = fetch_files("PXD057701")
-    result = compute_audit("PXD057701", project, files)
-    assert result.has_result_files is False
-    assert result.tier == "Raw"
-    assert result.quant_tier == "No Quant"
-
-
-# ---------------------------------------------------------------------------
-# Bulk-audit integration test
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.integration
-def test_live_bulk_audit(tmp_path: Path) -> None:
-    """bulk-audit 3 real accessions : verify SQLite and TSV output."""
-    from click.testing import CliRunner
-
-    from pxaudit.cli import main
-
-    acc_file = tmp_path / "accessions.txt"
-    acc_file.write_text("PXD000001\nPXD004683\nMSV000079514\n")
-    db_path = tmp_path / "results.db"
-    tsv_path = tmp_path / "bulk_results.tsv"
-
-    runner = CliRunner()
-    result = runner.invoke(
+    started_at = datetime.now(UTC)
+    result = CliRunner().invoke(
         main,
         [
             "bulk-audit",
             "--input",
-            str(acc_file),
+            str(accession_file),
             "--db",
-            str(db_path),
+            str(database),
             "--format",
             "tsv",
             "--output",
-            str(tsv_path),
+            str(export),
             "--delay",
             "0",
         ],
     )
-    assert result.exit_code == 0, f"bulk-audit failed: {result.output}"
+    finished_at = datetime.now(UTC)
+
+    assert result.exit_code == 0, f"{result.output}\n{result.exception!r}"
     assert "Completed : 3" in result.output
-    assert tsv_path.exists()
+    with export.open(encoding="utf-8", newline="") as handle:
+        exported = {row["accession"]: row for row in csv.DictReader(handle, delimiter="\t")}
+    assert {accession: (row["tier"], row["quant_tier"]) for accession, row in exported.items()} == {
+        "PXD000001": ("Silver", "Partial"),
+        "PXD075811": ("Platinum", "Partial"),
+        "MSV000079514": ("Unverifiable", "Unverifiable"),
+    }
 
-    tsv_content = tsv_path.read_text()
-    assert "PXD000001" in tsv_content
-    assert "PXD004683" in tsv_content
-    assert "MSV000079514" in tsv_content
-    assert "Silver" in tsv_content
-    assert "Diamond" in tsv_content
-    assert "Unverifiable" in tsv_content
-
-    # Verify SQLite database has correct rows.
-    import sqlite3
-
-    conn = sqlite3.connect(str(db_path))
-    try:
-        cursor = conn.execute("SELECT COUNT(*) FROM audit")
-        assert cursor.fetchone()[0] == 3
-
-        cursor = conn.execute("SELECT tier FROM audit WHERE accession = ?", ("PXD000001",))
-        assert cursor.fetchone()[0] == "Silver"
-
-        cursor = conn.execute("SELECT tier FROM audit WHERE accession = ?", ("PXD004683",))
-        assert cursor.fetchone()[0] == "Diamond"
-
-        cursor = conn.execute(
-            "SELECT tier, is_unverifiable FROM audit WHERE accession = ?",
-            ("MSV000079514",),
+    with sqlite3.connect(database) as connection:
+        audit_rows = set(
+            connection.execute("SELECT accession, tier, quant_tier, is_unverifiable FROM audit")
         )
-        row = cursor.fetchone()
-        assert row[0] == "Unverifiable"
-        assert row[1] == 1
-    finally:
-        conn.close()
+        live_studies = list(
+            connection.execute(
+                "SELECT accession, fetched_at FROM study WHERE accession LIKE 'PXD%'"
+            )
+        )
+        file_counts = dict(
+            connection.execute("SELECT accession, COUNT(*) FROM study_files GROUP BY accession")
+        )
+
+    assert audit_rows == {
+        ("PXD000001", "Silver", "Partial", 0),
+        ("PXD075811", "Platinum", "Partial", 0),
+        ("MSV000079514", "Unverifiable", "Unverifiable", 1),
+    }
+    assert {accession for accession, _ in live_studies} == {"PXD000001", "PXD075811"}
+    retrieval_times = [datetime.fromisoformat(fetched_at) for _, fetched_at in live_studies]
+    assert all(value.tzinfo is not None for value in retrieval_times)
+    assert all(started_at <= value <= finished_at for value in retrieval_times)
+    assert file_counts["PXD000001"] > 0
+    assert file_counts["PXD075811"] > 0
 
 
-# ---------------------------------------------------------------------------
-# Live checksum and fetched_at verification
-# ---------------------------------------------------------------------------
+def test_live_current_checksum_is_extracted_as_sha1() -> None:
+    """Current PRIDE checksum fields survive extraction with a SHA-1 label."""
+    files, _ = _fetch_live_audit("PXD004683")
+    current_checksums = {
+        value.strip()
+        for file_data in files
+        if isinstance(value := file_data.get("checksum"), str) and value.strip()
+    }
 
-
-@pytest.mark.integration
-def test_live_checksum_and_fetched_at_present() -> None:
-    """Live PRIDE data must have checksums and fetched_at populated."""
-    from datetime import UTC, datetime
-
-    from pxaudit.cli import _extract_files_df, _extract_study
-
-    project = fetch_project("PXD004683")
-    files = fetch_files("PXD004683")
-
-    # fetched_at should be set by the caller; we just verify extraction works.
-    fetched_at = datetime.now(UTC).isoformat()
-    study = _extract_study("PXD004683", project, fetched_at)
-    assert study["fetched_at"] == fetched_at
-
-    # At least one file should have a checksum from the live API.
-    df = _extract_files_df("PXD004683", files)
-    assert len(df) > 0
-    checksums = df["checksum"].dropna()
-    assert len(checksums) > 0, "Expected at least one file with a checksum from live PRIDE"
-    assert df["checksum_type"].dropna().iloc[0] == "SHA-1"
+    assert current_checksums
+    rows = _extract_files_df("PXD004683", files)
+    extracted_sha1 = set(
+        rows.loc[rows["checksum_type"] == "SHA-1", "checksum"].dropna().astype(str)
+    )
+    assert current_checksums & extracted_sha1

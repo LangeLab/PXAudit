@@ -1,16 +1,4 @@
-"""Shared test fixtures for the pxaudit test suite.
-
-Fixtures defined here are auto-discovered by pytest and available to every
-test module without explicit import.
-
-Naming convention
------------------
-``pride_project_*``  : synthetic /projects API response dicts.
-``pride_files_*``    : synthetic /files API response lists.
-
-Payloads model the PRIDE v3 field structure used by PXAudit while keeping
-their values synthetic and deterministic.
-"""
+"""Isolated process state and synthetic PRIDE payloads shared by the test suite."""
 
 from __future__ import annotations
 
@@ -33,6 +21,7 @@ def _isolate_process_state(
     home = root / "home"
     work = root / "work"
     cache = root / "cache"
+    matplotlib = root / "matplotlib"
     home.mkdir(parents=True)
     work.mkdir()
     cache.mkdir()
@@ -40,8 +29,10 @@ def _isolate_process_state(
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
+    monkeypatch.setenv("MPLCONFIGDIR", str(matplotlib))
     monkeypatch.setenv("PXAUDIT_CONFIG", str(root / "missing.toml"))
-    monkeypatch.delenv("NO_COLOR", raising=False)
+    for variable in ("COLUMNS", "LINES", "NO_COLOR"):
+        monkeypatch.delenv(variable, raising=False)
     monkeypatch.chdir(work)
 
     from pxaudit import _output, config
@@ -54,21 +45,22 @@ def _isolate_process_state(
         def block_network(*_args: object, **_kwargs: object) -> NoReturn:
             pytest.fail("offline tests must not open network connections")
 
-        monkeypatch.setattr(socket.socket, "connect", block_network)
-        monkeypatch.setattr(socket.socket, "connect_ex", block_network)
-        monkeypatch.setattr(socket, "create_connection", block_network)
+        for attribute in ("connect", "connect_ex", "sendto"):
+            monkeypatch.setattr(socket.socket, attribute, block_network)
+        for attribute in (
+            "create_connection",
+            "getaddrinfo",
+            "gethostbyname",
+            "gethostbyname_ex",
+        ):
+            monkeypatch.setattr(socket, attribute, block_network)
 
     yield
     _output.configure(quiet=False, verbose=False, no_color=False)
 
 
-# ---------------------------------------------------------------------------
-# /projects payloads
-# ---------------------------------------------------------------------------
-
-
 @pytest.fixture()
-def pride_project_complete_metadata() -> dict:
+def pride_project_complete_metadata() -> dict[str, object]:
     """Project payload containing every required baseline metadata field."""
     return {
         "title": "Complete metadata study",
@@ -87,33 +79,7 @@ def pride_project_complete_metadata() -> dict:
 
 
 @pytest.fixture()
-def pride_project_bronze() -> dict:
-    """Organism present but no taxonomy accession → Bronze when result files exist."""
-    return {
-        "title": "Bronze study",
-        "submissionDate": "2021-06-01",
-        "keywords": ["proteomics"],
-        "organisms": [{"@type": "CvParam", "name": "Homo sapiens"}],
-        "instruments": [{"@type": "CvParam", "name": "Q Exactive"}],
-    }
-
-
-@pytest.fixture()
-def pride_project_none_tier() -> dict:
-    """Missing title → None tier regardless of files."""
-    return {
-        "organisms": [{"@type": "CvParam", "name": "Homo sapiens", "accession": "NEWT:9606"}],
-        "instruments": [{"@type": "CvParam", "name": "Orbitrap"}],
-    }
-
-
-# ---------------------------------------------------------------------------
-# /files payloads
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture()
-def pride_files_psi_sdrf() -> list[dict]:
+def pride_files_psi_sdrf() -> list[dict[str, object]]:
     """File payload containing mzIdentML, SDRF, and mzTab evidence."""
     return [
         {
@@ -142,8 +108,8 @@ def pride_files_psi_sdrf() -> list[dict]:
 
 
 @pytest.fixture()
-def pride_files_silver() -> list[dict]:
-    """Result file only, no SDRF → Silver tier when metadata is complete."""
+def pride_files_silver() -> list[dict[str, object]]:
+    """A result file without SDRF produces Silver when metadata is complete."""
     return [
         {
             "fileName": "results.mzid",
@@ -152,9 +118,3 @@ def pride_files_silver() -> list[dict]:
             "publicFileLocations": [],
         }
     ]
-
-
-@pytest.fixture()
-def pride_files_empty() -> list[dict]:
-    """Empty file list → all file-level flags False."""
-    return []

@@ -53,7 +53,7 @@ def _retry_after_seconds(value: str | None) -> float | None:
         return None
     stripped = value.strip()
     try:
-        if stripped.isdecimal():
+        if stripped.isascii() and stripped.isdecimal():
             seconds = float(int(stripped))
         else:
             retry_at = parsedate_to_datetime(stripped)
@@ -74,7 +74,10 @@ def _total_records(
         return None
     if not value.isascii() or not value.isdecimal():
         raise PrideAPIError("PRIDE API returned invalid total_records metadata")
-    return int(value)
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise PrideAPIError("PRIDE API returned invalid total_records metadata") from exc
 
 
 def _request(url: str, *, delay: float, session: requests.Session) -> _JSONResponse:

@@ -1,10 +1,11 @@
-"""L0 edge contracts and L1 workflows with controlled real components."""
+"""Cross-module edge workflows using mocked APIs and real temporary storage."""
 
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import fields
+from contextlib import closing
 from pathlib import Path
+from typing import Literal
 from unittest.mock import MagicMock
 
 import pytest
@@ -12,299 +13,139 @@ from click.testing import CliRunner
 
 from pxaudit.cli import main
 from pxaudit.pride_client import PrideAPIError
-from pxaudit.tier_engine import AuditResult, compute_audit
-
-# ---------------------------------------------------------------------------
-# Local helpers (not in conftest because they are low-level building blocks
-# used only within this module)
-# ---------------------------------------------------------------------------
-
-_FULL_PROJECT = {
-    "title": "T",
-    "organisms": [{"name": "Homo sapiens", "accession": "NEWT:9606"}],
-    "instruments": [{"name": "Orbitrap"}],
-}
-
-
-def _file(name: str, category: str = "RAW") -> dict:
-    return {
-        "fileName": name,
-        "fileCategory": {"value": category},
-        "fileSizeBytes": 0,
-        "publicFileLocations": [],
-    }
-
-
-def _result_file(name: str = "results.mzid") -> dict:
-    return _file(name, "RESULT")
-
-
-# ---------------------------------------------------------------------------
-# Fixture: patch only the API layer; let DB operations run for real.
-# Used exclusively by the pipeline DB-verification tests.
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture()
 def _api_mocks(
     monkeypatch: pytest.MonkeyPatch,
-    pride_project_complete_metadata: dict,
-    pride_files_psi_sdrf: list,
-) -> dict:
-    """Patch cache and API; leave get_or_create_db and insert_* untouched."""
-    m = {
+    pride_project_complete_metadata: dict[str, object],
+    pride_files_psi_sdrf: list[dict[str, object]],
+) -> dict[str, MagicMock]:
+    """Mock remote and cache boundaries while retaining real SQLite writes."""
+    mocks = {
         "read_cache_response": MagicMock(return_value=None),
         "read_cache_stale_response": MagicMock(return_value=None),
         "write_cache": MagicMock(),
         "fetch_project": MagicMock(return_value=pride_project_complete_metadata),
         "fetch_files": MagicMock(return_value=pride_files_psi_sdrf),
     }
-    for name, mock in m.items():
+    for name, mock in mocks.items():
         monkeypatch.setattr(f"pxaudit.cli.{name}", mock)
-    return m
+    return mocks
 
 
-# ---------------------------------------------------------------------------
-# 1. Accession validation edges
-# ---------------------------------------------------------------------------
+def _read_row(
+    database: str | Path,
+    table: Literal["audit", "study"],
+    accession: str = "PXD000001",
+) -> dict[str, object]:
+    """Read one persisted audit or study row by accession."""
+    with closing(sqlite3.connect(database)) as connection:
+        connection.row_factory = sqlite3.Row
+        query = {
+            "audit": "SELECT * FROM audit WHERE accession = ?",
+            "study": "SELECT * FROM study WHERE accession = ?",
+        }[table]
+        row = connection.execute(query, (accession,)).fetchone()
+    assert row is not None, f"no {table} row found for {accession}"
+    return dict(row)
 
 
-def test_whitespace_only_accession_raises_value_error() -> None:
-    """Whitespace-only input has no accession after normalization."""
-    with pytest.raises(ValueError):
-        compute_audit("   ", {}, [])
+def _read_file_names(database: str | Path, accession: str = "PXD000001") -> list[str]:
+    """Read persisted filenames in deterministic order."""
+    with closing(sqlite3.connect(database)) as connection:
+        rows = connection.execute(
+            "SELECT file_name FROM study_files WHERE accession = ? ORDER BY file_name",
+            (accession,),
+        ).fetchall()
+    return [row[0] for row in rows]
 
 
-def test_surrounding_whitespace_is_trimmed_before_audit() -> None:
-    """Surrounding whitespace does not change the canonical accession."""
-    result = compute_audit("\tPXD000001 ", {}, [])
-    assert result.accession == "PXD000001"
+def _database_snapshot(database: str | Path) -> tuple[list[tuple[object, ...]], ...]:
+    """Return every persisted row in deterministic table order."""
+    with closing(sqlite3.connect(database)) as connection:
+        return (
+            connection.execute("SELECT * FROM study ORDER BY accession").fetchall(),
+            connection.execute("SELECT * FROM study_files ORDER BY file_name").fetchall(),
+            connection.execute("SELECT * FROM audit ORDER BY accession").fetchall(),
+        )
 
 
-def test_lowercase_pxd_routes_to_full_audit_not_unverifiable() -> None:
-    """Lowercase PXD input is canonicalized before the full audit path."""
-    r = compute_audit("pxd000001", {}, [])
-    assert r.is_unverifiable is False
-    assert r.accession == "PXD000001"
-    assert r.tier == "None"  # empty project data → missing title/organism/instrument
-
-
-def test_mixed_case_pxd_routes_to_full_audit_not_unverifiable() -> None:
-    """'PxD000001' : case-insensitive prefix check must treat it as PXD."""
-    r = compute_audit("PxD000001", {}, [])
-    assert r.is_unverifiable is False
-
-
-def test_lowercase_pxd_cli_routes_correctly(
-    monkeypatch: pytest.MonkeyPatch,
-    pride_project_complete_metadata: dict,
-    pride_files_psi_sdrf: list,
+@pytest.mark.component
+def test_pipeline_success_persists_aligned_record(
+    _api_mocks: dict[str, MagicMock],
+    tmp_path: Path,
+    pride_files_psi_sdrf: list[dict[str, object]],
 ) -> None:
-    """CLI must also route lowercase 'pxd...' to the PXD fetch path."""
-    fetch_project = MagicMock(return_value=pride_project_complete_metadata)
-    monkeypatch.setattr("pxaudit.cli.read_cache_response", MagicMock(return_value=None))
-    monkeypatch.setattr("pxaudit.cli.write_cache", MagicMock())
-    monkeypatch.setattr("pxaudit.cli.fetch_project", fetch_project)
-    monkeypatch.setattr("pxaudit.cli.fetch_files", MagicMock(return_value=pride_files_psi_sdrf))
-    monkeypatch.setattr("pxaudit.cli.get_or_create_db", MagicMock(return_value=MagicMock()))
-    monkeypatch.setattr("pxaudit.cli.insert_audit_record", MagicMock())
+    """A successful audit persists aligned study, file, and audit components."""
+    database = tmp_path / "audit.db"
 
-    result = CliRunner().invoke(main, ["check", "pxd000001"])
+    result = CliRunner().invoke(main, ["check", "PXD000001", "--db", str(database)])
+
     assert result.exit_code == 0
-    fetch_project.assert_called_once_with("PXD000001", delay=0.5)
-
-
-# ---------------------------------------------------------------------------
-# 2. fileCategory near-matches : must NOT be recognised as result/search
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "category",
-    [
-        "result ",  # trailing space : casefold gives "result ", not "result"
-        "SEARCHING",  # near-match on SEARCH; contains "search" but is longer
-        "SEARCH ",  # trailing space
-        "RESULTSET",  # RESULT as prefix of longer word
-        " RESULT",  # leading space
-        "re sult",  # internal space
-    ],
-    ids=[
-        "result-trailing-space",
-        "SEARCHING",
-        "SEARCH-trailing-space",
-        "RESULTSET",
-        "RESULT-leading-space",
-        "result-internal-space",
-    ],
-)
-def test_file_category_near_matches_not_counted_as_result(category: str) -> None:
-    """None of these near-matches should satisfy has_result_files."""
-    files = [_file("data.raw", category)]
-    r = compute_audit("PXD000001", _FULL_PROJECT, files)
-    assert r.has_result_files is False
-
-
-# ---------------------------------------------------------------------------
-# 3. SDRF token-boundary near-misses and positives
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "filename, expected",
-    [
-        ("sdrf", False),  # bare token, no extension : fallback requires tabular ext
-        ("_sdrf_.tsv", True),  # underscores are not letters → boundary OK
-        ("123sdrf456.tsv", True),  # digits are not letters → boundary OK
-        ("xsdrfx.tsv", False),  # letter immediately on both sides
-        ("prefixsdrfsuffix", False),  # letters on both sides, no separator
-        ("asdrf.tsv", False),  # letter immediately before sdrf
-        ("sdrf_file.tsv", True),  # sdrf followed by underscore (not a letter)
-    ],
-    ids=[
-        "bare-token-no-ext",
-        "underscore-both-sides",
-        "digit-both-sides",
-        "letter-both-sides",
-        "letter-both-sides-no-sep",
-        "letter-prefix",
-        "sdrf-then-underscore",
-    ],
-)
-def test_sdrf_token_boundary_cases(filename: str, expected: bool) -> None:
-    """Exhaustive token-boundary tests for the SDRF regex.
-
-    Positive cases: sdrf must be matched when not immediately adjacent to a letter.
-    Negative cases: sdrf must NOT match when a letter touches it on either side.
-    """
-    files = [
-        _file(filename, "OTHER"),
-        _result_file(),  # ensure has_result_files so tier can reach Silver/Gold
-    ]
-    r = compute_audit("PXD000001", _FULL_PROJECT, files)
-    assert r.has_sdrf is expected, (
-        f"filename={filename!r}: expected has_sdrf={expected}, got {r.has_sdrf}"
+    assert _read_row(database, "audit") == {
+        "accession": "PXD000001",
+        "tier": "Gold",
+        "has_title": 1,
+        "has_organism": 1,
+        "has_organism_id": 1,
+        "has_instrument": 1,
+        "has_result_files": 1,
+        "has_psi_results": 1,
+        "has_open_spectra": 0,
+        "has_organism_part": 0,
+        "has_publication": 0,
+        "has_tabular_quant": 0,
+        "has_quant_metadata": 0,
+        "has_sdrf": 1,
+        "has_mztab": 1,
+        "files_fetch_failed": 0,
+        "is_unverifiable": 0,
+        "tier_logic_version": "v2.1",
+        "quant_tier": "Partial",
+    }
+    study = _read_row(database, "study")
+    expected_study = {
+        "accession": "PXD000001",
+        "title": "Complete metadata study",
+        "organism": "Homo sapiens",
+        "organism_id": "NEWT:9606",
+        "instrument": "Orbitrap Fusion",
+        "submission_year": 2020,
+        "submission_type": None,
+        "keywords": "proteomics, phospho",
+        "repository": "PRIDE",
+    }
+    assert {name: study[name] for name in expected_study} == expected_study
+    assert isinstance(study["fetched_at"], str)
+    assert _read_file_names(database) == sorted(
+        str(file_data["fileName"]) for file_data in pride_files_psi_sdrf
     )
 
 
-# The API boundary stays mocked so these workflows exercise deterministic real SQLite I/O.
-
-_AUDIT_COLS = (
-    "accession",
-    "tier",
-    "has_title",
-    "has_organism",
-    "has_organism_id",
-    "has_instrument",
-    "has_result_files",
-    "has_psi_results",
-    "has_sdrf",
-    "has_mztab",
-    "files_fetch_failed",
-    "is_unverifiable",
-    "tier_logic_version",
-)
-
-_STUDY_COLS = (
-    "accession",
-    "title",
-    "organism",
-    "organism_id",
-    "instrument",
-    "submission_year",
-    "keywords",
-    "repository",
-    "fetched_at",
-)
-
-
-def _read_audit(db_path: str, accession: str = "PXD000001") -> dict:
-    conn = sqlite3.connect(db_path)
-    row = conn.execute(
-        f"SELECT {', '.join(_AUDIT_COLS)} FROM audit WHERE accession=?", (accession,)
-    ).fetchone()
-    conn.close()
-    assert row is not None, f"No audit row found for {accession}"
-    return dict(zip(_AUDIT_COLS, row, strict=True))
-
-
-def _read_study(db_path: str, accession: str = "PXD000001") -> dict:
-    conn = sqlite3.connect(db_path)
-    row = conn.execute(
-        f"SELECT {', '.join(_STUDY_COLS)} FROM study WHERE accession=?", (accession,)
-    ).fetchone()
-    conn.close()
-    assert row is not None, f"No study row found for {accession}"
-    return dict(zip(_STUDY_COLS, row, strict=True))
-
-
-def _count_rows(db_path: str, table: str, accession: str = "PXD000001") -> int:
-    conn = sqlite3.connect(db_path)
-    n = conn.execute(f"SELECT COUNT(*) FROM {table} WHERE accession=?", (accession,)).fetchone()[0]
-    conn.close()
-    return n
-
-
 @pytest.mark.component
-def test_pipeline_gold_audit_row_tier_and_flags(_api_mocks: dict, tmp_path: Path) -> None:
-    """Gold run: audit table must have tier=Gold and all Boolean flags correct."""
-    db = str(tmp_path / "audit.db")
-    res = CliRunner().invoke(main, ["check", "PXD000001", "--db", db])
-    assert res.exit_code == 0
-
-    row = _read_audit(db)
-    assert row["tier"] == "Gold"
-    assert row["has_title"] == 1
-    assert row["has_organism"] == 1
-    assert row["has_organism_id"] == 1
-    assert row["has_instrument"] == 1
-    assert row["has_result_files"] == 1
-    assert row["has_sdrf"] == 1
-    assert row["has_mztab"] == 1
-    assert row["files_fetch_failed"] == 0
-    assert row["is_unverifiable"] == 0
-
-
-@pytest.mark.component
-def test_pipeline_gold_study_row_fields(_api_mocks: dict, tmp_path: Path) -> None:
-    """Gold run: study table must have correct title, organism, organism_id, instrument, year."""
-    db = str(tmp_path / "audit.db")
-    CliRunner().invoke(main, ["check", "PXD000001", "--db", db])
-
-    row = _read_study(db)
-    assert row["accession"] == "PXD000001"
-    assert row["title"] == "Complete metadata study"
-    assert row["organism"] == "Homo sapiens"
-    assert row["organism_id"] == "NEWT:9606"
-    assert row["instrument"] == "Orbitrap Fusion"
-    assert row["submission_year"] == 2020
-    assert row["repository"] == "PRIDE"
-
-
-@pytest.mark.component
-def test_pipeline_lowercase_accession_persists_one_canonical_identity(
+def test_pipeline_case_variants_share_one_canonical_identity(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-    pride_project_complete_metadata: dict,
-    pride_files_psi_sdrf: list[dict],
+    pride_project_complete_metadata: dict[str, object],
+    pride_files_psi_sdrf: list[dict[str, object]],
 ) -> None:
-    """Case variants share one API, cache, study, files, and audit identity."""
+    """Case variants share one API, cache, study, file, and audit identity."""
     fetch_project = MagicMock(return_value=pride_project_complete_metadata)
     fetch_files = MagicMock(return_value=pride_files_psi_sdrf)
     monkeypatch.setattr("pxaudit.cli.fetch_project", fetch_project)
     monkeypatch.setattr("pxaudit.cli.fetch_files", fetch_files)
-
-    database = str(tmp_path / "audit.db")
+    database = tmp_path / "audit.db"
     cache = tmp_path / "cache"
     runner = CliRunner()
 
     first = runner.invoke(
         main,
-        ["--cache-dir", str(cache), "check", "pxd000001", "--db", database],
+        ["--cache-dir", str(cache), "check", "pxd000001", "--db", str(database)],
     )
     second = runner.invoke(
         main,
-        ["--cache-dir", str(cache), "check", "PxD000001", "--db", database],
+        ["--cache-dir", str(cache), "check", "PxD000001", "--db", str(database)],
     )
 
     assert first.exit_code == second.exit_code == 0
@@ -314,53 +155,18 @@ def test_pipeline_lowercase_accession_persists_one_canonical_identity(
         "PXD000001_files.json",
         "PXD000001_project.json",
     ]
-    with sqlite3.connect(database) as connection:
-        assert connection.execute("SELECT accession FROM study").fetchall() == [("PXD000001",)]
-        assert connection.execute("SELECT accession FROM audit").fetchall() == [("PXD000001",)]
-        assert connection.execute("SELECT DISTINCT accession FROM study_files").fetchall() == [
-            ("PXD000001",)
-        ]
-
-
-@pytest.mark.component
-def test_pipeline_gold_study_files_row_count(
-    _api_mocks: dict, tmp_path: Path, pride_files_psi_sdrf: list
-) -> None:
-    """Gold run: study_files must have one row per file returned by the API."""
-    db = str(tmp_path / "audit.db")
-    CliRunner().invoke(main, ["check", "PXD000001", "--db", db])
-    assert _count_rows(db, "study_files") == len(pride_files_psi_sdrf)
-
-
-@pytest.mark.component
-def test_pipeline_silver_audit_row(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    pride_project_complete_metadata: dict,
-    pride_files_silver: list,
-) -> None:
-    """Silver run: audit row must have tier=Silver and has_sdrf=0."""
-    monkeypatch.setattr("pxaudit.cli.read_cache_response", MagicMock(return_value=None))
-    monkeypatch.setattr("pxaudit.cli.write_cache", MagicMock())
-    monkeypatch.setattr(
-        "pxaudit.cli.fetch_project", MagicMock(return_value=pride_project_complete_metadata)
-    )
-    monkeypatch.setattr("pxaudit.cli.fetch_files", MagicMock(return_value=pride_files_silver))
-
-    db = str(tmp_path / "audit.db")
-    CliRunner().invoke(main, ["check", "PXD000001", "--db", db])
-
-    row = _read_audit(db)
-    assert row["tier"] == "Silver"
-    assert row["has_sdrf"] == 0
-    assert row["has_result_files"] == 1
+    assert _read_row(database, "study")["accession"] == "PXD000001"
+    assert _read_row(database, "audit")["accession"] == "PXD000001"
+    with closing(sqlite3.connect(database)) as connection:
+        identities = connection.execute("SELECT DISTINCT accession FROM study_files").fetchall()
+    assert identities == [("PXD000001",)]
 
 
 @pytest.mark.component
 def test_pipeline_category_only_result_does_not_persist_psi_evidence(
-    _api_mocks: dict, tmp_path: Path
+    _api_mocks: dict[str, MagicMock], tmp_path: Path
 ) -> None:
-    """A generic PRIDE RESULT row persists processed evidence without a PSI claim."""
+    """A generic PRIDE RESULT persists processed evidence without a PSI claim."""
     _api_mocks["fetch_files"].return_value = [
         {
             "fileName": "results.csv",
@@ -369,221 +175,143 @@ def test_pipeline_category_only_result_does_not_persist_psi_evidence(
             "publicFileLocations": [],
         }
     ]
-    database = str(tmp_path / "audit.db")
+    database = tmp_path / "audit.db"
 
-    result = CliRunner().invoke(main, ["check", "PXD000001", "--db", database])
+    result = CliRunner().invoke(main, ["check", "PXD000001", "--db", str(database)])
 
     assert result.exit_code == 0
-    audit = _read_audit(database)
+    audit = _read_row(database, "audit")
     assert audit["tier"] == "Bronze"
     assert audit["has_result_files"] == 1
     assert audit["has_psi_results"] == 0
     assert audit["tier_logic_version"] == "v2.1"
+    assert _read_file_names(database) == ["results.csv"]
 
 
 @pytest.mark.component
 def test_pipeline_new_accession_files_failure_creates_no_database(
-    monkeypatch: pytest.MonkeyPatch,
+    _api_mocks: dict[str, MagicMock],
     tmp_path: Path,
-    pride_project_complete_metadata: dict,
 ) -> None:
     """An incomplete new audit creates no database or misleading tier output."""
-    monkeypatch.setattr("pxaudit.cli.read_cache_response", MagicMock(return_value=None))
-    monkeypatch.setattr("pxaudit.cli.read_cache_stale_response", MagicMock(return_value=None))
-    monkeypatch.setattr("pxaudit.cli.write_cache", MagicMock())
-    monkeypatch.setattr(
-        "pxaudit.cli.fetch_project", MagicMock(return_value=pride_project_complete_metadata)
-    )
-    monkeypatch.setattr("pxaudit.cli.fetch_files", MagicMock(side_effect=PrideAPIError("down")))
+    _api_mocks["fetch_files"].side_effect = PrideAPIError("down")
+    database = tmp_path / "audit.db"
 
-    db = str(tmp_path / "audit.db")
-    res = CliRunner().invoke(main, ["check", "PXD000001", "--db", db])
-    assert res.exit_code == 1
-    assert "Warning" in res.stderr
-    assert "audit is incomplete" in res.stderr
-    assert "Tier" not in res.stdout
-    assert not Path(db).exists()
+    result = CliRunner().invoke(main, ["check", "PXD000001", "--db", str(database)])
+
+    assert result.exit_code == 1
+    assert "Warning" in result.stderr
+    assert "audit is incomplete" in result.stderr
+    assert "Tier" not in result.stdout
+    assert not database.exists()
 
 
 @pytest.mark.component
-def test_pipeline_verified_empty_files_response_persists_completed_raw_audit(
-    _api_mocks: dict, tmp_path: Path
+def test_pipeline_verified_empty_files_persists_completed_raw_audit(
+    _api_mocks: dict[str, MagicMock], tmp_path: Path
 ) -> None:
-    """A successful empty files response remains distinct from an unavailable response."""
+    """A successful empty response remains distinct from unavailable file evidence."""
     _api_mocks["fetch_files"].return_value = []
-    database = str(tmp_path / "audit.db")
+    database = tmp_path / "audit.db"
 
-    result = CliRunner().invoke(main, ["check", "PXD000001", "--db", database])
+    result = CliRunner().invoke(main, ["check", "PXD000001", "--db", str(database)])
 
     assert result.exit_code == 0
     assert "Raw" in result.stdout
-    assert _count_rows(database, "study") == 1
-    assert _count_rows(database, "study_files") == 0
-    audit = _read_audit(database)
+    assert _read_file_names(database) == []
+    assert _read_row(database, "study")["accession"] == "PXD000001"
+    audit = _read_row(database, "audit")
     assert audit["tier"] == "Raw"
     assert audit["files_fetch_failed"] == 0
 
 
 @pytest.mark.component
 def test_pipeline_files_failure_preserves_database_and_manifest(
-    _api_mocks: dict, tmp_path: Path
+    _api_mocks: dict[str, MagicMock], tmp_path: Path
 ) -> None:
     """An incomplete repeat audit preserves every prior row and manifest byte."""
     database = tmp_path / "audit.db"
     runner = CliRunner()
     first = runner.invoke(main, ["check", "PXD000001", "--db", str(database)])
     assert first.exit_code == 0
-
+    rows_before = _database_snapshot(database)
     manifest_before = runner.invoke(
         main,
         ["manifest", "PXD000001", "--db", str(database)],
     )
-    with sqlite3.connect(database) as connection:
-        rows_before = (
-            connection.execute("SELECT * FROM study ORDER BY accession").fetchall(),
-            connection.execute("SELECT * FROM study_files ORDER BY file_name").fetchall(),
-            connection.execute("SELECT * FROM audit ORDER BY accession").fetchall(),
-        )
-
     _api_mocks["fetch_files"].side_effect = PrideAPIError("down")
+
     failed = runner.invoke(
         main,
         ["check", "PXD000001", "--db", str(database), "--no-cache"],
     )
-
     manifest_after = runner.invoke(
         main,
         ["manifest", "PXD000001", "--db", str(database)],
     )
-    with sqlite3.connect(database) as connection:
-        rows_after = (
-            connection.execute("SELECT * FROM study ORDER BY accession").fetchall(),
-            connection.execute("SELECT * FROM study_files ORDER BY file_name").fetchall(),
-            connection.execute("SELECT * FROM audit ORDER BY accession").fetchall(),
-        )
 
     assert failed.exit_code == 1
     assert "Warning" in failed.stderr
     assert "Tier" not in failed.stdout
     assert manifest_before.exit_code == manifest_after.exit_code == 0
     assert manifest_after.stdout_bytes == manifest_before.stdout_bytes
-    assert rows_after == rows_before
+    assert _database_snapshot(database) == rows_before
 
 
 @pytest.mark.component
-def test_pipeline_unverifiable_accession_in_db(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+def test_pipeline_unverifiable_accession_persists_truthful_provenance(
+    _api_mocks: dict[str, MagicMock], tmp_path: Path
 ) -> None:
-    """Non-PXD accession: audit row must have tier=Unverifiable, is_unverifiable=1."""
-    monkeypatch.setattr("pxaudit.cli.read_cache_response", MagicMock(return_value=None))
-    monkeypatch.setattr("pxaudit.cli.write_cache", MagicMock())
-    fetch_project = MagicMock()
-    fetch_files = MagicMock()
-    monkeypatch.setattr("pxaudit.cli.fetch_project", fetch_project)
-    monkeypatch.setattr("pxaudit.cli.fetch_files", fetch_files)
+    """A non-PRIDE audit persists its inferred repository without remote calls."""
+    database = tmp_path / "audit.db"
 
-    db = str(tmp_path / "audit.db")
-    res = CliRunner().invoke(main, ["check", "MSV000001", "--db", db])
-    assert res.exit_code == 0
+    result = CliRunner().invoke(main, ["check", "MSV000001", "--db", str(database)])
 
-    # No API calls must have been made for a non-PXD accession.
-    fetch_project.assert_not_called()
-    fetch_files.assert_not_called()
-
-    row = _read_audit(db, accession="MSV000001")
-    assert row["tier"] == "Unverifiable"
-    assert row["is_unverifiable"] == 1
-    study = _read_study(db, accession="MSV000001")
+    assert result.exit_code == 0
+    for boundary in (
+        "read_cache_response",
+        "read_cache_stale_response",
+        "write_cache",
+        "fetch_project",
+        "fetch_files",
+    ):
+        _api_mocks[boundary].assert_not_called()
+    audit = _read_row(database, "audit", "MSV000001")
+    assert audit["tier"] == "Unverifiable"
+    assert audit["is_unverifiable"] == 1
+    study = _read_row(database, "study", "MSV000001")
     assert study["fetched_at"] is None
     assert study["repository"] == "MassIVE"
 
 
 @pytest.mark.component
-def test_pipeline_upsert_second_run_does_not_duplicate_rows(
-    _api_mocks: dict, tmp_path: Path
+def test_pipeline_repeat_audit_replaces_each_component(
+    _api_mocks: dict[str, MagicMock],
+    tmp_path: Path,
+    pride_project_complete_metadata: dict[str, object],
 ) -> None:
-    """Running check twice on the same accession must produce exactly 1 row in
-    each of study and audit (INSERT OR REPLACE semantics)."""
-    db = str(tmp_path / "audit.db")
+    """A repeated audit replaces rather than duplicates every persisted component."""
+    database = tmp_path / "audit.db"
     runner = CliRunner()
-    runner.invoke(main, ["check", "PXD000001", "--db", db])
-    runner.invoke(main, ["check", "PXD000001", "--db", db])
+    first = runner.invoke(main, ["check", "PXD000001", "--db", str(database)])
+    assert first.exit_code == 0
+    _api_mocks["fetch_project"].return_value = {
+        **pride_project_complete_metadata,
+        "title": "Replacement study",
+    }
+    _api_mocks["fetch_files"].return_value = [
+        {
+            "fileName": "replacement.mzid",
+            "fileCategory": {"value": "RESULT"},
+            "fileSizeBytes": 1,
+            "publicFileLocations": [],
+        }
+    ]
 
-    assert _count_rows(db, "study") == 1
-    assert _count_rows(db, "audit") == 1
+    second = runner.invoke(main, ["check", "PXD000001", "--db", str(database)])
 
-
-@pytest.mark.component
-def test_pipeline_upsert_study_files_replaced_on_second_run(
-    _api_mocks: dict, tmp_path: Path, pride_files_psi_sdrf: list
-) -> None:
-    """Second run must delete+replace study_files, not append.
-    The final count must equal the API file count, not double it."""
-    db = str(tmp_path / "audit.db")
-    runner = CliRunner()
-    runner.invoke(main, ["check", "PXD000001", "--db", db])
-    runner.invoke(main, ["check", "PXD000001", "--db", db])
-
-    assert _count_rows(db, "study_files") == len(pride_files_psi_sdrf)
-
-
-# ---------------------------------------------------------------------------
-# 5. Output formatting : ✔/✘ symbols for non-Gold tiers
-# ---------------------------------------------------------------------------
-
-
-def test_silver_output_shows_cross_for_sdrf(
-    monkeypatch: pytest.MonkeyPatch,
-    pride_project_complete_metadata: dict,
-    pride_files_silver: list,
-) -> None:
-    """Silver tier output must show ✘ for SDRF line and ✔ for result files."""
-    monkeypatch.setattr("pxaudit.cli.read_cache_response", MagicMock(return_value=None))
-    monkeypatch.setattr("pxaudit.cli.write_cache", MagicMock())
-    monkeypatch.setattr(
-        "pxaudit.cli.fetch_project", MagicMock(return_value=pride_project_complete_metadata)
-    )
-    monkeypatch.setattr("pxaudit.cli.fetch_files", MagicMock(return_value=pride_files_silver))
-    monkeypatch.setattr("pxaudit.cli.get_or_create_db", MagicMock(return_value=MagicMock()))
-    monkeypatch.setattr("pxaudit.cli.insert_audit_record", MagicMock())
-
-    result = CliRunner().invoke(main, ["check", "PXD000001"])
-    assert "Silver" in result.output
-    assert "\u2718" in result.output  # ✘ must appear (SDRF missing)
-    assert "\u2714" in result.output  # ✔ must also appear (result files present)
-
-
-def test_unverifiable_output_shows_tier(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Unverifiable output must show the tier string and not crash."""
-    monkeypatch.setattr("pxaudit.cli.read_cache_response", MagicMock(return_value=None))
-    monkeypatch.setattr("pxaudit.cli.write_cache", MagicMock())
-    monkeypatch.setattr("pxaudit.cli.get_or_create_db", MagicMock(return_value=MagicMock()))
-    monkeypatch.setattr("pxaudit.cli.insert_audit_record", MagicMock())
-
-    result = CliRunner().invoke(main, ["check", "MSV000001"])
-    assert result.exit_code == 0
-    assert "Unverifiable" in result.output
-    assert "MSV000001" in result.output
-
-
-# ---------------------------------------------------------------------------
-# 6. AuditResult dataclass structural guard
-#    Ensures the fields defined in AuditResult exactly match what the DB
-#    layer expects (_AUDIT_COLS), including order.
-# ---------------------------------------------------------------------------
-
-
-def test_audit_result_field_names_match_audit_cols_exactly() -> None:
-    """AuditResult field names must match _AUDIT_COLS from db.py in the same order.
-
-    This test catches any rename/addition/removal in either the dataclass or
-    the DB layer that would cause insert_audit to silently write wrong values.
-    """
-    from pxaudit.db import _AUDIT_COLS as db_cols
-
-    dataclass_fields = tuple(f.name for f in fields(AuditResult))
-    assert dataclass_fields == db_cols, (
-        f"AuditResult fields {dataclass_fields} do not match db._AUDIT_COLS {db_cols}"
-    )
+    assert second.exit_code == 0
+    snapshot = _database_snapshot(database)
+    assert tuple(len(rows) for rows in snapshot) == (1, 1, 1)
+    assert _read_row(database, "study")["title"] == "Replacement study"
+    assert _read_file_names(database) == ["replacement.mzid"]

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import importlib.metadata
 import json
+import math
 import sqlite3
 import stat
 import sys
@@ -529,7 +530,11 @@ def _read_accessions(input_path: str) -> list[tuple[int, str]]:
     Blank lines and lines whose trimmed form begins with ``#`` are skipped. Validation and
     deduplication remain with the bulk command so errors can report source line numbers.
     """
-    lines = sys.stdin.readlines() if input_path == "-" else Path(input_path).read_text().split("\n")
+    lines = (
+        sys.stdin.readlines()
+        if input_path == "-"
+        else Path(input_path).read_text(encoding="utf-8").split("\n")
+    )
 
     accessions: list[tuple[int, str]] = []
     for line_number, line in enumerate(lines, start=1):
@@ -764,8 +769,8 @@ def bulk_audit(
     """Audit multiple Proteomics Exchange accessions."""
     cfg = _resolve_effective(ctx, db_path=db_path, bulk_delay=delay, export_format=fmt)
     _emit_config_warnings(cfg)
-    if delay is not None and delay < 0:
-        _output.error("Error: --delay must be non-negative.")
+    if delay is not None and (not math.isfinite(delay) or delay < 0):
+        _output.error("Error: --delay must be finite and non-negative.")
         sys.exit(2)
     resolved_db = cfg.db_path
     bulk_delay = cfg.bulk_delay
@@ -812,7 +817,14 @@ def bulk_audit(
     if resolved_fmt:
         resolved_fmt = resolved_fmt.casefold()
         export_path = export_path or _default_export_path(resolved_fmt)
-        if Path(export_path).exists() and not overwrite:
+        export_target = Path(export_path)
+        if export_target.is_symlink():
+            _output.error(f"Error: output path {export_path!r} is a symbolic link.")
+            sys.exit(2)
+        if export_target.exists() and not export_target.is_file():
+            _output.error(f"Error: output path {export_path!r} is not a file.")
+            sys.exit(2)
+        if export_target.exists() and not overwrite:
             _output.error(
                 f"Error: output file {export_path!r} already exists. Use --overwrite to overwrite."
             )
@@ -1044,6 +1056,9 @@ def report(
         _output.error(f"Error: output path {output_dir!r} is not a directory.")
         sys.exit(2)
     report_target = out / "report.html"
+    if report_target.is_symlink():
+        _output.error(f"Error: report target {str(report_target)!r} is a symbolic link.")
+        sys.exit(2)
     if report_target.exists() and not report_target.is_file():
         _output.error(f"Error: report target {str(report_target)!r} is not a file.")
         sys.exit(2)

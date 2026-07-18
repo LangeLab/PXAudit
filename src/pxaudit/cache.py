@@ -1,8 +1,9 @@
 """Own, validate, and persist local PRIDE API cache entries.
 
-PXAudit writes versioned JSON files under ``cache_dir``. Cache keys are constrained to
-portable filename components, and maintenance commands recognize only version-2 envelopes
-that explicitly identify PXAudit, the accession, and the endpoint.
+PXAudit writes versioned JSON files under ``cache_dir``. Accession components contain one to
+64 ASCII letters, digits, dots, underscores, or hyphens, with alphanumeric endpoints and no
+consecutive dots. Maintenance commands recognize only version-2 envelopes that use an integer
+version field and explicitly identify PXAudit, the accession, and the endpoint.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ _DEFAULT_TTL: float = 7 * 24 * 60 * 60
 _CACHE_VERSION: int = 2
 _CACHE_OWNER = "pxaudit"
 _CACHE_ENDPOINTS = frozenset({"project", "files"})
+_MAX_CACHE_COMPONENT_LENGTH = 64
 _CACHE_COMPONENT_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?\Z")
 
 
@@ -101,7 +103,11 @@ def _validate_cache_key(accession: str, endpoint: str) -> None:
     """Reject cache-key components that are unsafe or ambiguous as filenames."""
     if endpoint not in _CACHE_ENDPOINTS:
         raise CacheKeyError(f"unsupported cache endpoint: {endpoint!r}")
-    if not _CACHE_COMPONENT_RE.fullmatch(accession) or ".." in accession:
+    if (
+        len(accession) > _MAX_CACHE_COMPONENT_LENGTH
+        or not _CACHE_COMPONENT_RE.fullmatch(accession)
+        or ".." in accession
+    ):
         raise CacheKeyError(f"unsafe cache accession: {accession!r}")
 
 
@@ -169,6 +175,8 @@ def _unwrap_cache(raw: typing.Any, accession: str, endpoint: str) -> dict | list
     if isinstance(raw, dict) and "cache_version" in raw:
         version = raw.get("cache_version")
         data = raw.get("data")
+        if type(version) is not int:
+            return None
         if version == _CACHE_VERSION:
             identity_matches = (
                 raw.get("cache_owner") == _CACHE_OWNER
@@ -201,7 +209,11 @@ def _normalized_timestamp(value: typing.Any) -> str | None:
 
 def _cache_provenance(raw: typing.Any, modified_at: float) -> tuple[str, str | None]:
     """Extract embedded provenance or use file time for compatible older entries."""
-    if isinstance(raw, dict):
+    if (
+        isinstance(raw, dict)
+        and type(raw.get("cache_version")) is int
+        and raw.get("cache_version") == _CACHE_VERSION
+    ):
         retrieved_at = _normalized_timestamp(raw.get("retrieved_at"))
         snapshot_id = raw.get("snapshot_id")
         if retrieved_at is not None and isinstance(snapshot_id, str) and snapshot_id.strip():
@@ -229,7 +241,9 @@ def _read_json_file(
         with os.fdopen(descriptor, encoding="utf-8") as handle:
             descriptor = None
             return json.load(handle), file_stat
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+    except FileNotFoundError:
+        return None
+    except (OSError, RecursionError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         if log_failures:
             _log.warning("Ignoring unreadable cache entry %s: %s", path.name, type(exc).__name__)
         return None
@@ -285,7 +299,7 @@ def read_cache_response(
     Parameters
     ----------
     accession:
-        Accession component of the cache identity.
+        Portable accession component of at most 64 characters.
     endpoint:
         Either ``"project"`` for a mapping or ``"files"`` for a list.
     cache_dir:
@@ -322,7 +336,7 @@ def read_cache(
     Parameters
     ----------
     accession:
-        Accession component of the cache identity.
+        Portable accession component of at most 64 characters.
     endpoint:
         Either ``"project"`` for a mapping or ``"files"`` for a list.
     cache_dir:
@@ -360,7 +374,7 @@ def read_cache_stale_response(
     Parameters
     ----------
     accession:
-        Accession component of the cache identity.
+        Portable accession component of at most 64 characters.
     endpoint:
         Either ``"project"`` for a mapping or ``"files"`` for a list.
     cache_dir:
@@ -390,7 +404,7 @@ def read_cache_stale(
     Parameters
     ----------
     accession:
-        Accession component of the cache identity.
+        Portable accession component of at most 64 characters.
     endpoint:
         Either ``"project"`` for a mapping or ``"files"`` for a list.
     cache_dir:
@@ -446,7 +460,8 @@ def _owned_cache_entry(path: Path) -> CacheEntry | None:
         return None
     data = raw.get("data")
     if not (
-        raw.get("cache_version") == _CACHE_VERSION
+        type(raw.get("cache_version")) is int
+        and raw.get("cache_version") == _CACHE_VERSION
         and raw.get("cache_owner") == _CACHE_OWNER
         and raw.get("accession") == accession
         and raw.get("endpoint") == endpoint
@@ -570,7 +585,7 @@ def write_cache(
     Parameters
     ----------
     accession:
-        Accession component of the cache identity.
+        Portable accession component of at most 64 characters.
     endpoint:
         Either ``"project"`` for a mapping or ``"files"`` for a list.
     data:

@@ -229,8 +229,8 @@ def insert_study(conn: sqlite3.Connection, data: dict) -> None:
     try:
         conn.execute(_INSERT_STUDY, row)
         conn.execute("COMMIT")
-    except Exception:
-        conn.execute("ROLLBACK")
+    except BaseException:
+        conn.rollback()
         raise
 
 
@@ -238,24 +238,28 @@ def insert_study_files(conn: sqlite3.Connection, accession: str, files_df: pd.Da
     """Replace all file rows for *accession* with a single DELETE + ``executemany`` INSERT.
 
     The replacement is atomic: both operations share one explicit transaction.
-    *files_df* must contain exactly the columns in ``_STUDY_FILES_COLS``
-    (extra columns are ignored).  ``file_extension`` must already be derived
+    *files_df* must contain the columns in ``_STUDY_FILES_COLS``; extra columns
+    are ignored.  ``file_extension`` must already be derived
     by the caller; this function does not compute it.
 
     Any pandas NA / float NaN in the DataFrame is written as SQL NULL.
+
+    Raises
+    ------
+    KeyError
+        If a required file column is absent.
+    ValueError
+        If any file row belongs to a different accession.
     """
-    df_sub = files_df[list(_STUDY_FILES_COLS)]
-    # Convert to object dtype so numpy can hold Python None instead of float NaN,
-    # which sqlite3 would interpret as REAL rather than NULL.
-    rows = df_sub.astype(object).where(df_sub.notna(), other=None).values.tolist()
+    rows = _study_file_rows(accession, files_df)
 
     conn.execute("BEGIN")
     try:
         conn.execute("DELETE FROM study_files WHERE accession = ?", (accession,))
         conn.executemany(_INSERT_STUDY_FILES, rows)
         conn.execute("COMMIT")
-    except Exception:
-        conn.execute("ROLLBACK")
+    except BaseException:
+        conn.rollback()
         raise
 
 
@@ -269,8 +273,8 @@ def insert_audit(conn: sqlite3.Connection, data: dict) -> None:
     try:
         conn.execute(_INSERT_AUDIT, row)
         conn.execute("COMMIT")
-    except Exception:
-        conn.execute("ROLLBACK")
+    except BaseException:
+        conn.rollback()
         raise
 
 
@@ -298,15 +302,28 @@ def insert_audit_record(
         DataFrame with columns matching ``_STUDY_FILES_COLS``.
     audit_data:
         Audit row dict matching ``_AUDIT_COLS``.
+
+    Raises
+    ------
+    KeyError
+        If a required file column is absent.
+    ValueError
+        If the study, file, and audit accessions do not all match ``accession``.
+    sqlite3.Error
+        If persistence fails; the transaction is rolled back before the error escapes.
     """
+    if study.get("accession") != accession or audit_data.get("accession") != accession:
+        raise ValueError("study, files, and audit accessions must match")
+    rows = _study_file_rows(accession, files_df)
+
     conn.execute("BEGIN")
     try:
         _insert_study_row(conn, study)
-        _insert_study_files_rows(conn, accession, files_df)
+        _insert_study_files_rows(conn, accession, rows)
         _insert_audit_row(conn, audit_data)
         conn.execute("COMMIT")
-    except Exception:
-        conn.execute("ROLLBACK")
+    except BaseException:
+        conn.rollback()
         raise
 
 
@@ -316,12 +333,18 @@ def _insert_study_row(conn: sqlite3.Connection, data: dict) -> None:
     conn.execute(_INSERT_STUDY, row)
 
 
+def _study_file_rows(accession: str, files_df: pd.DataFrame) -> list[list[object]]:
+    """Return SQLite-compatible rows whose accessions match the replacement target."""
+    df_sub = files_df[list(_STUDY_FILES_COLS)]
+    if not df_sub["accession"].eq(accession).all():
+        raise ValueError("study file accessions must match the replacement accession")
+    return df_sub.astype(object).where(df_sub.notna(), other=None).values.tolist()
+
+
 def _insert_study_files_rows(
-    conn: sqlite3.Connection, accession: str, files_df: pd.DataFrame
+    conn: sqlite3.Connection, accession: str, rows: list[list[object]]
 ) -> None:
     """Replace all file rows for *accession* without managing a transaction."""
-    df_sub = files_df[list(_STUDY_FILES_COLS)]
-    rows = df_sub.astype(object).where(df_sub.notna(), other=None).values.tolist()
     conn.execute("DELETE FROM study_files WHERE accession = ?", (accession,))
     conn.executemany(_INSERT_STUDY_FILES, rows)
 

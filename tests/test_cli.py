@@ -31,10 +31,6 @@ from pxaudit.cli import (
 from pxaudit.pride_client import PrideAPIError
 from pxaudit.tier_engine import AuditResult
 
-# ---------------------------------------------------------------------------
-# Synthetic PRIDE API payloads
-# ---------------------------------------------------------------------------
-
 _GOLD_PROJECT: dict = {
     "title": "TMT spikes study",
     "submissionDate": "2020-01-15",
@@ -43,7 +39,6 @@ _GOLD_PROJECT: dict = {
     "instruments": [{"@type": "CvParam", "name": "Orbitrap Fusion"}],
 }
 
-# Diamond fixture: every flag True : used for "no ✘" output tests.
 _DIAMOND_PROJECT: dict = {
     "title": "Diamond study",
     "submissionDate": "2021-06-01",
@@ -125,11 +120,6 @@ def _cached(
     return CachedResponse(data, retrieved_at, snapshot_id, age)
 
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-
 @pytest.fixture()
 def mocks(monkeypatch: pytest.MonkeyPatch) -> dict:
     """Patch external I/O for CLI orchestration tests.
@@ -152,12 +142,10 @@ def mocks(monkeypatch: pytest.MonkeyPatch) -> dict:
     return m
 
 
-# ---------------------------------------------------------------------------
-# 1. Accession validation  (branch A)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("bad", ["", "PXD12345", "PXDABCDEF", "MSV/000001"])
+@pytest.mark.parametrize(
+    "bad",
+    ["", "PXD12345", "PXDABCDEF", "MSV/000001", "PXD" + "0" * 62],
+)
 def test_check_invalid_accession_exits_two(bad: str, mocks: dict) -> None:
     """Malformed or unsafe accessions exit 2 before any I/O."""
     runner = CliRunner()
@@ -167,24 +155,15 @@ def test_check_invalid_accession_exits_two(bad: str, mocks: dict) -> None:
     mocks["fetch_files"].assert_not_called()
 
 
-# ---------------------------------------------------------------------------
-# 2. Happy-path Gold run  (branches A-False, B-True, C-True, D-True, E-normal,
-#    F-True, G-normal, H-False)
-# ---------------------------------------------------------------------------
+def test_check_cache_miss_emits_complete_summary_and_persists(mocks: dict) -> None:
+    """A successful cache miss reports the audit and persists both responses."""
+    result = CliRunner().invoke(main, ["check", "PXD000001"])
 
-
-def test_check_valid_pxd_exits_zero(mocks: dict) -> None:
-    """Valid PXD, full cache miss, all API success → exit 0."""
-    runner = CliRunner()
-    result = runner.invoke(main, ["check", "PXD000001"])
     assert result.exit_code == 0
-
-
-def test_check_valid_pxd_stdout_contains_accession_and_tier(mocks: dict) -> None:
-    runner = CliRunner()
-    result = runner.invoke(main, ["check", "PXD000001"])
-    assert "PXD000001" in result.output
-    assert "Gold" in result.output
+    for expected in ("PXD000001", "Gold", "Quant Tier", "Partial", "\u2714"):
+        assert expected in result.output
+    assert mocks["write_cache"].call_count == 2
+    mocks["insert_audit_record"].assert_called_once()
 
 
 def test_check_mixed_case_uses_canonical_identity_at_every_boundary(mocks: dict) -> None:
@@ -203,23 +182,8 @@ def test_check_mixed_case_uses_canonical_identity_at_every_boundary(mocks: dict)
     assert mocks["insert_audit_record"].call_args.args[2] == "PXD000001"
 
 
-def test_check_gold_stdout_contains_checkmarks(mocks: dict) -> None:
-    """Gold tier: at least one ✔ must appear in the output.
-
-    Gold requires SDRF + PSI results but is missing open spectra and organism
-    part, so the output will contain both ✔ and ✘ symbols.  The assertion
-    deliberately only checks that ✔ appears; for the "no ✘" invariant see
-    test_check_diamond_stdout_no_crossmarks.
-    """
-    runner = CliRunner()
-    result = runner.invoke(main, ["check", "PXD000001"])
-    assert "\u2714" in result.output
-
-
 def test_check_diamond_stdout_no_crossmarks(mocks: dict, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Diamond tier with all flags True : output must contain only ✔, no ✘."""
-    from unittest.mock import MagicMock
-
+    """A Diamond audit prints check symbols without cross symbols."""
     monkeypatch.setattr("pxaudit.cli.fetch_project", MagicMock(return_value=_DIAMOND_PROJECT))
     monkeypatch.setattr("pxaudit.cli.fetch_files", MagicMock(return_value=_DIAMOND_FILES))
     runner = CliRunner()
@@ -230,54 +194,17 @@ def test_check_diamond_stdout_no_crossmarks(mocks: dict, monkeypatch: pytest.Mon
     assert "\u2718" not in result.output
 
 
-def test_check_stdout_shows_quant_tier(mocks: dict) -> None:
-    """Quant Tier line must appear in stdout for a Gold (Partial quant) run."""
-    runner = CliRunner()
-    result = runner.invoke(main, ["check", "PXD000001"])
-    assert "Quant Tier" in result.output
-    assert "Partial" in result.output
-
-
-def test_check_write_cache_called_on_miss(mocks: dict) -> None:
-    """write_cache must be called twice (project + files) on a full cache miss."""
-    runner = CliRunner()
-    runner.invoke(main, ["check", "PXD000001"])
-    assert mocks["write_cache"].call_count == 2
-
-
-def test_check_insert_functions_all_called(mocks: dict) -> None:
-    runner = CliRunner()
-    runner.invoke(main, ["check", "PXD000001"])
-    mocks["insert_audit_record"].assert_called_once()
-
-
-# ---------------------------------------------------------------------------
-# 3. Project API failure  (branch E-exception)
-# ---------------------------------------------------------------------------
-
-
-def test_check_project_api_failure_exits_one(mocks: dict, monkeypatch: pytest.MonkeyPatch) -> None:
-    """PrideAPIError from fetch_project must produce exit code 1."""
+def test_check_project_api_failure_is_clean_error(
+    mocks: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A project endpoint failure exits one with a concise error."""
     monkeypatch.setattr(
         "pxaudit.cli.fetch_project", MagicMock(side_effect=PrideAPIError("server error"))
     )
-    runner = CliRunner()
-    result = runner.invoke(main, ["check", "PXD000001"])
+    result = CliRunner().invoke(main, ["check", "PXD000001"])
+
     assert result.exit_code == 1
-
-
-def test_check_project_api_failure_message_on_stderr(
-    mocks: dict, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr("pxaudit.cli.fetch_project", MagicMock(side_effect=PrideAPIError("boom")))
-    runner = CliRunner()
-    result = runner.invoke(main, ["check", "PXD000001"])
-    assert "Error" in result.output
-
-
-# ---------------------------------------------------------------------------
-# 4. Files API failure  (branch G-exception, H-True)
-# ---------------------------------------------------------------------------
+    assert "Error" in result.stderr
 
 
 def test_check_files_api_failure_is_incomplete_without_computing_or_persisting(
@@ -293,48 +220,20 @@ def test_check_files_api_failure_is_incomplete_without_computing_or_persisting(
     result = CliRunner().invoke(main, ["check", "PXD000001"])
 
     assert result.exit_code == 1
+    assert "Warning" in result.stderr
     assert "audit is incomplete" in result.stderr
+    assert "no database records were created or replaced" in result.stderr
     assert "Tier" not in result.stdout
     compute.assert_not_called()
+    assert mocks["write_cache"].call_count == 1
     mocks["get_or_create_db"].assert_not_called()
     mocks["insert_audit_record"].assert_not_called()
-
-
-def test_check_files_api_failure_prints_warning(
-    mocks: dict, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """An incomplete files response reports that no database records changed."""
-    monkeypatch.setattr(
-        "pxaudit.cli.fetch_files", MagicMock(side_effect=PrideAPIError("files down"))
-    )
-    runner = CliRunner()
-    result = runner.invoke(main, ["check", "PXD000001"])
-    assert result.exit_code == 1
-    assert "Warning" in result.stderr
-    assert "no database records were created or replaced" in result.stderr
-
-
-def test_check_files_api_failure_does_not_write_files_cache(
-    mocks: dict, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """write_cache must be called only once (project) when files endpoint fails."""
-    monkeypatch.setattr(
-        "pxaudit.cli.fetch_files", MagicMock(side_effect=PrideAPIError("files down"))
-    )
-    runner = CliRunner()
-    runner.invoke(main, ["check", "PXD000001"])
-    assert mocks["write_cache"].call_count == 1
-
-
-# ---------------------------------------------------------------------------
-# 5. Cache hit paths  (branches D-False, F-False)
-# ---------------------------------------------------------------------------
 
 
 def test_check_project_cache_hit_skips_fetch_project(
     mocks: dict, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """If project is cached, fetch_project must not be called.  (branch D-False)."""
+    """A cached project response avoids the project API fetch."""
     monkeypatch.setattr(
         "pxaudit.cli.read_cache_response",
         MagicMock(
@@ -349,7 +248,7 @@ def test_check_project_cache_hit_skips_fetch_project(
 def test_check_files_cache_hit_skips_fetch_files(
     mocks: dict, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """If files are cached, fetch_files must not be called.  (branch F-False)."""
+    """A cached file response avoids the files API fetch."""
     monkeypatch.setattr(
         "pxaudit.cli.read_cache_response",
         MagicMock(
@@ -362,7 +261,7 @@ def test_check_files_cache_hit_skips_fetch_files(
 
 
 def test_check_both_cached_no_api_calls(mocks: dict, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Full cache hit → neither fetch_project nor fetch_files called."""
+    """A full cache hit avoids both API fetch functions."""
     monkeypatch.setattr(
         "pxaudit.cli.read_cache_response",
         MagicMock(
@@ -407,8 +306,6 @@ def test_full_cache_hit_persists_retrieval_time_with_real_cache_and_database(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A real cache-to-SQLite workflow preserves project retrieval provenance."""
-    import sqlite3
-
     cache_dir = tmp_path / "cache"
     database = tmp_path / "audit.db"
     config = tmp_path / "missing.toml"
@@ -526,23 +423,12 @@ def test_check_missing_snapshot_provenance_warns(
     assert "different or unverified snapshots" in result.stderr
 
 
-# ---------------------------------------------------------------------------
-# --no-cache flag
-# ---------------------------------------------------------------------------
+def test_check_no_cache_bypasses_all_cache_io(mocks: dict) -> None:
+    """Disabled cache mode fetches live responses without cache I/O."""
+    result = CliRunner().invoke(main, ["check", "PXD000001", "--no-cache"])
 
-
-def test_check_no_cache_skips_read_cache(mocks: dict) -> None:
-    """Disabled cache mode skips both fresh and stale cache reads."""
-    runner = CliRunner()
-    runner.invoke(main, ["check", "PXD000001", "--no-cache"])
+    assert result.exit_code == 0
     mocks["read_cache_response"].assert_not_called()
-    mocks["read_cache_stale_response"].assert_not_called()
-
-
-def test_check_no_cache_does_not_write_cache(mocks: dict) -> None:
-    """Disabled cache mode fetches live responses without writing them."""
-    runner = CliRunner()
-    runner.invoke(main, ["check", "PXD000001", "--no-cache"])
     mocks["fetch_project"].assert_called_once()
     mocks["fetch_files"].assert_called_once()
     mocks["read_cache_stale_response"].assert_not_called()
@@ -567,22 +453,12 @@ def test_check_no_cache_failure_never_uses_cache(
     mocks["write_cache"].assert_not_called()
 
 
-# ---------------------------------------------------------------------------
-# --refresh flag
-# ---------------------------------------------------------------------------
-
-
-def test_check_refresh_skips_read_cache(mocks: dict) -> None:
-    """Refresh mode skips fresh cache reads."""
-    runner = CliRunner()
-    runner.invoke(main, ["check", "PXD000001", "--refresh"])
-    mocks["read_cache_response"].assert_not_called()
-
-
-def test_check_refresh_still_fetches_and_writes(mocks: dict) -> None:
+def test_check_refresh_skips_reads_then_fetches_and_writes(mocks: dict) -> None:
     """Refresh skips fresh reads but fetches live responses and writes successes."""
-    runner = CliRunner()
-    runner.invoke(main, ["check", "PXD000001", "--refresh"])
+    result = CliRunner().invoke(main, ["check", "PXD000001", "--refresh"])
+
+    assert result.exit_code == 0
+    mocks["read_cache_response"].assert_not_called()
     mocks["fetch_project"].assert_called_once()
     mocks["fetch_files"].assert_called_once()
     assert mocks["write_cache"].call_count == 2
@@ -669,11 +545,6 @@ def test_check_refresh_files_failure_without_stale_does_not_cache_failure(
     assert mocks["write_cache"].call_args.args[1] == "project"
 
 
-# ---------------------------------------------------------------------------
-# 8. --db flag
-# ---------------------------------------------------------------------------
-
-
 def test_check_db_path_forwarded_to_get_or_create_db(mocks: dict, tmp_path: Path) -> None:
     """--db value must be passed verbatim to get_or_create_db."""
     db_path = str(tmp_path / "audit.db")
@@ -689,11 +560,6 @@ def test_check_conn_closed_after_inserts(mocks: dict) -> None:
     mocks["get_or_create_db"].return_value.close.assert_called_once()
 
 
-# ---------------------------------------------------------------------------
-# 9. Non-PXD prefix  (branch B-False)
-# ---------------------------------------------------------------------------
-
-
 def test_check_non_pxd_exits_zero(mocks: dict) -> None:
     """Non-PXD accessions are Unverifiable : exit 0."""
     runner = CliRunner()
@@ -703,7 +569,7 @@ def test_check_non_pxd_exits_zero(mocks: dict) -> None:
 
 
 def test_check_non_pxd_makes_no_api_calls(mocks: dict) -> None:
-    """Non-PXD accessions must not trigger cache reads or any API calls.  (branch B-False)."""
+    """A non-PXD accession avoids cache reads and API calls."""
     runner = CliRunner()
     runner.invoke(main, ["check", "MSV000001"])
     mocks["read_cache_response"].assert_not_called()
@@ -711,13 +577,8 @@ def test_check_non_pxd_makes_no_api_calls(mocks: dict) -> None:
     mocks["fetch_files"].assert_not_called()
 
 
-# ---------------------------------------------------------------------------
-# 10. _extract_study unit tests  (branches I, J, K, L)
-# ---------------------------------------------------------------------------
-
-
 def test_extract_study_all_fields_populated() -> None:
-    """Full project dict : every field must be correctly extracted.  (I/J/K/L True)."""
+    """A complete project payload populates every study field."""
     project = {
         "title": "Test study",
         "submissionDate": "2019-06-01",
@@ -739,63 +600,34 @@ def test_extract_study_all_fields_populated() -> None:
     assert row["fetched_at"] == "2026-01-01T00:00:00+00:00"
 
 
-def test_extract_study_empty_organisms_gives_none() -> None:
-    """No organisms → organism and organism_id must be None.  (branch I-False)."""
-    row = _extract_study("PXD000001", {"organisms": []}, "ts")
+def test_extract_study_empty_optional_collections_give_none() -> None:
+    """Empty optional PRIDE collections map to nullable database fields."""
+    row = _extract_study("PXD000001", {"organisms": [], "instruments": [], "keywords": []}, "ts")
     assert row["organism"] is None
     assert row["organism_id"] is None
-
-
-def test_extract_study_empty_instruments_gives_none() -> None:
-    """No instruments → instrument must be None.  (branch J-False)."""
-    row = _extract_study("PXD000001", {"instruments": []}, "ts")
     assert row["instrument"] is None
-
-
-def test_extract_study_empty_keywords_gives_none() -> None:
-    """Empty keywords list → keywords column must be None.  (branch K-False)."""
-    row = _extract_study("PXD000001", {"keywords": []}, "ts")
     assert row["keywords"] is None
 
 
-def test_extract_study_missing_date_gives_none_year() -> None:
-    """No submissionDate → submission_year must be None.  (branch L-False)."""
-    row = _extract_study("PXD000001", {}, "ts")
-    assert row["submission_year"] is None
-
-
-def test_extract_study_malformed_date_gives_none_year() -> None:
-    """Malformed submissionDate must not crash; submission_year is None."""
-    row = _extract_study("PXD000001", {"submissionDate": "not-a-date"}, "ts")
-    assert row["submission_year"] is None
-
-
-def test_extract_study_short_date_gives_none_year() -> None:
-    """Date string shorter than 4 chars → submission_year is None."""
-    row = _extract_study("PXD000001", {"submissionDate": "20"}, "ts")
-    assert row["submission_year"] is None
-
-
-def test_extract_study_non_digit_prefix_gives_none_year() -> None:
-    """Date starting with non-digits → submission_year is None."""
-    row = _extract_study("PXD000001", {"submissionDate": "abcd-ef-gh"}, "ts")
-    assert row["submission_year"] is None
+@pytest.mark.parametrize("submission_date", [None, "not-a-date", "20", "abcd-ef-gh"])
+def test_extract_study_invalid_or_missing_date_gives_none_year(
+    submission_date: str | None,
+) -> None:
+    """Missing and malformed submission dates remain safely nullable."""
+    project = {} if submission_date is None else {"submissionDate": submission_date}
+    assert _extract_study("PXD000001", project, "ts")["submission_year"] is None
 
 
 def test_extract_study_multi_keyword_joined() -> None:
-    """Multiple keywords → joined with ', '."""
+    """Multiple keywords are joined with a comma and space."""
     row = _extract_study("PXD000001", {"keywords": ["a", "b", "c"]}, "ts")
     assert row["keywords"] == "a, b, c"
-
-
-def test_extract_study_records_pride_repository() -> None:
-    row = _extract_study("PXD999", {}, "ts")
-    assert row["repository"] == "PRIDE"
 
 
 @pytest.mark.parametrize(
     ("accession", "repository"),
     [
+        ("PXD999", "PRIDE"),
         ("MSV000001", "MassIVE"),
         ("JPST000001", "jPOST"),
         ("IPX000001", "iProX"),
@@ -810,24 +642,19 @@ def test_extract_study_records_truthful_non_pride_repository(
 
 
 def test_extract_study_submission_type_extracted() -> None:
-    """submissionType present in project → stored in submission_type field."""
+    """A submission type is retained in the extracted study row."""
     row = _extract_study("PXD000001", {"submissionType": "PARTIAL"}, "ts")
     assert row["submission_type"] == "PARTIAL"
 
 
 def test_extract_study_missing_submission_type_gives_none() -> None:
-    """No submissionType key → submission_type is None (not KeyError)."""
+    """A missing submission type produces a nullable field."""
     row = _extract_study("PXD000001", {}, "ts")
     assert row["submission_type"] is None
 
 
-# ---------------------------------------------------------------------------
-# 11. _extract_files_df unit tests  (branches M, N)
-# ---------------------------------------------------------------------------
-
-
 def test_extract_files_df_empty_gives_empty_dataframe() -> None:
-    """Empty files list → DataFrame with correct columns, zero rows.  (branch M-True)."""
+    """An empty file list produces a zero-row frame with the export schema."""
     df = _extract_files_df("PXD000001", [])
     assert len(df) == 0
     assert list(df.columns) == [
@@ -842,15 +669,11 @@ def test_extract_files_df_empty_gives_empty_dataframe() -> None:
     ]
 
 
-def test_extract_files_df_shape() -> None:
-    """Non-empty files list → one row per file.  (branch M-False)."""
+def test_extract_files_df_maps_complete_payload() -> None:
+    """A populated response preserves its shape, identity, and FTP location."""
     df = _extract_files_df("PXD000001", _GOLD_FILES)
     assert len(df) == len(_GOLD_FILES)
-
-
-def test_extract_files_df_columns_present() -> None:
-    df = _extract_files_df("PXD000001", _GOLD_FILES)
-    expected = {
+    assert set(df.columns) == {
         "accession",
         "file_name",
         "file_category",
@@ -860,17 +683,34 @@ def test_extract_files_df_columns_present() -> None:
         "checksum",
         "checksum_type",
     }
-    assert set(df.columns) == expected
-
-
-def test_extract_files_df_ftp_location_extracted() -> None:
-    """FTP Protocol entry in publicFileLocations must populate ftp_location.  (branch N-found)."""
-    df = _extract_files_df("PXD000001", _GOLD_FILES)
+    assert (df["accession"] == "PXD000001").all()
     assert df.loc[0, "ftp_location"] == "ftp://ftp.ebi.ac.uk/results.mzid"
 
 
+@pytest.mark.parametrize(
+    ("payload", "checksum", "checksum_type"),
+    [
+        ({"fileChecksum": "a" * 32}, "a" * 32, "MD5"),
+        ({"checksum": "b" * 40}, "b" * 40, "SHA-1"),
+        ({"checksum": "c" * 64}, "c" * 64, "SHA-256"),
+        ({"checksum": "not-a-declared-hash"}, "not-a-declared-hash", None),
+        ({"checksum": 1234}, None, None),
+        ({}, None, None),
+    ],
+)
+def test_extract_files_df_normalizes_checksum_metadata(
+    payload: dict, checksum: str | None, checksum_type: str | None
+) -> None:
+    """Checksum variants receive values and algorithm labels only when defensible."""
+    df = _extract_files_df("PXD000001", [{"fileName": "result.mzid", **payload}])
+    stored_checksum = df.loc[0, "checksum"]
+    stored_type = df.loc[0, "checksum_type"]
+    assert stored_checksum == checksum or (checksum is None and pd.isna(stored_checksum))
+    assert stored_type == checksum_type or (checksum_type is None and pd.isna(stored_type))
+
+
 def test_extract_files_df_no_ftp_gives_none() -> None:
-    """No FTP Protocol in publicFileLocations → ftp_location is None.  (branch N-not-found)."""
+    """A file without an FTP location produces a nullable location field."""
     file_no_ftp = {
         "fileName": "raw.raw",
         "fileCategory": {"value": "RAW"},
@@ -884,7 +724,7 @@ def test_extract_files_df_no_ftp_gives_none() -> None:
 
 
 def test_extract_files_df_extension_derived_from_filename() -> None:
-    """file_extension must be the suffix of fileName."""
+    """The extracted extension preserves the filename suffix."""
     file = {
         "fileName": "results.mzTab",
         "fileCategory": {"value": "RESULT"},
@@ -896,21 +736,11 @@ def test_extract_files_df_extension_derived_from_filename() -> None:
 
 
 def test_extract_files_df_missing_filename_gives_empty_name() -> None:
-    """File with no fileName key → file_name is empty string, extension is None."""
+    """A missing filename produces an empty name and nullable extension."""
     file = {"fileCategory": {"value": "RAW"}, "fileSizeBytes": 0, "publicFileLocations": []}
     df = _extract_files_df("PXD000001", [file])
     assert df.loc[0, "file_name"] == ""
     assert df.loc[0, "file_extension"] is None
-
-
-def test_extract_files_df_accession_column_correct() -> None:
-    df = _extract_files_df("PXD999999", _GOLD_FILES)
-    assert (df["accession"] == "PXD999999").all()
-
-
-# ---------------------------------------------------------------------------
-# 12. KeyboardInterrupt handling  (branch #13)
-# ---------------------------------------------------------------------------
 
 
 def test_check_keyboard_interrupt_during_fetch_exits_130(
@@ -954,40 +784,33 @@ def test_check_database_failure_is_clean_runtime_error(mocks: dict) -> None:
     assert isinstance(result.exception, SystemExit)
 
 
-# ---------------------------------------------------------------------------
-# 13. bulk-audit helpers : unit tests
-# ---------------------------------------------------------------------------
-
-
-def test_default_export_path_tsv() -> None:
-    """Default export path has expected format for TSV."""
-    path = _default_export_path("tsv")
+@pytest.mark.parametrize("format_name", ["tsv", "json"])
+def test_default_export_path_uses_requested_extension(format_name: str) -> None:
+    """Default export names contain the date and requested extension."""
+    path = _default_export_path(format_name)
     assert path.startswith("pxaudit_bulk_")
-    assert path.endswith(".tsv")
-    assert len(path) == len("pxaudit_bulk_20260525.tsv")
-
-
-def test_default_export_path_json() -> None:
-    path = _default_export_path("json")
-    assert path.endswith(".json")
+    assert path.endswith(f".{format_name}")
+    assert len(path) == len(f"pxaudit_bulk_20260525.{format_name}")
 
 
 def test_read_accessions_file(tmp_path: Path) -> None:
     """Read accessions from a file, skipping blanks and comments."""
     f = tmp_path / "accessions.txt"
-    f.write_text("PXD000001\n\n# comment\nPXD000002\n  PXD000003  \n")
+    f.write_text("PXD000001\n\n# comment\nPXD000002\n  PXD000003  \n", encoding="utf-8")
     result = _read_accessions(str(f))
     assert result == [(1, "PXD000001"), (4, "PXD000002"), (5, "PXD000003")]
 
 
 def test_read_accessions_all_blank(tmp_path: Path) -> None:
+    """Blank and comment-only files produce no accession records."""
     f = tmp_path / "empty.txt"
-    f.write_text("# only comment\n\n  \n")
+    f.write_text("# only comment\n\n  \n", encoding="utf-8")
     result = _read_accessions(str(f))
     assert result == []
 
 
 def test_read_accessions_file_not_found(tmp_path: Path) -> None:
+    """A missing input file remains distinguishable from empty input."""
     with pytest.raises(FileNotFoundError):
         _read_accessions(str(tmp_path / "nope.txt"))
 
@@ -1001,6 +824,7 @@ def test_read_accessions_stdin_preserves_source_line_numbers(
 
 
 def test_result_to_row_keys_match_export_cols() -> None:
+    """Export rows preserve the public column order and primary fields."""
     from pxaudit.cli import _EXPORT_COLS
 
     result = AuditResult(accession="PXD000001", tier="Diamond")
@@ -1011,6 +835,7 @@ def test_result_to_row_keys_match_export_cols() -> None:
 
 
 def test_export_tsv(tmp_path: Path) -> None:
+    """TSV export writes its header and every result."""
     results = [
         AuditResult(accession="PXD000001", tier="Gold", quant_tier="Partial"),
         AuditResult(accession="PXD000002", tier="Diamond", quant_tier="Quant-Complete"),
@@ -1023,19 +848,21 @@ def test_export_tsv(tmp_path: Path) -> None:
     assert "Gold" in content
     assert "Diamond" in content
     lines = content.splitlines()
-    assert lines[0].startswith("accession")  # header
+    assert lines[0].startswith("accession")
 
 
 def test_export_csv(tmp_path: Path) -> None:
+    """CSV export uses comma-delimited rows."""
     results = [AuditResult(accession="PXD000001", tier="Raw")]
     path = str(tmp_path / "out.csv")
     _export_csv(results, path)
     content = Path(path).read_text()
     assert "PXD000001" in content
-    assert "," in content  # CSV delimiter
+    assert "," in content
 
 
 def test_export_json(tmp_path: Path) -> None:
+    """JSON export emits structured result objects."""
     results = [AuditResult(accession="PXD000001", tier="Diamond")]
     path = str(tmp_path / "out.json")
     _export_json(results, path)
@@ -1082,7 +909,7 @@ def bulk_mocks(monkeypatch: pytest.MonkeyPatch) -> dict:
 
 
 def test_bulk_audit_happy_path_tsv(bulk_mocks: dict, tmp_path: Path) -> None:
-    """Two accessions, export TSV → exit 0, file written."""
+    """A two-accession TSV audit succeeds and writes both rows."""
     acc_file = tmp_path / "ids.txt"
     acc_file.write_text("PXD000001\nPXD000002\n")
     out_path = tmp_path / "out.tsv"
@@ -1100,7 +927,7 @@ def test_bulk_audit_happy_path_tsv(bulk_mocks: dict, tmp_path: Path) -> None:
 
 
 def test_bulk_audit_happy_path_json(bulk_mocks: dict, tmp_path: Path) -> None:
-    """Export JSON format works."""
+    """A JSON bulk export contains the canonical accession and computed tier."""
     acc_file = tmp_path / "ids.txt"
     acc_file.write_text("pxd000001\n")
     out_path = tmp_path / "out.json"
@@ -1117,7 +944,7 @@ def test_bulk_audit_happy_path_json(bulk_mocks: dict, tmp_path: Path) -> None:
 
 
 def test_bulk_audit_happy_path_csv(bulk_mocks: dict, tmp_path: Path) -> None:
-    """Export CSV format works."""
+    """A CSV bulk export contains the audited accession in delimited output."""
     acc_file = tmp_path / "ids.txt"
     acc_file.write_text("PXD000001\n")
     out_path = tmp_path / "out.csv"
@@ -1133,7 +960,7 @@ def test_bulk_audit_happy_path_csv(bulk_mocks: dict, tmp_path: Path) -> None:
 
 
 def test_bulk_audit_default_export_path(bulk_mocks: dict, tmp_path: Path) -> None:
-    """No --output given → default filename generated."""
+    """A missing output option selects the generated default filename."""
     acc_file = tmp_path / "ids.txt"
     acc_file.write_text("PXD000001\n")
     runner = CliRunner()
@@ -1199,7 +1026,6 @@ def test_bulk_audit_stop_on_error_with_partial_results(bulk_mocks: dict, tmp_pat
     """Without --continue-on-error, failure after some successes exits 1 and shows partial count."""
     acc_file = tmp_path / "ids.txt"
     acc_file.write_text("PXD000001\nUNKNOWN_ACC\nPXD000002\n")
-    # Swap order: PXD000001 first (succeeds), then UNKNOWN_ACC fails
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -1362,7 +1188,7 @@ def test_bulk_audit_stdin_input(bulk_mocks: dict, tmp_path: Path) -> None:
 
 
 def test_bulk_audit_empty_input(bulk_mocks: dict, tmp_path: Path) -> None:
-    """Empty input file → exit 0 with warning."""
+    """An empty input file exits successfully with a warning."""
     acc_file = tmp_path / "empty.txt"
     acc_file.write_text("# nothing\n")
     runner = CliRunner()
@@ -1374,15 +1200,17 @@ def test_bulk_audit_empty_input(bulk_mocks: dict, tmp_path: Path) -> None:
     assert "no accessions" in result.output
 
 
-def test_bulk_audit_missing_input_file() -> None:
-    """Non-existent input file → exit 2."""
+def test_bulk_audit_missing_input_file(tmp_path: Path) -> None:
+    """A missing input file exits with an input error."""
+    missing = tmp_path / "missing.txt"
     runner = CliRunner()
     result = runner.invoke(
         main,
-        ["bulk-audit", "--input", "/nonexistent/file.txt"],
+        ["bulk-audit", "--input", str(missing)],
     )
     assert result.exit_code == 2
     assert "not found" in result.output
+    assert not missing.exists()
 
 
 def test_bulk_audit_invalid_utf8_input_exits_two(tmp_path: Path) -> None:
@@ -1542,7 +1370,7 @@ def test_bulk_audit_mixed_pride_and_non_pride(bulk_mocks: dict, tmp_path: Path) 
 
 
 def test_bulk_audit_overwrite_guard(bulk_mocks: dict, tmp_path: Path) -> None:
-    """Existing output file without --overwrite → exit 2."""
+    """An existing output file is refused without the overwrite option."""
     acc_file = tmp_path / "ids.txt"
     acc_file.write_text("PXD000001\n")
     out_path = tmp_path / "out.tsv"
@@ -1580,6 +1408,68 @@ def test_bulk_audit_overwrite_allowed(bulk_mocks: dict, tmp_path: Path) -> None:
     assert out_path.read_text().startswith("accession")
 
 
+def test_bulk_audit_overwrite_refuses_directory_output(bulk_mocks: dict, tmp_path: Path) -> None:
+    """Overwrite cannot replace a directory with an export file."""
+    accessions = tmp_path / "ids.txt"
+    accessions.write_text("PXD000001\n", encoding="utf-8")
+    output = tmp_path / "out.tsv"
+    output.mkdir()
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "bulk-audit",
+            "--input",
+            str(accessions),
+            "--format",
+            "tsv",
+            "--output",
+            str(output),
+            "--overwrite",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "not a file" in result.stderr
+    assert list(output.iterdir()) == []
+    bulk_mocks["_audit_single"].assert_not_called()
+
+
+def test_bulk_audit_overwrite_refuses_symlink_output(
+    bulk_mocks: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Overwrite refuses a target identified as a symbolic link."""
+    accessions = tmp_path / "ids.txt"
+    accessions.write_text("PXD000001\n", encoding="utf-8")
+    output = tmp_path / "out.tsv"
+    output.write_text("keep\n", encoding="utf-8")
+    original_is_symlink = Path.is_symlink
+    monkeypatch.setattr(
+        Path,
+        "is_symlink",
+        lambda path: path == output or original_is_symlink(path),
+    )
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "bulk-audit",
+            "--input",
+            str(accessions),
+            "--format",
+            "tsv",
+            "--output",
+            str(output),
+            "--overwrite",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "symbolic link" in result.stderr
+    assert output.read_text(encoding="utf-8") == "keep\n"
+    bulk_mocks["_audit_single"].assert_not_called()
+
+
 def test_bulk_audit_tier_distribution_in_summary(bulk_mocks: dict, tmp_path: Path) -> None:
     """Summary includes tier distribution."""
     acc_file = tmp_path / "ids.txt"
@@ -1610,11 +1500,6 @@ def test_bulk_audit_keyboard_interrupt(bulk_mocks: dict, tmp_path: Path) -> None
     )
     assert result.exit_code == 130
     assert "Interrupted" in result.output
-
-
-# ---------------------------------------------------------------------------
-# 15. manifest command tests
-# ---------------------------------------------------------------------------
 
 
 def test_manifest_no_files_errors(tmp_path: Path) -> None:
@@ -1695,79 +1580,6 @@ def test_manifest_database_open_error_exits_one(
 
     assert result.exit_code == 1
     assert "cannot read database" in result.stderr
-
-
-def test_manifest_tsv_output(tmp_path: Path) -> None:
-    """manifest --format tsv prints tab-separated file listing."""
-    from pxaudit.db import get_or_create_db, insert_study, insert_study_files
-
-    db_path = tmp_path / "test.db"
-    conn = get_or_create_db(db_path)
-    try:
-        insert_study(conn, {"accession": "PXD000001", "fetched_at": "now"})
-        df = pd.DataFrame(
-            [
-                {
-                    "accession": "PXD000001",
-                    "file_name": "test.raw",
-                    "file_category": "RAW",
-                    "file_extension": ".raw",
-                    "ftp_location": "ftp://example/test.raw",
-                    "file_size": 1024,
-                    "checksum": "abc123",
-                    "checksum_type": "MD5",
-                }
-            ]
-        )
-        insert_study_files(conn, "PXD000001", df)
-    finally:
-        conn.close()
-
-    runner = CliRunner()
-    result = runner.invoke(
-        main,
-        ["manifest", "pxd000001", "--db", str(db_path), "--format", "tsv"],
-    )
-    assert result.exit_code == 0
-    assert "test.raw" in result.output
-    assert ".raw" in result.output
-    assert "abc123" in result.output
-
-
-def test_manifest_json_output(tmp_path: Path) -> None:
-    """manifest --format json prints JSON file listing."""
-    from pxaudit.db import get_or_create_db, insert_study, insert_study_files
-
-    db_path = tmp_path / "test.db"
-    conn = get_or_create_db(db_path)
-    try:
-        insert_study(conn, {"accession": "PXD000001", "fetched_at": "now"})
-        df = pd.DataFrame(
-            [
-                {
-                    "accession": "PXD000001",
-                    "file_name": "test.raw",
-                    "file_category": "RAW",
-                    "file_extension": ".raw",
-                    "ftp_location": "ftp://example/test.raw",
-                    "file_size": 1024,
-                    "checksum": None,
-                    "checksum_type": None,
-                }
-            ]
-        )
-        insert_study_files(conn, "PXD000001", df)
-    finally:
-        conn.close()
-
-    runner = CliRunner()
-    result = runner.invoke(
-        main,
-        ["manifest", "PXD000001", "--db", str(db_path), "--format", "json"],
-    )
-    assert result.exit_code == 0
-    assert "test.raw" in result.output
-    assert "file_name" in result.output
 
 
 def test_manifest_invalid_text_bytes_are_clean_runtime_error(tmp_path: Path) -> None:
@@ -1879,26 +1691,6 @@ def test_manifest_body_golden_in_every_output_mode(
     assert "\x1b[" not in result.stdout
 
 
-# ---------------------------------------------------------------------------
-# 16. Stale cache fallback tests
-# ---------------------------------------------------------------------------
-
-
-def test_check_stale_cache_fallback_on_project_failure(
-    mocks: dict, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """When project fetch fails, stale cached project data must be served with warning."""
-    monkeypatch.setattr("pxaudit.cli.fetch_project", MagicMock(side_effect=PrideAPIError("down")))
-    monkeypatch.setattr(
-        "pxaudit.cli.read_cache_stale_response",
-        MagicMock(return_value=_cached({"title": "stale"}, age=9999.0)),
-    )
-    runner = CliRunner()
-    result = runner.invoke(main, ["check", "PXD000001"])
-    assert result.exit_code == 0
-    assert "stale cached project data" in result.output
-
-
 def test_check_stale_cache_fallback_on_files_failure(
     mocks: dict, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1912,62 +1704,6 @@ def test_check_stale_cache_fallback_on_files_failure(
     result = runner.invoke(main, ["check", "PXD000001"])
     assert result.exit_code == 0
     assert "stale cached file list" in result.output
-
-
-def test_check_stale_cache_fallback_project_fails_no_cache(
-    mocks: dict, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """When project fetch fails and no stale cache, must exit 1."""
-    monkeypatch.setattr("pxaudit.cli.fetch_project", MagicMock(side_effect=PrideAPIError("down")))
-    monkeypatch.setattr(
-        "pxaudit.cli.read_cache_stale_response",
-        MagicMock(return_value=None),
-    )
-    runner = CliRunner()
-    result = runner.invoke(main, ["check", "PXD000001"])
-    assert result.exit_code == 1
-
-
-def test_bulk_audit_stale_cache_fallback_on_project_failure(
-    bulk_mocks: dict, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """bulk-audit with stale fallback must continue with warning."""
-    acc_file = tmp_path / "ids.txt"
-    acc_file.write_text("PXD000001\nPXD000002\n")
-    # Fake audit that fails for PXD000001 but has stale cache.
-    from pxaudit.cli import AuditData
-    from pxaudit.tier_engine import AuditResult
-
-    call_count = [0]
-
-    def fake_audit(acc: str, db: str, **kw: object) -> AuditData:
-        call_count[0] += 1
-        if acc == "PXD000001":
-            raise PrideAPIError("down")
-        return AuditData(
-            AuditResult(accession=acc, tier="Diamond"),
-            {},
-            MagicMock(),
-            [],
-            "ts",
-            [],
-            [],
-            True,
-        )
-
-    monkeypatch.setattr("pxaudit.cli._audit_single", MagicMock(side_effect=fake_audit))
-    runner = CliRunner()
-    result = runner.invoke(
-        main,
-        ["bulk-audit", "--input", str(acc_file), "--continue-on-error"],
-    )
-    assert result.exit_code == 0
-    assert "Failed    : 1" in result.output
-
-
-# ---------------------------------------------------------------------------
-# Group flags, quiet/verbose matrix, cache commands, delay skip
-# ---------------------------------------------------------------------------
 
 
 def test_quiet_and_verbose_mutually_exclusive(mocks: dict) -> None:
@@ -2150,49 +1886,20 @@ def test_bulk_quiet_disables_tqdm(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
     assert called == []
 
 
-def test_cache_info_empty(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """cache info on empty/missing dir exits 0 with zeros."""
+@pytest.mark.parametrize("existing", [False, True], ids=["missing", "existing"])
+def test_cache_info_empty(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, existing: bool) -> None:
+    """Cache information reports stable zero values for empty and missing roots."""
     monkeypatch.setenv("PXAUDIT_CONFIG", str(tmp_path / "none.toml"))
     cache = tmp_path / "cache"
+    if existing:
+        cache.mkdir()
     runner = CliRunner()
     result = runner.invoke(main, ["--cache-dir", str(cache), "cache", "info"])
     assert result.exit_code == 0
     assert f"cache_dir={cache}" in result.output
     assert "files=0" in result.output
     assert "bytes=0" in result.output
-
-
-def test_cache_info_with_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """cache info reports owned count, ignored count, bytes, and modification times."""
-    monkeypatch.setenv("PXAUDIT_CONFIG", str(tmp_path / "none.toml"))
-    cache = tmp_path / "cache"
-    cache.mkdir()
-    write_cache("PXD000001", "project", {"title": "one"}, cache_dir=cache)
-    write_cache("PXD000001", "files", [], cache_dir=cache)
-    (cache / "notes.txt").write_text("keep")
-    runner = CliRunner()
-    result = runner.invoke(main, ["--cache-dir", str(cache), "cache", "info"])
-    assert result.exit_code == 0
-    assert "files=2" in result.output
-    assert "ignored=1" in result.output
-    assert "bytes=" in result.output
-    assert "oldest=" in result.output
-    assert "newest=" in result.output
-    assert "n/a" not in result.output
-
-
-def test_cache_clear_yes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """cache clear --yes deletes a validated entry after printing its root."""
-    monkeypatch.setenv("PXAUDIT_CONFIG", str(tmp_path / "none.toml"))
-    cache = tmp_path / "cache"
-    cache.mkdir()
-    write_cache("PXD000001", "project", {}, cache_dir=cache)
-    runner = CliRunner()
-    result = runner.invoke(main, ["--cache-dir", str(cache), "cache", "clear", "--yes"])
-    assert result.exit_code == 0
-    assert f"cache_dir={cache}" in result.output
-    assert not (cache / "PXD000001_project.json").exists()
-    assert "Removed 1" in result.output
+    assert "oldest=n/a" in result.output
 
 
 def test_cache_clear_decline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2238,114 +1945,6 @@ def test_db_flag_overrides_config(
     assert mocks["get_or_create_db"].call_args.args[0] == str(tmp_path / "flag.db")
 
 
-def test_manifest_unaffected_by_quiet(tmp_path: Path) -> None:
-    """manifest under -q still emits pure TSV body."""
-    from pxaudit.db import get_or_create_db, insert_audit_record
-    from pxaudit.tier_engine import compute_audit
-
-    db = tmp_path / "m.db"
-    conn = get_or_create_db(str(db))
-    try:
-        project = {
-            "title": "t",
-            "organisms": [{"name": "Homo sapiens", "accession": "NEWT:9606"}],
-            "instruments": [{"name": "Orbitrap"}],
-            "submissionDate": "2020-01-01",
-        }
-        files = [
-            {
-                "fileName": "a.mzid",
-                "fileCategory": {"value": "RESULT"},
-                "fileSizeBytes": 1,
-                "publicFileLocations": [],
-            }
-        ]
-        result = compute_audit("PXD000009", project, files, files_fetch_failed=False)
-        study = {
-            "accession": "PXD000009",
-            "title": "t",
-            "organism": "Homo sapiens",
-            "organism_id": "NEWT:9606",
-            "instrument": "Orbitrap",
-            "submission_year": 2020,
-            "submission_type": None,
-            "keywords": None,
-            "repository": "PRIDE",
-            "fetched_at": "ts",
-        }
-        import pandas as pd
-
-        files_df = pd.DataFrame(
-            [
-                {
-                    "accession": "PXD000009",
-                    "file_name": "a.mzid",
-                    "file_category": "RESULT",
-                    "file_extension": ".mzid",
-                    "ftp_location": None,
-                    "file_size": 1,
-                    "checksum": None,
-                    "checksum_type": None,
-                }
-            ]
-        )
-        insert_audit_record(conn, study, "PXD000009", files_df, result.__dict__)
-    finally:
-        conn.close()
-
-    runner = CliRunner()
-    out = runner.invoke(main, ["-q", "manifest", "PXD000009", "--db", str(db)])
-    assert out.exit_code == 0
-    assert "file_name" in out.output
-    assert "a.mzid" in out.output
-    assert "Metadata" not in out.output
-
-
-def test_cache_info_empty_existing_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Existing empty cache dir reports zeros and n/a mtimes."""
-    monkeypatch.setenv("PXAUDIT_CONFIG", str(tmp_path / "none.toml"))
-    cache = tmp_path / "cache"
-    cache.mkdir()
-    runner = CliRunner()
-    result = runner.invoke(main, ["--cache-dir", str(cache), "cache", "info"])
-    assert result.exit_code == 0
-    assert "files=0" in result.output
-    assert "oldest=n/a" in result.output
-
-
-def test_cache_stats_stat_oserror(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """_cache_stats reports invalid files as ignored and returns no timestamps."""
-    from pxaudit.cli import _cache_stats
-
-    cache = tmp_path / "cache"
-    cache.mkdir()
-    bad = cache / "PXD000001_project.json"
-    bad.write_text("x")
-
-    count, ignored, total, oldest, newest = _cache_stats(cache)
-    assert count == 0
-    assert ignored == 1
-    assert total == 0
-    assert oldest is None
-    assert newest is None
-
-
-def test_cache_stats_all_stat_fail(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """_cache_stats aggregates one validated entry."""
-    from pxaudit.cli import _cache_stats
-
-    cache = tmp_path / "cache"
-    cache.mkdir()
-    write_cache("PXD000001", "project", {}, cache_dir=cache)
-
-    count, ignored, total, oldest, newest = _cache_stats(cache)
-    assert count == 1
-    assert ignored == 0
-    assert total > 0
-    assert oldest is not None
-    assert newest is not None
-
-
 def test_bulk_quiet_with_export_skips_exported_line(bulk_mocks: dict, tmp_path: Path) -> None:
     """Quiet bulk with export: no 'Exported N results' line."""
     acc = tmp_path / "ids.txt"
@@ -2360,20 +1959,6 @@ def test_bulk_quiet_with_export_skips_exported_line(bulk_mocks: dict, tmp_path: 
     assert "Exported" not in result.output
     assert "export=" in result.output
     assert out.exists()
-
-
-def test_cache_clear_skips_directories(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """cache clear only unlinks files, not subdirectories."""
-    monkeypatch.setenv("PXAUDIT_CONFIG", str(tmp_path / "none.toml"))
-    cache = tmp_path / "cache"
-    cache.mkdir()
-    write_cache("PXD000001", "project", {}, cache_dir=cache)
-    (cache / "subdir").mkdir()
-    runner = CliRunner()
-    result = runner.invoke(main, ["--cache-dir", str(cache), "cache", "clear", "--yes"])
-    assert result.exit_code == 0
-    assert not (cache / "PXD000001_project.json").exists()
-    assert (cache / "subdir").is_dir()
 
 
 def test_config_warning_emitted_on_check(
@@ -2487,8 +2072,40 @@ def test_report_existing_output_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert report.read_text(encoding="utf-8") == "keep"
 
 
+def test_report_overwrite_refuses_symlink_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Report overwrite refuses a target identified as a symbolic link."""
+    from pxaudit.db import get_or_create_db
+
+    database = tmp_path / "audit.db"
+    get_or_create_db(database).close()
+    output = tmp_path / "report"
+    output.mkdir()
+    report_target = output / "report.html"
+    report_target.write_text("keep", encoding="utf-8")
+    original_is_symlink = Path.is_symlink
+    monkeypatch.setattr(
+        Path,
+        "is_symlink",
+        lambda path: path == report_target or original_is_symlink(path),
+    )
+    generate = MagicMock()
+    monkeypatch.setattr("pxaudit.report.generate_report", generate)
+
+    result = CliRunner().invoke(
+        main,
+        ["report", "--db", str(database), "--output", str(output), "--overwrite"],
+    )
+
+    assert result.exit_code == 2
+    assert "symbolic link" in result.stderr
+    assert report_target.read_text(encoding="utf-8") == "keep"
+    generate.assert_not_called()
+
+
 def test_report_success_and_verbose(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """report success path and verbose detail."""
+    """A verbose report run emits its destination and generation details."""
     monkeypatch.setenv("PXAUDIT_CONFIG", str(tmp_path / "none.toml"))
     db = tmp_path / "x.db"
     from pxaudit.db import get_or_create_db
@@ -2562,12 +2179,13 @@ def test_report_plain_text_golden_in_every_output_mode(
         (ImportError("no jinja"), 1),
         (FileNotFoundError("gone"), 1),
         (PermissionError("denied"), 1),
+        (sqlite3.DatabaseError("corrupt"), 1),
     ],
 )
 def test_report_error_paths(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exc: Exception, code: int
 ) -> None:
-    """report maps generate_report exceptions to exit codes."""
+    """Expected report-generation failures produce operational exit codes."""
     monkeypatch.setenv("PXAUDIT_CONFIG", str(tmp_path / "none.toml"))
     db = tmp_path / "x.db"
     db.write_text("")
@@ -2580,39 +2198,6 @@ def test_report_error_paths(
     runner = CliRunner()
     result = runner.invoke(main, ["report", "--db", str(db), "--output", str(out), "--overwrite"])
     assert result.exit_code == code
-
-
-def test_report_sqlite_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """sqlite3.DatabaseError maps to runtime exit 1."""
-    import sqlite3
-
-    monkeypatch.setenv("PXAUDIT_CONFIG", str(tmp_path / "none.toml"))
-    db = tmp_path / "x.db"
-    db.write_text("")
-    out = tmp_path / "outdir"
-
-    def boom(*a: object, **k: object) -> str:
-        raise sqlite3.DatabaseError("corrupt")
-
-    monkeypatch.setattr("pxaudit.report.generate_report", boom)
-    runner = CliRunner()
-    result = runner.invoke(main, ["report", "--db", str(db), "--output", str(out), "--overwrite"])
-    assert result.exit_code == 1
-
-
-def test_cache_stats_skips_directories(tmp_path: Path) -> None:
-    """Directories inside the cache are ignored by _cache_stats."""
-    from pxaudit.cli import _cache_stats
-
-    cache = tmp_path / "cache"
-    cache.mkdir()
-    (cache / "subdir").mkdir()
-    write_cache("PXD000001", "project", {}, cache_dir=cache)
-    count, ignored, total, oldest, newest = _cache_stats(cache)
-    assert count == 1
-    assert ignored == 1
-    assert total > 0
-    assert oldest is not None
 
 
 def test_check_trailing_quiet_flag_rejected(mocks: dict) -> None:
@@ -2652,15 +2237,22 @@ def test_bulk_delay_flag_overrides_config(monkeypatch: pytest.MonkeyPatch, tmp_p
     assert sleeps == [2.5]
 
 
-def test_bulk_negative_delay_exits_two(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """--delay must be non-negative."""
+@pytest.mark.parametrize("delay", ["-1", "nan", "inf", "-inf"])
+def test_bulk_invalid_delay_exits_two_before_audit(
+    bulk_mocks: dict,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    delay: str,
+) -> None:
+    """Negative and non-finite delays are rejected before any audit starts."""
     monkeypatch.setenv("PXAUDIT_CONFIG", str(tmp_path / "none.toml"))
     acc = tmp_path / "ids.txt"
     acc.write_text("PXD000001\n")
     runner = CliRunner()
-    result = runner.invoke(main, ["bulk-audit", "--input", str(acc), "--delay", "-1"])
+    result = runner.invoke(main, ["bulk-audit", "--input", str(acc), "--delay", delay])
     assert result.exit_code == 2
-    assert "non-negative" in result.output
+    assert "finite and non-negative" in result.output
+    bulk_mocks["_audit_single"].assert_not_called()
 
 
 def test_stale_fallback_sets_network_used_and_sleeps(
@@ -2811,70 +2403,6 @@ def test_config_export_format_triggers_bulk_export(
     assert (tmp_path / "from_config.tsv").exists()
 
 
-def test_manifest_unaffected_by_verbose(tmp_path: Path) -> None:
-    """manifest under -v still emits pure TSV body (no status chrome)."""
-    import pandas as pd
-
-    from pxaudit.db import get_or_create_db, insert_audit_record
-    from pxaudit.tier_engine import compute_audit
-
-    db = tmp_path / "m.db"
-    conn = get_or_create_db(str(db))
-    try:
-        project = {
-            "title": "t",
-            "organisms": [{"name": "Homo sapiens", "accession": "NEWT:9606"}],
-            "instruments": [{"name": "Orbitrap"}],
-            "submissionDate": "2020-01-01",
-        }
-        files = [
-            {
-                "fileName": "a.mzid",
-                "fileCategory": {"value": "RESULT"},
-                "fileSizeBytes": 1,
-                "publicFileLocations": [],
-            }
-        ]
-        result = compute_audit("PXD000009", project, files, files_fetch_failed=False)
-        study = {
-            "accession": "PXD000009",
-            "title": "t",
-            "organism": "Homo sapiens",
-            "organism_id": "NEWT:9606",
-            "instrument": "Orbitrap",
-            "submission_year": 2020,
-            "submission_type": None,
-            "keywords": None,
-            "repository": "PRIDE",
-            "fetched_at": "ts",
-        }
-        files_df = pd.DataFrame(
-            [
-                {
-                    "accession": "PXD000009",
-                    "file_name": "a.mzid",
-                    "file_category": "RESULT",
-                    "file_extension": ".mzid",
-                    "ftp_location": None,
-                    "file_size": 1,
-                    "checksum": None,
-                    "checksum_type": None,
-                }
-            ]
-        )
-        insert_audit_record(conn, study, "PXD000009", files_df, result.__dict__)
-    finally:
-        conn.close()
-
-    runner = CliRunner()
-    out = runner.invoke(main, ["-v", "manifest", "PXD000009", "--db", str(db)])
-    assert out.exit_code == 0
-    assert "file_name" in out.stdout
-    assert "a.mzid" in out.stdout
-    assert "Metadata" not in out.stdout
-    assert "cache" not in out.stdout.lower()
-
-
 def test_cache_mixed_directory_info_and_clear_share_owned_set(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2901,9 +2429,16 @@ def test_cache_mixed_directory_info_and_clear_share_owned_set(
     assert info.exit_code == 0
     assert "files=2" in info.output
     assert "ignored=5" in info.output
+    assert "bytes=" in info.output
+    assert "oldest=" in info.output
+    assert "newest=" in info.output
+    assert "n/a" not in info.output
     assert cleared.exit_code == 0
+    assert f"cache_dir={cache}" in cleared.output
     assert "Removed 2" in cleared.output
     assert "Ignored entries: 5" in cleared.output
+    assert not (cache / "PXD000001_project.json").exists()
+    assert not (cache / "PXD000001_files.json").exists()
     assert unrelated.read_text() == "keep"
     assert legacy.exists()
     assert corrupt.exists()

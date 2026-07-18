@@ -11,11 +11,13 @@ Type policy
 -----------
 If a known key has the wrong type, that key falls back to its built-in default
 and a warning is recorded. Other valid keys from the same file are kept.
-Corrupt TOML falls back to all defaults and records a warning with the file path.
+Unreadable text or corrupt TOML falls back to all defaults and records a warning with the
+file path.
 """
 
 from __future__ import annotations
 
+import math
 import os
 import tomllib
 import typing
@@ -58,7 +60,7 @@ _KEY_TYPES: dict[str, type | tuple[type, ...]] = {
     "db_path": str,
     "request_delay": (int, float),
     "bulk_delay": (int, float),
-    "export_format": (str, type(None)),
+    "export_format": str,
 }
 
 _EXPORT_FORMATS = frozenset({"tsv", "csv", "json"})
@@ -107,20 +109,24 @@ def default_config_path() -> Path:
 
 
 def _type_ok(key: str, value: object) -> bool:
+    """Return whether a known setting satisfies its type and domain constraints."""
     if key == "export_format":
-        if value is None:
-            return True
         return isinstance(value, str) and value.casefold() in _EXPORT_FORMATS
     if key in {"cache_ttl_seconds", "request_delay", "bulk_delay"}:
         # bool is a subclass of int; reject it explicitly.
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return False
-        return float(value) >= 0
+        try:
+            number = float(value)
+        except OverflowError:
+            return False
+        return math.isfinite(number) and number >= 0
     expected = _KEY_TYPES[key]
     return isinstance(value, expected)
 
 
 def _normalize(key: str, value: object) -> object:
+    """Convert a validated setting to its effective runtime representation."""
     if key in {"cache_ttl_seconds", "request_delay", "bulk_delay"}:
         return float(value)  # type: ignore[arg-type]
     if key == "export_format" and isinstance(value, str):
@@ -156,11 +162,12 @@ def load_file_config(
     try:
         raw_text = cfg_path.read_text(encoding="utf-8")
         data = tomllib.loads(raw_text)
-    except tomllib.TOMLDecodeError as exc:
-        warnings.append(f"Warning: could not parse config {cfg_path}: {exc}")
-        return {}, tuple(warnings)
-    except OSError as exc:
+    # UnicodeDecodeError is also a ValueError; classify decoding before parser limits.
+    except (OSError, UnicodeError) as exc:
         warnings.append(f"Warning: could not read config {cfg_path}: {exc}")
+        return {}, tuple(warnings)
+    except ValueError as exc:
+        warnings.append(f"Warning: could not parse config {cfg_path}: {exc}")
         return {}, tuple(warnings)
 
     if not isinstance(data, dict):
@@ -241,11 +248,10 @@ def merge_config(
         elif key == "cache_dir":
             values[key] = _normalize(key, flag_val)
         elif key in {"cache_ttl_seconds", "request_delay", "bulk_delay"}:
-            if isinstance(flag_val, bool) or float(flag_val) < 0:  # type: ignore[arg-type]
+            if not _type_ok(key, flag_val):
                 continue
-            values[key] = float(flag_val)  # type: ignore[arg-type]
+            values[key] = _normalize(key, flag_val)
         else:
-            # db_path (only remaining keyed override)
             values[key] = str(flag_val)
         sources[key] = "flag"
 
