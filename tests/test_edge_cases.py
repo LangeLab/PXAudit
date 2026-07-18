@@ -70,22 +70,22 @@ def _api_mocks(
 
 
 def test_whitespace_only_accession_raises_value_error() -> None:
-    """'   ' starts with a space, which is not alpha → ValueError."""
-    with pytest.raises(ValueError, match="Invalid accession"):
+    """Whitespace-only input has no accession after normalization."""
+    with pytest.raises(ValueError):
         compute_audit("   ", {}, [])
 
 
-def test_tab_prefix_accession_raises_value_error() -> None:
-    """'\\tPXD000001' starts with a tab, which is not alpha → ValueError."""
-    with pytest.raises(ValueError, match="Invalid accession"):
-        compute_audit("\tPXD000001", {}, [])
+def test_surrounding_whitespace_is_trimmed_before_audit() -> None:
+    """Surrounding whitespace does not change the canonical accession."""
+    result = compute_audit("\tPXD000001 ", {}, [])
+    assert result.accession == "PXD000001"
 
 
 def test_lowercase_pxd_routes_to_full_audit_not_unverifiable() -> None:
-    """'pxd000001' starts with 'p' (alpha, passes validation).
-    .upper().startswith('PXD') → True → full audit path, NOT Unverifiable."""
+    """Lowercase PXD input is canonicalized before the full audit path."""
     r = compute_audit("pxd000001", {}, [])
     assert r.is_unverifiable is False
+    assert r.accession == "PXD000001"
     assert r.tier == "None"  # empty project data → missing title/organism/instrument
 
 
@@ -111,7 +111,7 @@ def test_lowercase_pxd_cli_routes_correctly(
 
     result = CliRunner().invoke(main, ["check", "pxd000001"])
     assert result.exit_code == 0
-    fetch_project.assert_called_once()
+    fetch_project.assert_called_once_with("PXD000001", delay=0.5)
 
 
 # ---------------------------------------------------------------------------
@@ -282,6 +282,46 @@ def test_pipeline_gold_study_row_fields(_api_mocks: dict, tmp_path: Path) -> Non
     assert row["instrument"] == "Orbitrap Fusion"
     assert row["submission_year"] == 2020
     assert row["repository"] == "PRIDE"
+
+
+def test_pipeline_lowercase_accession_persists_one_canonical_identity(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    pride_project_complete_metadata: dict,
+    pride_files_psi_sdrf: list[dict],
+) -> None:
+    """Case variants share one API, cache, study, files, and audit identity."""
+    fetch_project = MagicMock(return_value=pride_project_complete_metadata)
+    fetch_files = MagicMock(return_value=pride_files_psi_sdrf)
+    monkeypatch.setattr("pxaudit.cli.fetch_project", fetch_project)
+    monkeypatch.setattr("pxaudit.cli.fetch_files", fetch_files)
+
+    database = str(tmp_path / "audit.db")
+    cache = tmp_path / "cache"
+    runner = CliRunner()
+
+    first = runner.invoke(
+        main,
+        ["--cache-dir", str(cache), "check", "pxd000001", "--db", database],
+    )
+    second = runner.invoke(
+        main,
+        ["--cache-dir", str(cache), "check", "PxD000001", "--db", database],
+    )
+
+    assert first.exit_code == second.exit_code == 0
+    fetch_project.assert_called_once_with("PXD000001", delay=0.5)
+    fetch_files.assert_called_once_with("PXD000001", delay=0.5)
+    assert sorted(path.name for path in cache.iterdir()) == [
+        "PXD000001_files.json",
+        "PXD000001_project.json",
+    ]
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT accession FROM study").fetchall() == [("PXD000001",)]
+        assert connection.execute("SELECT accession FROM audit").fetchall() == [("PXD000001",)]
+        assert connection.execute("SELECT DISTINCT accession FROM study_files").fetchall() == [
+            ("PXD000001",)
+        ]
 
 
 def test_pipeline_gold_study_files_row_count(

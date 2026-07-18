@@ -98,13 +98,13 @@ def _gold_files() -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# 1. Invalid accession → ValueError
+# 1. Invalid accession
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("bad_accession", ["", "12345", "000001"])
+@pytest.mark.parametrize("bad_accession", ["", "PXD12345", "PXDABCDEF", "MSV/000001"])
 def test_invalid_accession_raises_value_error(bad_accession: str) -> None:
-    with pytest.raises(ValueError, match="Invalid accession"):
+    with pytest.raises(ValueError):
         compute_audit(bad_accession, {}, [])
 
 
@@ -119,6 +119,13 @@ def test_non_pxd_returns_unverifiable(accession: str) -> None:
     assert result.tier == "Unverifiable"
     assert result.is_unverifiable is True
     assert result.accession == accession
+
+
+def test_safe_numeric_partner_identifier_is_unverifiable() -> None:
+    """The partner grammar permits safe identifiers that begin with a digit."""
+    result = compute_audit("12345", {}, [])
+    assert result.accession == "12345"
+    assert result.is_unverifiable is True
 
 
 def test_non_pxd_all_flags_false() -> None:

@@ -1,173 +1,285 @@
-"""PRIDE Archive REST API client.
-
-Endpoints used (PRIDE REST API v3):
-  GET /projects/{accession}          → dict
-  GET /projects/{accession}/files    → list[dict]
-
-Both functions return raw parsed JSON; no transformation is applied here.
-Transformation of CvParam objects, date strings, etc. is the caller's responsibility.
-"""
+"""Bounded client for the PRIDE Archive REST API v3."""
 
 from __future__ import annotations
 
+import hashlib
+import json
 import time
-import typing
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
+from typing import Any
 
 import requests
 
-from pxaudit import __version__
-
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
+from pxaudit import _PRIDE_PREFIX, __version__
+from pxaudit.accession import InvalidAccessionError, normalize_accession
 
 _BASE_URL = "https://www.ebi.ac.uk/pride/ws/archive/v3"
 _USER_AGENT = f"pxaudit/{__version__} (https://github.com/LangeLab/PXAudit)"
-_CONNECT_TIMEOUT = 30  # seconds
-_READ_TIMEOUT = 60  # seconds
-_MAX_RETRIES = 2  # total attempts = 1 + _MAX_RETRIES = 3
-_BACKOFF_BASE = 1.0  # seconds; doubles on each retry (1s, 2s)
-
-# ---------------------------------------------------------------------------
-# Public exceptions
-# ---------------------------------------------------------------------------
+_CONNECT_TIMEOUT = 30
+_READ_TIMEOUT = 60
+_MAX_RETRIES = 2
+_BACKOFF_BASE = 1.0
+_MAX_RETRY_DELAY = 60.0
+_PAGE_SIZE = 100
+_MAX_PAGES = 1000
+_RETRYABLE_STATUS_CODES = frozenset(range(500, 600))
 
 
 class PrideAPIError(Exception):
-    """Raised when the PRIDE API returns an unexpected or server-side error."""
+    """Raised when PRIDE transport or response validation fails."""
 
 
 class PrideNotFoundError(PrideAPIError):
-    """Raised when the requested accession is not found (HTTP 404)."""
+    """Raised when PRIDE returns HTTP 404 for an accession."""
 
 
 class PrideRateLimitError(PrideAPIError):
-    """Raised when the PRIDE API rate-limits the client (HTTP 429)."""
+    """Raised when HTTP 429 retries are exhausted."""
 
 
-# ---------------------------------------------------------------------------
-# Internal request helper
-# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class _JSONResponse:
+    """Decoded response data and optional PRIDE record-count metadata."""
+
+    data: Any
+    total_records: int | None
 
 
-def _request(
-    url: str,
-    *,
-    delay: float = 0.5,
-    session: requests.Session | None = None,
-) -> dict | list:
-    """Issue a GET request to *url* with retry/backoff logic.
+def _retry_after_seconds(value: str | None) -> float | None:
+    """Return a bounded delay from an HTTP ``Retry-After`` value."""
+    if value is None:
+        return None
+    stripped = value.strip()
+    try:
+        if stripped.isdecimal():
+            seconds = float(int(stripped))
+        else:
+            retry_at = parsedate_to_datetime(stripped)
+            if retry_at.tzinfo is None:
+                return None
+            seconds = max(0.0, (retry_at.astimezone(UTC) - datetime.now(UTC)).total_seconds())
+    except (OverflowError, TypeError, ValueError):
+        return None
+    return min(seconds, _MAX_RETRY_DELAY)
+
+
+def _total_records(
+    headers: requests.structures.CaseInsensitiveDict[str] | dict[str, str],
+) -> int | None:
+    """Validate PRIDE's optional ``total_records`` pagination header."""
+    value = headers.get("total_records")
+    if value is None:
+        return None
+    if not value.isascii() or not value.isdecimal():
+        raise PrideAPIError("PRIDE API returned invalid total_records metadata")
+    return int(value)
+
+
+def _request(url: str, *, delay: float, session: requests.Session) -> _JSONResponse:
+    """Issue one bounded GET operation with retries for transient failures.
+
+    HTTP 429, 5xx responses, timeouts, and connection failures are retryable. Other HTTP 4xx
+    responses and other request exceptions fail immediately. The caller owns ``session``.
 
     Parameters
     ----------
     url:
-        Full absolute URL to request.
+        Absolute PRIDE API URL.
     delay:
-        Seconds to sleep before the first attempt (API politeness delay).
-        Passed through from ``fetch_project`` / ``fetch_files``; set to ``0``
-        to disable (e.g. in integration tests).
+        Politeness delay before the first attempt, in seconds.
     session:
-        An existing ``requests.Session`` to reuse.  If ``None`` (default) a new
-        session is created for this request only.  Pass an explicit session from
-        a pagination loop (e.g. ``fetch_files``) to avoid creating a new TCP
-        connection pool on every page.
+        Open session owned by the public fetch operation.
 
     Returns
     -------
-    dict | list
-        Parsed JSON response body.
+    _JSONResponse
+        Decoded JSON and optional record-count metadata.
 
     Raises
     ------
     PrideNotFoundError
-        On HTTP 404. Never retried.
+        If PRIDE returns HTTP 404.
     PrideRateLimitError
-        On HTTP 429 once all retries with backoff are exhausted.
+        If HTTP 429 retries are exhausted.
     PrideAPIError
-        On 5xx status codes or repeated timeouts once all retries are exhausted.
+        If transport, status, decoding, or metadata validation fails.
     """
     time.sleep(delay)
-
-    if session is None:
-        session = requests.Session()
-    session.headers.setdefault("User-Agent", _USER_AGENT)
-
-    last_exc: Exception | None = None
+    retry_delay = _BACKOFF_BASE
+    last_error: requests.RequestException | PrideAPIError | None = None
 
     for attempt in range(_MAX_RETRIES + 1):
-        if attempt > 0:
-            # Exponential backoff: 1 s before retry-1, 2 s before retry-2.
-            time.sleep(_BACKOFF_BASE * (2 ** (attempt - 1)))
+        if attempt:
+            time.sleep(retry_delay)
 
         try:
-            resp = session.get(url, timeout=(_CONNECT_TIMEOUT, _READ_TIMEOUT))
-        except requests.Timeout as exc:
-            last_exc = exc
+            response = session.get(url, timeout=(_CONNECT_TIMEOUT, _READ_TIMEOUT))
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            last_error = exc
+            retry_delay = min(_BACKOFF_BASE * (2**attempt), _MAX_RETRY_DELAY)
             continue
         except requests.RequestException as exc:
-            last_exc = PrideAPIError(f"PRIDE API request failed: {exc}")
-            continue
+            raise PrideAPIError(f"PRIDE API request failed: {exc}") from exc
 
-        if resp.status_code == 200:
-            return resp.json()
-        if resp.status_code == 404:
+        if response.status_code == 200:
+            try:
+                data = response.json()
+            except (
+                json.JSONDecodeError,
+                requests.exceptions.JSONDecodeError,
+                UnicodeDecodeError,
+            ) as exc:
+                raise PrideAPIError("PRIDE API returned invalid JSON") from exc
+            return _JSONResponse(data=data, total_records=_total_records(response.headers))
+
+        if response.status_code == 404:
             raise PrideNotFoundError(f"Accession not found (HTTP 404): {url}")
-        if resp.status_code == 429:
-            last_exc = PrideRateLimitError(f"Rate limited by PRIDE API (HTTP 429): {url}")
+        if response.status_code == 429:
+            last_error = PrideRateLimitError(f"Rate limited by PRIDE API (HTTP 429): {url}")
+            retry_after = _retry_after_seconds(response.headers.get("Retry-After"))
+            retry_delay = (
+                retry_after
+                if retry_after is not None
+                else min(_BACKOFF_BASE * (2**attempt), _MAX_RETRY_DELAY)
+            )
             continue
+        if response.status_code in _RETRYABLE_STATUS_CODES:
+            last_error = PrideAPIError(f"HTTP {response.status_code}: {url}")
+            retry_delay = min(_BACKOFF_BASE * (2**attempt), _MAX_RETRY_DELAY)
+            continue
+        raise PrideAPIError(f"HTTP {response.status_code}: {url}")
 
-        # Any other non-2xx status (typically 5xx): record and retry.
-        last_exc = PrideAPIError(f"HTTP {resp.status_code}: {url}")
-
-    if isinstance(last_exc, (PrideRateLimitError, PrideAPIError)):
-        raise last_exc
+    if isinstance(last_error, PrideAPIError):
+        raise last_error
     raise PrideAPIError(
         f"PRIDE API request failed after {_MAX_RETRIES} retries: {url}"
-    ) from last_exc
+    ) from last_error
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
+def _pride_accession(accession: str) -> str:
+    """Return a canonical PRIDE accession or reject a partner identifier."""
+    canonical = normalize_accession(accession)
+    if not canonical.startswith(_PRIDE_PREFIX):
+        raise InvalidAccessionError("PRIDE API requests require a PXD accession")
+    return canonical
 
 
 def fetch_project(accession: str, *, delay: float = 0.5) -> dict:
-    """Fetch project metadata dict from ``/projects/{accession}``.
+    """Fetch and validate one PRIDE project response.
 
-    Raw JSON is returned unchanged. Raises ``PrideNotFoundError`` if the
-    accession does not exist on PRIDE.
+    Parameters
+    ----------
+    accession:
+        PRIDE accession, canonicalized before URL construction.
+    delay:
+        Politeness delay before the request, in seconds.
+
+    Returns
+    -------
+    dict
+        Raw project mapping.
+
+    Raises
+    ------
+    InvalidAccessionError
+        If ``accession`` is not a valid PXD identifier.
+    PrideAPIError
+        If the request fails or a successful response is not a mapping.
     """
-    url = f"{_BASE_URL}/projects/{accession}"
-    return typing.cast(dict, _request(url, delay=delay))
+    canonical = _pride_accession(accession)
+    session = requests.Session()
+    try:
+        session.headers["User-Agent"] = _USER_AGENT
+        response = _request(f"{_BASE_URL}/projects/{canonical}", delay=delay, session=session)
+        if not isinstance(response.data, dict):
+            raise PrideAPIError("PRIDE project response must be a JSON object")
+        return response.data
+    finally:
+        session.close()
+
+
+def _page_fingerprint(batch: list[dict]) -> bytes:
+    """Return a stable compact identity used to detect repeated pages."""
+    encoded = json.dumps(batch, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    return hashlib.sha256(encoded).digest()
 
 
 def fetch_files(accession: str, *, delay: float = 0.5) -> list[dict]:
-    """Fetch **all** files from ``/projects/{accession}/files``, paginating until exhausted.
+    """Fetch every file for one PRIDE project with bounded pagination.
 
-    PRIDE's API caps each page at 100 files.  The loop requests successive
-    pages of 100 rows until a page returns fewer than 100 rows, which signals
-    the final page has been reached.
+    PRIDE's ``total_records`` response header terminates exact-multiple result sets when
+    available. Short or empty pages remain the fallback. Repeated pages, inconsistent
+    metadata, and more than 1,000 pages fail instead of returning partial or duplicated data.
 
-    No early exit on ``fileCategory`` is used.  Stopping on RESULT or
-    EXPERIMENTAL DESIGN categories would skip PEAK files on later pages and
-    produce understated tier scores for Platinum or Diamond datasets.
+    Parameters
+    ----------
+    accession:
+        PRIDE accession, canonicalized before URL construction.
+    delay:
+        Politeness delay before each page request, in seconds.
+
+    Returns
+    -------
+    list[dict]
+        Raw file mappings from every validated page.
+
+    Raises
+    ------
+    InvalidAccessionError
+        If ``accession`` is not a valid PXD identifier.
+    PrideAPIError
+        If transport, response shape, or pagination validation fails.
     """
+    canonical = _pride_accession(accession)
     all_files: list[dict] = []
-    page = 0
-    page_size = 100
+    page_fingerprints: set[bytes] = set()
+    expected_total: int | None = None
     session = requests.Session()
-    session.headers["User-Agent"] = _USER_AGENT
-    while True:
-        url = (
-            f"{_BASE_URL}/projects/{accession}/files"
-            f"?page={page}&pageSize={page_size}&sortDirection=DESC&sortCondition=id"
-        )
-        batch = typing.cast(list[dict], _request(url, delay=delay, session=session))
-        all_files.extend(batch)
-        if len(batch) < page_size:
-            break
-        page += 1
-    return all_files
+
+    try:
+        session.headers["User-Agent"] = _USER_AGENT
+        for page in range(_MAX_PAGES):
+            url = (
+                f"{_BASE_URL}/projects/{canonical}/files"
+                f"?page={page}&pageSize={_PAGE_SIZE}&sortDirection=DESC&sortCondition=id"
+            )
+            response = _request(url, delay=delay, session=session)
+            if not isinstance(response.data, list) or not all(
+                isinstance(item, dict) for item in response.data
+            ):
+                raise PrideAPIError("PRIDE files response must be a JSON list of objects")
+            batch = response.data
+
+            if response.total_records is not None:
+                if expected_total is None:
+                    expected_total = response.total_records
+                    if expected_total > _PAGE_SIZE * _MAX_PAGES:
+                        raise PrideAPIError("PRIDE file count exceeds the pagination safety limit")
+                elif response.total_records != expected_total:
+                    raise PrideAPIError("PRIDE total_records changed during pagination")
+
+            if batch:
+                fingerprint = _page_fingerprint(batch)
+                if fingerprint in page_fingerprints:
+                    raise PrideAPIError("PRIDE API repeated a files page during pagination")
+                page_fingerprints.add(fingerprint)
+                all_files.extend(batch)
+
+            if expected_total is not None:
+                if len(all_files) > expected_total:
+                    raise PrideAPIError("PRIDE returned more files than total_records")
+                if len(all_files) == expected_total:
+                    return all_files
+                if len(batch) < _PAGE_SIZE:
+                    raise PrideAPIError("PRIDE pagination ended before total_records was reached")
+            elif len(batch) < _PAGE_SIZE:
+                return all_files
+
+        raise PrideAPIError(f"PRIDE files pagination exceeded {_MAX_PAGES} pages")
+    finally:
+        session.close()
 
 
 __all__ = [

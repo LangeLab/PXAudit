@@ -6,6 +6,7 @@ import json
 import sqlite3
 import sys
 from collections.abc import Generator, Iterable, Iterator
+from io import StringIO
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -169,9 +170,9 @@ def mocks(monkeypatch: pytest.MonkeyPatch) -> dict:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("bad", ["", "12345", "000001"])
+@pytest.mark.parametrize("bad", ["", "PXD12345", "PXDABCDEF", "MSV/000001"])
 def test_check_invalid_accession_exits_two(bad: str, mocks: dict) -> None:
-    """Empty or non-alpha-start accessions must exit 2 before any I/O."""
+    """Malformed or unsafe accessions exit 2 before any I/O."""
     runner = CliRunner()
     result = runner.invoke(main, ["check", bad])
     assert result.exit_code == 2
@@ -197,6 +198,22 @@ def test_check_valid_pxd_stdout_contains_accession_and_tier(mocks: dict) -> None
     result = runner.invoke(main, ["check", "PXD000001"])
     assert "PXD000001" in result.output
     assert "Gold" in result.output
+
+
+def test_check_mixed_case_uses_canonical_identity_at_every_boundary(mocks: dict) -> None:
+    """Cache, API, persistence, and output receive one uppercase accession."""
+    result = CliRunner().invoke(main, ["check", " PxD000001 "])
+
+    assert result.exit_code == 0
+    assert "PXD000001" in result.stdout
+    assert mocks["read_cache_response"].call_args_list[0].args[:2] == (
+        "PXD000001",
+        "project",
+    )
+    mocks["fetch_project"].assert_called_once_with("PXD000001", delay=0.5)
+    study = mocks["insert_audit_record"].call_args.args[1]
+    assert study["accession"] == "PXD000001"
+    assert mocks["insert_audit_record"].call_args.args[2] == "PXD000001"
 
 
 def test_check_gold_stdout_contains_checkmarks(mocks: dict) -> None:
@@ -961,7 +978,7 @@ def test_read_accessions_file(tmp_path: Path) -> None:
     f = tmp_path / "accessions.txt"
     f.write_text("PXD000001\n\n# comment\nPXD000002\n  PXD000003  \n")
     result = _read_accessions(str(f))
-    assert result == ["PXD000001", "PXD000002", "PXD000003"]
+    assert result == [(1, "PXD000001"), (4, "PXD000002"), (5, "PXD000003")]
 
 
 def test_read_accessions_all_blank(tmp_path: Path) -> None:
@@ -974,6 +991,14 @@ def test_read_accessions_all_blank(tmp_path: Path) -> None:
 def test_read_accessions_file_not_found(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         _read_accessions(str(tmp_path / "nope.txt"))
+
+
+def test_read_accessions_stdin_preserves_source_line_numbers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Stdin records retain physical line numbers after blank and comment filtering."""
+    monkeypatch.setattr(sys, "stdin", StringIO("# note\npxd000001\n"))
+    assert _read_accessions("-") == [(2, "pxd000001")]
 
 
 def test_result_to_row_keys_match_export_cols() -> None:
@@ -1083,7 +1108,7 @@ def test_bulk_audit_happy_path_tsv(bulk_mocks: dict, tmp_path: Path) -> None:
 def test_bulk_audit_happy_path_json(bulk_mocks: dict, tmp_path: Path) -> None:
     """Export JSON format works."""
     acc_file = tmp_path / "ids.txt"
-    acc_file.write_text("PXD000001\n")
+    acc_file.write_text("pxd000001\n")
     out_path = tmp_path / "out.json"
     runner = CliRunner()
     result = runner.invoke(
@@ -1093,6 +1118,7 @@ def test_bulk_audit_happy_path_json(bulk_mocks: dict, tmp_path: Path) -> None:
     assert result.exit_code == 0
     data = json.loads(out_path.read_text())
     assert len(data) == 1
+    assert data[0]["accession"] == "PXD000001"
     assert data[0]["tier"] == "Gold"
 
 
@@ -1295,6 +1321,76 @@ def test_bulk_audit_duplicate_warning(bulk_mocks: dict, tmp_path: Path) -> None:
     assert "Completed : 2" in result.output
 
 
+def test_bulk_audit_deduplicates_canonical_accessions(
+    bulk_mocks: dict,
+    tmp_path: Path,
+) -> None:
+    """Case variants are processed once under their canonical uppercase identity."""
+    acc_file = tmp_path / "dups.txt"
+    acc_file.write_text("pxd000001\nPXD000001\nPxD000002\n", encoding="utf-8")
+
+    result = CliRunner().invoke(main, ["bulk-audit", "--input", str(acc_file)])
+
+    assert result.exit_code == 0
+    assert "duplicate accession 'PXD000001'" in result.stderr
+    assert "Completed : 2" in result.stdout
+    calls = [entry.args[0] for entry in bulk_mocks["_audit_single"].call_args_list]
+    assert calls == ["PXD000001", "PXD000002"]
+
+
+def test_bulk_audit_malformed_line_stops_with_line_number(
+    bulk_mocks: dict,
+    tmp_path: Path,
+) -> None:
+    """Without continuation, malformed input exits 2 before auditing any accession."""
+    acc_file = tmp_path / "invalid.txt"
+    acc_file.write_text("# header\nPXD000001\nMSV/000001\n", encoding="utf-8")
+
+    result = CliRunner().invoke(main, ["bulk-audit", "--input", str(acc_file)])
+
+    assert result.exit_code == 2
+    assert "line 3" in result.stderr
+    assert "MSV/000001" in result.stderr
+    bulk_mocks["_audit_single"].assert_not_called()
+
+
+def test_bulk_audit_continue_skips_malformed_line_and_counts_failure(
+    bulk_mocks: dict,
+    tmp_path: Path,
+) -> None:
+    """Continuation reports and counts malformed records while auditing valid lines."""
+    acc_file = tmp_path / "mixed-validity.txt"
+    acc_file.write_text("\n# header\nMSV?000001\npxd000001\n", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        main,
+        ["bulk-audit", "--input", str(acc_file), "--continue-on-error"],
+    )
+
+    assert result.exit_code == 0
+    assert "line 3" in result.stderr
+    assert "Total     : 2" in result.stdout
+    assert "Completed : 1" in result.stdout
+    assert "Failed    : 1" in result.stdout
+    bulk_mocks["_audit_single"].assert_called_once()
+    assert bulk_mocks["_audit_single"].call_args.args[0] == "PXD000001"
+
+
+def test_bulk_audit_rejects_control_separator_as_part_of_one_physical_line(
+    bulk_mocks: dict,
+    tmp_path: Path,
+) -> None:
+    """A control separator cannot turn one malformed physical line into valid records."""
+    acc_file = tmp_path / "control.txt"
+    acc_file.write_text("PXD000001\x1cPXD000002\n", encoding="utf-8")
+
+    result = CliRunner().invoke(main, ["bulk-audit", "--input", str(acc_file)])
+
+    assert result.exit_code == 2
+    assert "line 1" in result.stderr
+    bulk_mocks["_audit_single"].assert_not_called()
+
+
 def test_bulk_audit_mixed_pride_and_non_pride(bulk_mocks: dict, tmp_path: Path) -> None:
     """Mixed PRIDE and non-PRIDE accessions produce correct Unverifiable rows."""
     acc_file = tmp_path / "mixed.txt"
@@ -1402,6 +1498,18 @@ def test_manifest_no_files_errors(tmp_path: Path) -> None:
     assert "No files found" in result.output
 
 
+def test_manifest_invalid_accession_exits_two_before_database_access(tmp_path: Path) -> None:
+    """Manifest applies the shared grammar before opening its database."""
+    database = tmp_path / "missing.db"
+    result = CliRunner().invoke(
+        main,
+        ["manifest", "PXD/000001", "--db", str(database)],
+    )
+    assert result.exit_code == 2
+    assert "invalid accession" in result.stderr
+    assert not database.exists()
+
+
 def test_manifest_missing_database_leaves_filesystem_unchanged(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1484,7 +1592,7 @@ def test_manifest_tsv_output(tmp_path: Path) -> None:
     runner = CliRunner()
     result = runner.invoke(
         main,
-        ["manifest", "PXD000001", "--db", str(db_path), "--format", "tsv"],
+        ["manifest", "pxd000001", "--db", str(db_path), "--format", "tsv"],
     )
     assert result.exit_code == 0
     assert "test.raw" in result.output
@@ -1909,9 +2017,9 @@ def test_manifest_unaffected_by_quiet(tmp_path: Path) -> None:
                 "publicFileLocations": [],
             }
         ]
-        result = compute_audit("PXD9", project, files, files_fetch_failed=False)
+        result = compute_audit("PXD000009", project, files, files_fetch_failed=False)
         study = {
-            "accession": "PXD9",
+            "accession": "PXD000009",
             "title": "t",
             "organism": "Homo sapiens",
             "organism_id": "NEWT:9606",
@@ -1927,7 +2035,7 @@ def test_manifest_unaffected_by_quiet(tmp_path: Path) -> None:
         files_df = pd.DataFrame(
             [
                 {
-                    "accession": "PXD9",
+                    "accession": "PXD000009",
                     "file_name": "a.mzid",
                     "file_category": "RESULT",
                     "file_extension": ".mzid",
@@ -1938,12 +2046,12 @@ def test_manifest_unaffected_by_quiet(tmp_path: Path) -> None:
                 }
             ]
         )
-        insert_audit_record(conn, study, "PXD9", files_df, result.__dict__)
+        insert_audit_record(conn, study, "PXD000009", files_df, result.__dict__)
     finally:
         conn.close()
 
     runner = CliRunner()
-    out = runner.invoke(main, ["-q", "manifest", "PXD9", "--db", str(db)])
+    out = runner.invoke(main, ["-q", "manifest", "PXD000009", "--db", str(db)])
     assert out.exit_code == 0
     assert "file_name" in out.output
     assert "a.mzid" in out.output
@@ -2402,9 +2510,9 @@ def test_manifest_unaffected_by_verbose(tmp_path: Path) -> None:
                 "publicFileLocations": [],
             }
         ]
-        result = compute_audit("PXD9", project, files, files_fetch_failed=False)
+        result = compute_audit("PXD000009", project, files, files_fetch_failed=False)
         study = {
-            "accession": "PXD9",
+            "accession": "PXD000009",
             "title": "t",
             "organism": "Homo sapiens",
             "organism_id": "NEWT:9606",
@@ -2418,7 +2526,7 @@ def test_manifest_unaffected_by_verbose(tmp_path: Path) -> None:
         files_df = pd.DataFrame(
             [
                 {
-                    "accession": "PXD9",
+                    "accession": "PXD000009",
                     "file_name": "a.mzid",
                     "file_category": "RESULT",
                     "file_extension": ".mzid",
@@ -2429,12 +2537,12 @@ def test_manifest_unaffected_by_verbose(tmp_path: Path) -> None:
                 }
             ]
         )
-        insert_audit_record(conn, study, "PXD9", files_df, result.__dict__)
+        insert_audit_record(conn, study, "PXD000009", files_df, result.__dict__)
     finally:
         conn.close()
 
     runner = CliRunner()
-    out = runner.invoke(main, ["-v", "manifest", "PXD9", "--db", str(db)])
+    out = runner.invoke(main, ["-v", "manifest", "PXD000009", "--db", str(db)])
     assert out.exit_code == 0
     assert "file_name" in out.stdout
     assert "a.mzid" in out.stdout

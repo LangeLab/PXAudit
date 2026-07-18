@@ -24,6 +24,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from pxaudit import _PRIDE_PREFIX
+from pxaudit.accession import normalize_accession
 from pxaudit.file_classifier import FileClass, FileTypeClassifier, strip_compression
 
 # ---------------------------------------------------------------------------
@@ -152,15 +153,10 @@ def compute_audit(
 
     Raises
     ------
-    ValueError
-        If *accession* is empty or does not begin with an alphabetic character
-        (e.g. pure numeric strings).
+    InvalidAccessionError
+        If ``accession`` does not satisfy the PXAudit accession grammar.
     """
-    # ------------------------------------------------------------------
-    # 1.  Input validation
-    # ------------------------------------------------------------------
-    if not accession or not accession[0].isalpha():
-        raise ValueError(f"Invalid accession: {accession!r}")
+    accession = normalize_accession(accession)
 
     # ------------------------------------------------------------------
     # 2.  Non-PRIDE short-circuit

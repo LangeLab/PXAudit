@@ -29,6 +29,7 @@ import pandas as pd
 from tqdm import tqdm
 
 from pxaudit import _PRIDE_PREFIX, _output
+from pxaudit.accession import InvalidAccessionError, normalize_accession
 from pxaudit.cache import (
     CachedResponse,
     CacheSafetyError,
@@ -348,6 +349,7 @@ def _audit_single(
     Does not write to the terminal. Warnings and verbose details are returned
     for the CLI layer to emit.
     """
+    accession = normalize_accession(accession)
     snapshot_id = uuid.uuid4().hex
     project_response: CachedResponse | None = None
     files_response: CachedResponse | None = None
@@ -503,24 +505,20 @@ def _audit_single(
 # ---------------------------------------------------------------------------
 
 
-def _read_accessions(input_path: str) -> list[str]:
-    """Read newline-delimited accessions from a file or stdin (``-``).
+def _read_accessions(input_path: str) -> list[tuple[int, str]]:
+    """Read numbered accession records from a file or stdin (``-``).
 
-    Strips whitespace, skips blank lines and ``#`` comment lines.
-    Duplicates are preserved (caller should deduplicate).
+    Blank lines and lines whose trimmed form begins with ``#`` are skipped. Validation and
+    deduplication remain with the bulk command so errors can report source line numbers.
     """
-    lines: list[str]
-    if input_path == "-":
-        lines = sys.stdin.readlines()
-    else:
-        lines = Path(input_path).read_text().splitlines()
+    lines = sys.stdin.readlines() if input_path == "-" else Path(input_path).read_text().split("\n")
 
-    accessions: list[str] = []
-    for line in lines:
-        acc = line.strip()
+    accessions: list[tuple[int, str]] = []
+    for line_number, line in enumerate(lines, start=1):
+        acc = line.strip(" \t\r\n")
         if not acc or acc.startswith("#"):
             continue
-        accessions.append(acc)
+        accessions.append((line_number, acc))
     return accessions
 
 
@@ -647,8 +645,10 @@ def check(
     _emit_config_warnings(cfg)
     resolved_db = cfg.db_path
 
-    if not accession or not accession[0].isalpha():
-        _output.error(f"Error: invalid accession {accession!r}")
+    try:
+        accession = normalize_accession(accession)
+    except InvalidAccessionError as exc:
+        _output.error(f"Error: invalid accession {accession!r}: {exc}")
         sys.exit(2)
 
     try:
@@ -760,16 +760,29 @@ def bulk_audit(
         _output.warn("Warning: no accessions found in input.")
         sys.exit(0)
 
+    failed: list[str] = []
     seen: set[str] = set()
     accessions: list[str] = []
-    for acc in raw_accessions:
-        if acc in seen:
-            _output.warn(f"Warning: duplicate accession {acc!r} skipped.")
-        else:
-            seen.add(acc)
-            accessions.append(acc)
+    for line_number, raw_accession in raw_accessions:
+        try:
+            accession = normalize_accession(raw_accession)
+        except InvalidAccessionError as exc:
+            message = f"line {line_number}: invalid accession {raw_accession!r}: {exc}"
+            if continue_on_error:
+                _output.warn(f"Warning: {message}. Skipping.")
+                failed.append(f"line {line_number}")
+                continue
+            _output.error(f"Error: {message}.")
+            _output.error("Use --continue-on-error to skip malformed input records.")
+            sys.exit(2)
 
-    total = len(accessions)
+        if accession in seen:
+            _output.warn(f"Warning: duplicate accession {accession!r} skipped.")
+        else:
+            seen.add(accession)
+            accessions.append(accession)
+
+    total = len(accessions) + len(failed)
 
     resolved_fmt = fmt.casefold() if fmt else cfg.export_format
     if resolved_fmt:
@@ -784,7 +797,6 @@ def bulk_audit(
         export_path = None
 
     results: list[AuditResult] = []
-    failed: list[str] = []
     start_time = time.time()
     use_tqdm = (not quiet) and _stderr_is_tty()
     iterator = tqdm(accessions, desc="Auditing", unit="accession") if use_tqdm else accessions
@@ -881,6 +893,12 @@ def manifest(ctx: click.Context, accession: str, db_path: str | None, fmt: str) 
     cfg = _resolve_effective(ctx, db_path=db_path)
     _emit_config_warnings(cfg)
     resolved_db = cfg.db_path
+
+    try:
+        accession = normalize_accession(accession)
+    except InvalidAccessionError as exc:
+        _output.error(f"Error: invalid accession {accession!r}: {exc}")
+        sys.exit(2)
 
     try:
         conn = open_existing_db(resolved_db)
