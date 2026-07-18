@@ -46,6 +46,8 @@ Then re-run `pxaudit check` on those accessions to update their scores.
 
 Partially. Once an accession has been audited, its raw API responses are cached under `~/.pxaudit_cache/`. Subsequent runs reuse the cache. If the network is down and stale cached data exists, PXAudit falls back to it with a warning.
 
+Cache writes use versioned PXAudit identity metadata and atomic replacement. `pxaudit cache clear` removes only entries whose identity matches their filename; unrelated files and symlinks in a custom cache directory remain untouched.
+
 ## What is the cache TTL?
 
 Default is 7 days. Use `--refresh` to force a re-fetch regardless of cache age.

@@ -73,9 +73,12 @@ uv run pxaudit -v check PXD004683          # checklist + detail
 uv run pxaudit --no-color check PXD004683  # plain text
 uv run pxaudit config show                 # effective settings
 uv run pxaudit cache info                  # cache summary
+uv run pxaudit cache clear                 # remove validated PXAudit cache entries
 ```
 
 Optional user config: `~/.pxaudit.toml` (see the wiki CLI Reference).
+
+`cache info` counts only versioned entries whose PXAudit identity matches their filename and reports other directory entries as ignored. `cache clear` operates on that same validated set, never follows cache-entry symlinks, and refuses broad locations such as a filesystem root, the home directory, the working directory, or the system temporary directory. `--yes` skips confirmation only.
 
 ### `pxaudit bulk-audit`
 

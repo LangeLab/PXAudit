@@ -6,7 +6,7 @@ All notable changes to PXAudit are documented here. The format follows [Keep a C
 
 ---
 
-## [0.5.0] - 2026-07-10 - [Unreleased]
+## [0.5.0] - 2026-07-10 - [Tagged]
 
 CLI polish, user configuration, and cache management.
 
@@ -99,13 +99,13 @@ CI/CD pipeline, type checking, bulk auditing, TSV/JSON/CSV export, and rate-limi
 ### Added
 
 - `pxaudit bulk-audit --input accessions.txt` command: batch audit from a file or stdin (`-`).
-    - `--format tsv|json|csv` for flat-file export alongside SQLite.
-    - `--delay` configurable wait between API calls (default 1s).
-    - `--continue-on-error` to skip failed accessions and continue the batch.
-    - `--overwrite` to overwrite existing export files.
-    - Progress bar via `tqdm` with completed/failed/total summary and tier distribution.
-    - Deduplicates input accessions with a warning on duplicates.
-    - Graceful `KeyboardInterrupt`: writes partial results to the database.
+  - `--format tsv|json|csv` for flat-file export alongside SQLite.
+  - `--delay` configurable wait between API calls (default 1s).
+  - `--continue-on-error` to skip failed accessions and continue the batch.
+  - `--overwrite` to overwrite existing export files.
+  - Progress bar via `tqdm` with completed/failed/total summary and tier distribution.
+  - Deduplicates input accessions with a warning on duplicates.
+  - Graceful `KeyboardInterrupt`: writes partial results to the database.
 - `tqdm>=4.67.0` added to runtime dependencies.
 - HTTP 429 rate-limit handling: retries with exponential backoff instead of failing immediately.
 - GitHub Actions CI workflow: runs ruff lint + format check, mypy type check, and pytest with 100% coverage enforcement on push/PR. Matrix includes 3.12, 3.13, 3.14.
@@ -178,6 +178,7 @@ First tagged release. Single-study auditing with a 7-tier FAIR ladder and quanti
 - Cache dir resolved relative to CWD; now uses absolute `~/.pxaudit_cache/` (#2).
 - `fetch_files` fetched only the first 100 files; added pagination loop (#4).
 
+[0.5.0]: https://github.com/LangeLab/PXAudit/releases/tag/v0.5.0
 [0.4.0]: https://github.com/LangeLab/PXAudit/releases/tag/v0.4.0
 [0.3.0]: https://github.com/LangeLab/PXAudit/releases/tag/v0.3.0
 [0.2.0]: https://github.com/LangeLab/PXAudit/releases/tag/v0.2.0

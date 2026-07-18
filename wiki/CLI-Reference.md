@@ -155,7 +155,7 @@ Summarize the local API cache.
 pxaudit cache info
 ```
 
-Prints the resolved cache directory, file count, total bytes, and oldest/newest modification times. Respects `--cache-dir` and config `cache_dir`.
+Prints the resolved cache directory, validated PXAudit file count, ignored-entry count, total bytes, and oldest/newest modification times. A validated entry has a supported envelope whose PXAudit owner, accession, and endpoint agree with its filename. Legacy, corrupt, temporary, unrelated, directory, and symlink entries are reported as ignored. Respects `--cache-dir` and config `cache_dir`.
 
 ---
 
@@ -167,7 +167,7 @@ Delete cached API responses.
 pxaudit cache clear [--yes]
 ```
 
-Always prints the resolved cache path first. Prompts for confirmation unless `--yes` is set.
+Deletes only the same validated entry set reported by `cache info`. Unrelated files, legacy or corrupt entries, temporary files, directories, and symlinks remain untouched. The command validates the resolved cache path before confirmation and refuses broad locations such as a filesystem root, the home directory, the working directory, or the system temporary directory. `--yes` skips confirmation only; it does not bypass safety checks.
 
 ---
 
