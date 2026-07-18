@@ -1,17 +1,17 @@
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.7
+    rev: v0.15.22
     hooks:
       - id: ruff
         args: [--fix]
       - id: ruff-format
   - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v2.1.0
+    rev: v2.3.0
     hooks:
       - id: mypy
         args: [--config-file=pyproject.toml]
         additional_dependencies:
-          - pandas-stubs>=3.0
-          - types-requests>=2.32
-          - click>=8.3.3
-          - pytest>=9.0.3
+          - pandas-stubs>=3.0.3.260530
+          - types-requests>=2.33.0.20260712
+          - click>=8.4.2
+          - pytest>=9.1.1
