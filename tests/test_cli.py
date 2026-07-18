@@ -58,6 +58,7 @@ bulk_audit()
 from __future__ import annotations
 
 import json
+import sys
 from collections.abc import Generator, Iterable, Iterator
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -66,6 +67,7 @@ import pandas as pd
 import pytest
 from click.testing import CliRunner
 
+from pxaudit.cache import CacheSafetyError, CacheWriteError, write_cache
 from pxaudit.cli import (
     AuditData,
     _default_export_path,
@@ -1505,35 +1507,35 @@ def test_cache_info_empty(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
 
 
 def test_cache_info_with_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """cache info reports count, bytes, oldest/newest."""
+    """cache info reports owned count, ignored count, bytes, and modification times."""
     monkeypatch.setenv("PXAUDIT_CONFIG", str(tmp_path / "none.toml"))
     cache = tmp_path / "cache"
     cache.mkdir()
-    f1 = cache / "a.json"
-    f2 = cache / "b.json"
-    f1.write_text("aa")
-    f2.write_text("bbbb")
+    write_cache("PXD000001", "project", {"title": "one"}, cache_dir=cache)
+    write_cache("PXD000001", "files", [], cache_dir=cache)
+    (cache / "notes.txt").write_text("keep")
     runner = CliRunner()
     result = runner.invoke(main, ["--cache-dir", str(cache), "cache", "info"])
     assert result.exit_code == 0
     assert "files=2" in result.output
-    assert "bytes=6" in result.output
+    assert "ignored=1" in result.output
+    assert "bytes=" in result.output
     assert "oldest=" in result.output
     assert "newest=" in result.output
     assert "n/a" not in result.output
 
 
 def test_cache_clear_yes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """cache clear --yes deletes files after printing path."""
+    """cache clear --yes deletes a validated entry after printing its root."""
     monkeypatch.setenv("PXAUDIT_CONFIG", str(tmp_path / "none.toml"))
     cache = tmp_path / "cache"
     cache.mkdir()
-    (cache / "x.json").write_text("{}")
+    write_cache("PXD000001", "project", {}, cache_dir=cache)
     runner = CliRunner()
     result = runner.invoke(main, ["--cache-dir", str(cache), "cache", "clear", "--yes"])
     assert result.exit_code == 0
     assert f"cache_dir={cache}" in result.output
-    assert not (cache / "x.json").exists()
+    assert not (cache / "PXD000001_project.json").exists()
     assert "Removed 1" in result.output
 
 
@@ -1542,8 +1544,8 @@ def test_cache_clear_decline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setenv("PXAUDIT_CONFIG", str(tmp_path / "none.toml"))
     cache = tmp_path / "cache"
     cache.mkdir()
-    target = cache / "x.json"
-    target.write_text("{}")
+    write_cache("PXD000001", "project", {}, cache_dir=cache)
+    target = cache / "PXD000001_project.json"
     runner = CliRunner()
     result = runner.invoke(main, ["--cache-dir", str(cache), "cache", "clear"], input="n\n")
     assert result.exit_code != 0 or target.exists()
@@ -1558,6 +1560,13 @@ def test_cache_clear_missing_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     result = runner.invoke(main, ["--cache-dir", str(cache), "cache", "clear", "--yes"])
     assert result.exit_code == 0
     assert "nothing to delete" in result.output.lower() or "does not exist" in result.output
+
+
+def test_cache_clear_help_keeps_safety_validation_under_yes() -> None:
+    """The noninteractive option documents that cache safety still applies."""
+    result = CliRunner().invoke(main, ["cache", "clear", "--help"])
+    assert result.exit_code == 0
+    assert "safety validation still applies" in result.output
 
 
 def test_db_flag_overrides_config(
@@ -1649,51 +1658,36 @@ def test_cache_info_empty_existing_dir(tmp_path: Path, monkeypatch: pytest.Monke
 
 
 def test_cache_stats_stat_oserror(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """_cache_stats skips entries that raise OSError and returns n/a when none remain."""
+    """_cache_stats reports invalid files as ignored and returns no timestamps."""
     from pxaudit.cli import _cache_stats
 
     cache = tmp_path / "cache"
     cache.mkdir()
-    bad = cache / "bad.json"
+    bad = cache / "PXD000001_project.json"
     bad.write_text("x")
 
-    real_is_file = Path.is_file
-
-    def flaky_is_file(self: Path) -> bool:
-        if self.name == "bad.json":
-            raise OSError("nope")
-        return real_is_file(self)
-
-    monkeypatch.setattr(Path, "is_file", flaky_is_file)
-    count, total, oldest, newest = _cache_stats(cache)
+    count, ignored, total, oldest, newest = _cache_stats(cache)
     assert count == 0
+    assert ignored == 1
     assert total == 0
     assert oldest is None
     assert newest is None
 
 
 def test_cache_stats_all_stat_fail(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """When is_file works but stat fails, mtimes empty branch is hit."""
+    """_cache_stats aggregates one validated entry."""
     from pxaudit.cli import _cache_stats
 
     cache = tmp_path / "cache"
     cache.mkdir()
-    (cache / "a.json").write_text("x")
+    write_cache("PXD000001", "project", {}, cache_dir=cache)
 
-    real_stat = Path.stat
-
-    def flaky_stat(self: Path, *a: object, follow_symlinks: bool = True) -> object:
-        if self.name == "a.json":
-            raise OSError("stat fail")
-        return real_stat(self, follow_symlinks=follow_symlinks)
-
-    monkeypatch.setattr(Path, "stat", flaky_stat)
-    # is_file may also call stat; force files list via monkeypatch on iterdir result handling
-    # by making is_file return True without stat:
-    monkeypatch.setattr(Path, "is_file", lambda self: self.name.endswith(".json"))
-    count, total, oldest, newest = _cache_stats(cache)
-    assert count == 0
-    assert oldest is None
+    count, ignored, total, oldest, newest = _cache_stats(cache)
+    assert count == 1
+    assert ignored == 0
+    assert total > 0
+    assert oldest is not None
+    assert newest is not None
 
 
 def test_bulk_quiet_with_export_skips_exported_line(bulk_mocks: dict, tmp_path: Path) -> None:
@@ -1717,12 +1711,12 @@ def test_cache_clear_skips_directories(tmp_path: Path, monkeypatch: pytest.Monke
     monkeypatch.setenv("PXAUDIT_CONFIG", str(tmp_path / "none.toml"))
     cache = tmp_path / "cache"
     cache.mkdir()
-    (cache / "x.json").write_text("{}")
+    write_cache("PXD000001", "project", {}, cache_dir=cache)
     (cache / "subdir").mkdir()
     runner = CliRunner()
     result = runner.invoke(main, ["--cache-dir", str(cache), "cache", "clear", "--yes"])
     assert result.exit_code == 0
-    assert not (cache / "x.json").exists()
+    assert not (cache / "PXD000001_project.json").exists()
     assert (cache / "subdir").is_dir()
 
 
@@ -1870,10 +1864,11 @@ def test_cache_stats_skips_directories(tmp_path: Path) -> None:
     cache = tmp_path / "cache"
     cache.mkdir()
     (cache / "subdir").mkdir()
-    (cache / "a.json").write_text("hi")
-    count, total, oldest, newest = _cache_stats(cache)
+    write_cache("PXD000001", "project", {}, cache_dir=cache)
+    count, ignored, total, oldest, newest = _cache_stats(cache)
     assert count == 1
-    assert total == 2
+    assert ignored == 1
+    assert total > 0
     assert oldest is not None
 
 
@@ -2135,3 +2130,165 @@ def test_manifest_unaffected_by_verbose(tmp_path: Path) -> None:
     assert "a.mzid" in out.stdout
     assert "Metadata" not in out.stdout
     assert "cache" not in out.stdout.lower()
+
+
+def test_cache_mixed_directory_info_and_clear_share_owned_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cache information and cleanup agree while preserving every unowned entry type."""
+    monkeypatch.setenv("PXAUDIT_CONFIG", str(tmp_path / "none.toml"))
+    cache = tmp_path / "cache"
+    write_cache("PXD000001", "project", {"title": "owned"}, cache_dir=cache)
+    write_cache("PXD000001", "files", [], cache_dir=cache)
+    unrelated = cache / "notes.txt"
+    unrelated.write_text("keep", encoding="utf-8")
+    legacy = cache / "PXD000002_project.json"
+    legacy.write_text(json.dumps({"cache_version": 1, "data": {}}), encoding="utf-8")
+    corrupt = cache / "PXD000003_project.json"
+    corrupt.write_text("{broken", encoding="utf-8")
+    temporary = cache / ".PXD000001_project.json.orphan.tmp"
+    temporary.write_text("partial", encoding="utf-8")
+    subdirectory = cache / "subdir"
+    subdirectory.mkdir()
+
+    runner = CliRunner()
+    info = runner.invoke(main, ["--cache-dir", str(cache), "cache", "info"])
+    cleared = runner.invoke(main, ["--cache-dir", str(cache), "cache", "clear", "--yes"])
+
+    assert info.exit_code == 0
+    assert "files=2" in info.output
+    assert "ignored=5" in info.output
+    assert cleared.exit_code == 0
+    assert "Removed 2" in cleared.output
+    assert "Ignored entries: 5" in cleared.output
+    assert unrelated.read_text() == "keep"
+    assert legacy.exists()
+    assert corrupt.exists()
+    assert temporary.exists()
+    assert subdirectory.is_dir()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Issue #18: Windows symlink creation is restricted",
+)
+def test_cache_clear_never_follows_or_deletes_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cache-shaped symlink and its external target both survive cleanup."""
+    monkeypatch.setenv("PXAUDIT_CONFIG", str(tmp_path / "none.toml"))
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    external = tmp_path / "external.json"
+    external.write_text("keep", encoding="utf-8")
+    link = cache / "PXD000001_project.json"
+    link.symlink_to(external)
+
+    result = CliRunner().invoke(main, ["--cache-dir", str(cache), "cache", "clear", "--yes"])
+
+    assert result.exit_code == 0
+    assert "Removed 0" in result.output
+    assert "Ignored entries: 1" in result.output
+    assert link.is_symlink()
+    assert external.read_text() == "keep"
+
+
+@pytest.mark.parametrize("command", [["cache", "info"], ["cache", "clear", "--yes"]])
+def test_cache_commands_refuse_filesystem_root(command: list[str]) -> None:
+    """Information and cleanup reject a filesystem root before cache traversal."""
+    root = Path.cwd().anchor
+    result = CliRunner().invoke(main, ["--cache-dir", root, *command])
+    assert result.exit_code == 2
+    assert "unsafe cache directory" in result.output
+
+
+def test_cache_clear_yes_refuses_current_directory_without_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The noninteractive flag cannot bypass current-directory safety validation."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PXAUDIT_CONFIG", str(tmp_path / "none.toml"))
+    sentinel = tmp_path / "sentinel.txt"
+    sentinel.write_text("keep", encoding="utf-8")
+
+    result = CliRunner().invoke(main, ["--cache-dir", str(tmp_path), "cache", "clear", "--yes"])
+
+    assert result.exit_code == 2
+    assert sentinel.read_text() == "keep"
+
+
+def test_cache_clear_refuses_empty_configured_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A blank configured cache path is rejected rather than normalized to the working directory."""
+    config = tmp_path / "config.toml"
+    config.write_text('cache_dir = ""\n', encoding="utf-8")
+    monkeypatch.setenv("PXAUDIT_CONFIG", str(config))
+
+    result = CliRunner().invoke(main, ["cache", "clear", "--yes"])
+
+    assert result.exit_code == 2
+    assert "cache directory is empty" in result.output
+
+
+def test_cache_clear_with_only_ignored_entries_does_not_prompt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cleanup needs no confirmation when no validated entry can be removed."""
+    monkeypatch.setenv("PXAUDIT_CONFIG", str(tmp_path / "none.toml"))
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    (cache / "notes.txt").write_text("keep", encoding="utf-8")
+
+    result = CliRunner().invoke(main, ["--cache-dir", str(cache), "cache", "clear"])
+
+    assert result.exit_code == 0
+    assert "Delete " not in result.output
+    assert "Ignored entries: 1" in result.output
+
+
+def test_cache_clear_reports_validated_unlink_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cleanup exits nonzero when an owned entry cannot be removed."""
+    monkeypatch.setenv("PXAUDIT_CONFIG", str(tmp_path / "none.toml"))
+    cache = tmp_path / "cache"
+    write_cache("PXD000001", "project", {}, cache_dir=cache)
+    monkeypatch.setattr("pxaudit.cli.clear_cache", MagicMock(return_value=(0, 0, 1)))
+
+    result = CliRunner().invoke(main, ["--cache-dir", str(cache), "cache", "clear", "--yes"])
+
+    assert result.exit_code == 1
+    assert "failed to remove 1" in result.output
+
+
+def test_cache_clear_reports_revalidation_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cleanup reports when the cache root becomes unsafe after inspection."""
+    monkeypatch.setenv("PXAUDIT_CONFIG", str(tmp_path / "none.toml"))
+    cache = tmp_path / "cache"
+    write_cache("PXD000001", "project", {}, cache_dir=cache)
+    monkeypatch.setattr(
+        "pxaudit.cli.clear_cache", MagicMock(side_effect=CacheSafetyError("changed"))
+    )
+
+    result = CliRunner().invoke(main, ["--cache-dir", str(cache), "cache", "clear", "--yes"])
+
+    assert result.exit_code == 1
+    assert "became unsafe" in result.output
+
+
+@pytest.mark.parametrize("failure", [CacheWriteError("secret/path"), CacheSafetyError("unsafe")])
+def test_cache_write_failure_does_not_fail_successful_audit(
+    mocks: dict, failure: Exception
+) -> None:
+    """A cache write failure warns while the successful API audit still persists."""
+    mocks["write_cache"].side_effect = failure
+
+    result = CliRunner().invoke(main, ["check", "PXD000001"])
+
+    assert result.exit_code == 0
+    assert result.output.count("cache write failed") == 2
+    assert "secret/path" not in result.output
+    mocks["insert_audit_record"].assert_called_once()

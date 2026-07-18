@@ -28,7 +28,16 @@ import pandas as pd
 from tqdm import tqdm
 
 from pxaudit import _PRIDE_PREFIX, _output
-from pxaudit.cache import read_cache, read_cache_stale, write_cache
+from pxaudit.cache import (
+    CacheSafetyError,
+    CacheWriteError,
+    clear_cache,
+    inspect_cache,
+    read_cache,
+    read_cache_stale,
+    validate_cache_root,
+    write_cache,
+)
 from pxaudit.config import (
     EffectiveConfig,
     format_config_show,
@@ -331,6 +340,17 @@ def _audit_single(
 
     use_cache = not (no_cache or refresh)
     persist_cache = not no_cache  # --no-cache disables writes too
+
+    def persist_cache_entry(endpoint: str, data: dict | list) -> None:
+        """Write cache data without turning a cache failure into an audit failure."""
+        try:
+            write_cache(accession, endpoint, data, **cache_kwargs)
+        except (CacheSafetyError, CacheWriteError):
+            warnings.append(
+                f"Warning: cache write failed for {accession} {endpoint}; "
+                "the audit continued without updating that entry."
+            )
+
     if accession.upper().startswith(_PRIDE_PREFIX):
         if use_cache:
             project_data = read_cache(accession, "project", **ttl_kwargs)  # type: ignore[assignment]
@@ -350,7 +370,7 @@ def _audit_single(
                 project_data = fetch_project(accession, delay=request_delay)
                 network_used = True
                 if persist_cache:
-                    write_cache(accession, "project", project_data, **cache_kwargs)
+                    persist_cache_entry("project", project_data)
             except PrideAPIError:
                 # Count the attempt so bulk-audit still applies bulk_delay.
                 network_used = True
@@ -371,7 +391,7 @@ def _audit_single(
                 files_data = fetch_files(accession, delay=request_delay)
                 network_used = True
                 if persist_cache:
-                    write_cache(accession, "files", files_data, **cache_kwargs)
+                    persist_cache_entry("files", files_data)
             except PrideAPIError:
                 network_used = True
                 stale, age = read_cache_stale(accession, "files", **cache_kwargs)
@@ -511,31 +531,14 @@ def _write_export(results: list[AuditResult], path: str, fmt: str) -> None:
         _export_json(results, path)
 
 
-def _cache_stats(cache_dir: Path) -> tuple[int, int, float | None, float | None]:
-    """Return file count, total bytes, oldest mtime, newest mtime."""
-    if not cache_dir.exists():
-        return 0, 0, None, None
-    files: list[Path] = []
-    for path in cache_dir.iterdir():
-        try:
-            if path.is_file():
-                files.append(path)
-        except OSError:
-            continue
-    if not files:
-        return 0, 0, None, None
-    total = 0
-    mtimes: list[float] = []
-    for path in files:
-        try:
-            st = path.stat()
-        except OSError:
-            continue
-        total += st.st_size
-        mtimes.append(st.st_mtime)
-    if not mtimes:
-        return 0, 0, None, None
-    return len(mtimes), total, min(mtimes), max(mtimes)
+def _cache_stats(cache_dir: Path) -> tuple[int, int, int, float | None, float | None]:
+    """Return owned count, ignored count, bytes, oldest mtime, and newest mtime."""
+    inventory = inspect_cache(cache_dir)
+    if not inventory.entries:
+        return 0, inventory.ignored, 0, None, None
+    total = sum(entry.size for entry in inventory.entries)
+    mtimes = [entry.modified_at for entry in inventory.entries]
+    return len(inventory.entries), inventory.ignored, total, min(mtimes), max(mtimes)
 
 
 # ---------------------------------------------------------------------------
@@ -935,13 +938,18 @@ def cache_group() -> None:
 @cache_group.command("info")
 @click.pass_context
 def cache_info(ctx: click.Context) -> None:
-    """Print cache path, file count, size, and oldest/newest mtimes."""
+    """Print validated cache-entry counts, size, and modification times."""
     cfg = _resolve_effective(ctx)
     _emit_config_warnings(cfg)
-    cache_dir = Path(cfg.cache_dir)
-    count, total, oldest, newest = _cache_stats(cache_dir)
+    try:
+        cache_dir = validate_cache_root(cfg.cache_dir)
+        count, ignored, total, oldest, newest = _cache_stats(cache_dir)
+    except CacheSafetyError as exc:
+        _output.error(f"Error: unsafe cache directory: {exc}")
+        sys.exit(2)
     _output.status(f"cache_dir={cache_dir}")
     _output.status(f"files={count}")
+    _output.status(f"ignored={ignored}")
     _output.status(f"bytes={total}")
     if oldest is None or newest is None:
         _output.status("oldest=n/a")
@@ -952,28 +960,42 @@ def cache_info(ctx: click.Context) -> None:
 
 
 @cache_group.command("clear")
-@click.option("--yes", is_flag=True, default=False, help="Skip confirmation prompt.")
+@click.option(
+    "--yes",
+    is_flag=True,
+    default=False,
+    help="Skip confirmation; cache safety validation still applies.",
+)
 @click.pass_context
 def cache_clear(ctx: click.Context, yes: bool) -> None:
-    """Delete all files in the configured cache directory."""
+    """Delete validated PXAudit-owned entries from the configured cache."""
     cfg = _resolve_effective(ctx)
     _emit_config_warnings(cfg)
-    cache_dir = Path(cfg.cache_dir)
+    try:
+        cache_dir = validate_cache_root(cfg.cache_dir)
+        inventory = inspect_cache(cache_dir)
+    except CacheSafetyError as exc:
+        _output.error(f"Error: unsafe cache directory: {exc}")
+        sys.exit(2)
     _output.status(f"cache_dir={cache_dir}")
-
-    if not yes:
-        click.confirm(
-            f"Delete all cached files under {cache_dir}?",
-            abort=True,
-        )
 
     if not cache_dir.exists():
         _output.status("Cache directory does not exist; nothing to delete.")
         return
 
-    removed = 0
-    for path in cache_dir.iterdir():
-        if path.is_file():
-            path.unlink()
-            removed += 1
+    if inventory.entries and not yes:
+        click.confirm(
+            f"Delete {len(inventory.entries)} validated cache file(s) under {cache_dir}?",
+            abort=True,
+        )
+
+    try:
+        removed, ignored, failed = clear_cache(cache_dir)
+    except CacheSafetyError as exc:
+        _output.error(f"Error: cache directory became unsafe: {exc}")
+        sys.exit(1)
     _output.status(f"Removed {removed} file(s).")
+    _output.status(f"Ignored entries: {ignored}.")
+    if failed:
+        _output.error(f"Error: failed to remove {failed} validated cache file(s).")
+        sys.exit(1)

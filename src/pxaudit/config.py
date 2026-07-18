@@ -126,6 +126,8 @@ def _normalize(key: str, value: object) -> object:
     if key == "export_format" and isinstance(value, str):
         return value.casefold()
     if key == "cache_dir":
+        if isinstance(value, str) and not value.strip():
+            return value
         return str(Path(value).expanduser())  # type: ignore[arg-type]
     return value
 
@@ -237,7 +239,7 @@ def merge_config(
                 continue
             values[key] = _normalize(key, flag_val)
         elif key == "cache_dir":
-            values[key] = str(Path(str(flag_val)).expanduser())
+            values[key] = _normalize(key, flag_val)
         elif key in {"cache_ttl_seconds", "request_delay", "bulk_delay"}:
             if isinstance(flag_val, bool) or float(flag_val) < 0:  # type: ignore[arg-type]
                 continue

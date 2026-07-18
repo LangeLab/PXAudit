@@ -185,6 +185,15 @@ def test_cache_dir_expanduser(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     assert values["cache_dir"] == str(tmp_path / "mycache")
 
 
+def test_blank_cache_dir_remains_blank_for_safety_validation(tmp_path: Path) -> None:
+    """A blank cache path is not normalized into the current directory."""
+    path = tmp_path / "cfg.toml"
+    path.write_text('cache_dir = ""\n')
+
+    values, _warnings = load_file_config(path)
+    assert values["cache_dir"] == ""
+
+
 def test_export_format_none_type_ok() -> None:
     """_type_ok accepts None for export_format."""
     from pxaudit.config import _type_ok
