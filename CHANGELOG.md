@@ -4,9 +4,31 @@
 
 All notable changes to PXAudit are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project follows [Semantic Versioning](https://semver.org/).
 
----
+## [0.5.1] - 2026-07-18
 
-## [0.5.0] - 2026-07-10 - [Tagged]
+Safety, scientific-contract, resilience, test-architecture, and documentation corrections for the v0.5 line.
+
+### Added
+
+- A nine-job Python 3.12 through 3.14 CI matrix across Ubuntu, macOS, and Windows, plus locked-dependency auditing and secret scanning.
+
+### Changed
+
+- Tier logic v2.1 separates generic processed results from supported PSI identification evidence, restricts quantitative evidence to recognized abundance summaries or matrices, and requires usable quantification-method CV metadata.
+- Cache envelopes preserve endpoint retrieval and snapshot provenance. `--no-cache` performs no cache I/O; `--refresh` retains its documented stale-outage fallback.
+- Accession normalization, PRIDE response validation, retry policy, session ownership, and pagination termination now use explicit bounded contracts.
+- Reports use a static, quality-sorted accession table and deterministic top-ten cohorts. Nullable flags remain unknown rather than being counted as present or missing.
+- Test contracts now cover exact semantics, deterministic edge cases, exhaustive state combinations, metamorphic invariants, failure paths, component workflows, recorded PRIDE payloads, and explicit live verification.
+
+### Fixed
+
+- Cache cleanup validates ownership and refuses dangerous roots; cache keys cannot escape the configured directory; concurrent writers use unique temporary files.
+- Incomplete file fetches no longer replace prior manifests or persist false evidence, and completed audits write study, file, and audit rows atomically.
+- Non-PRIDE rows no longer claim PRIDE provenance. Manifest and report commands open existing databases read-only.
+- Report output protection applies to `report.html`, so the default current-directory output works when that file is absent.
+- CLI validation, operational errors, exit codes, and manifest stdout remain consistent across output modes.
+
+## [0.5.0] - 2026-07-10
 
 CLI polish, user configuration, and cache management.
 
@@ -35,7 +57,7 @@ CLI polish, user configuration, and cache management.
 - Nested TOML tables in the config file warn that only flat keys are supported.
 - Connection/proxy failures from `requests` are wrapped as `PrideAPIError` so the CLI exits cleanly.
 
-## [0.4.0] - 2026-06-22 - [Tagged]
+## [0.4.0] - 2026-06-22
 
 ### Added
 
@@ -44,10 +66,10 @@ CLI polish, user configuration, and cache management.
 - Metadata Completeness: horizontal bar chart showing missing fields ranked by frequency, color-coded by severity.
 - Cohort Analysis: stacked bar charts showing quality distribution by organism and instrument type.
 - Tier Reference: two-column grid with accurate descriptions for all tiers.
-- Dataset Explorer: sortable table with colored tier badges, flag indicators, and title tooltips.
+- Dataset Explorer: quality-sorted static table with colored tier badges, flag indicators, and title tooltips.
 - Publication-quality matplotlib plots: 150 DPI, proper typography, clean layouts.
 - Local demo database generator for report screenshots (150+ synthetic datasets).
-- `test_report.py`: 38 tests covering all query functions, chart rendering, and HTML output.
+- Report tests covering query functions, chart rendering, and HTML output.
 
 ### Changed
 
@@ -61,9 +83,7 @@ CLI polish, user configuration, and cache management.
 - Donut chart legends show all tiers even when count=0.
 - Metadata completeness chart annotations instead of redundant table.
 
----
-
-## [0.3.0] - 2026-05-25 - [Tagged]
+## [0.3.0] - 2026-05-25
 
 Schema provenance, file manifest, cache versioning, stale-cache fallback, public API exports, code-quality refinements, and cross-platform CI.
 
@@ -90,9 +110,7 @@ Schema provenance, file manifest, cache versioning, stale-cache fallback, public
 - Removed all `# Audit fix (Issue N)` and `# Note:` justification comments from source code.
 - Replaced Unicode em-dashes and box-drawing characters with ASCII equivalents across all files.
 
----
-
-## [0.2.0] - 2026-05-25 - [Tagged]
+## [0.2.0] - 2026-05-25
 
 CI/CD pipeline, type checking, bulk auditing, TSV/JSON/CSV export, and rate-limit backoff.
 
@@ -126,8 +144,6 @@ CI/CD pipeline, type checking, bulk auditing, TSV/JSON/CSV export, and rate-limi
 - Fixed stale `# type: ignore[arg-type]` comment in `tier_engine.py` (now `call-overload`).
 - Added `# type: ignore[assignment]` in `cli.py` for `read_cache` calls that return a union.
 
----
-
 ## [0.1.1] - 2026-05-10
 
 Cache hardening, bug fixes, and doc improvements.
@@ -143,19 +159,17 @@ Cache hardening, bug fixes, and doc improvements.
 ### Fixed
 
 - `write_cache` now atomic: writes to `.tmp` then `os.replace()`; no corrupt files on crash (#3).
-- `PRAGMA foreign_keys = ON` enforced inside every write function; works on raw connections (#1).
+- `PRAGMA foreign_keys = ON` enabled on connections returned by `get_or_create_db()` (#1).
 - `migrate_audit_v2(conn)` now called in `get_or_create_db()`; v1 databases are transparently upgraded (#10).
 - Cache docstring now matches actual `~/.pxaudit_cache/` default (#12).
 - `_PRIDE_PREFIX` deduplicated into `pxaudit/__init__.py` (#11).
 
 ### Changed
 
-- `None` tier documented as reserved for non-PRIDE repositories in `tier_engine.py` docstring (#5).
+- `None` tier documented for missing mandatory PXD metadata; non-PRIDE accessions use `Unverifiable` (#5).
 - `has_organism_id` column annotated in SQL as tracked but not tier-gating (#9).
 
----
-
-## [0.1.0] - 2026-03-21 - [Tagged]
+## [0.1.0] - 2026-03-21
 
 First tagged release. Single-study auditing with a 7-tier FAIR ladder and quantification readiness axis.
 
@@ -179,7 +193,9 @@ First tagged release. Single-study auditing with a 7-tier FAIR ladder and quanti
 - `fetch_files` fetched only the first 100 files; added pagination loop (#4).
 
 [0.5.0]: https://github.com/LangeLab/PXAudit/releases/tag/v0.5.0
-[0.4.0]: https://github.com/LangeLab/PXAudit/releases/tag/v0.4.0
+[0.5.1]: https://github.com/LangeLab/PXAudit/compare/v0.5.0...HEAD
+[0.4.0]: https://github.com/LangeLab/PXAudit/commit/747f9dab371ffd3291382824ebb4224ed3ae327a
 [0.3.0]: https://github.com/LangeLab/PXAudit/releases/tag/v0.3.0
 [0.2.0]: https://github.com/LangeLab/PXAudit/releases/tag/v0.2.0
+[0.1.1]: https://github.com/LangeLab/PXAudit/commit/41ba2896acd9cec3b783af91c6fa827c9d5f5772
 [0.1.0]: https://github.com/LangeLab/PXAudit/releases/tag/v0.1.0

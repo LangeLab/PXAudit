@@ -1,13 +1,19 @@
 ### PXAudit
 
 **Getting started**
+
 - [[Home]]
 - [[CLI Reference]]
 
-**Concepts**
+**Understand the audit**
+
 - [[Tier System]]
 - [[Database Schema]]
 
-**Contributing**
-- [[Development]]
+**Help**
+
 - [[FAQ]]
+
+**Contributing**
+
+- [[Development]]

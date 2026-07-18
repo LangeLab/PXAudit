@@ -9,7 +9,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.12--3.14-2D7D46?style=flat-square&logo=python&logoColor=white" alt="Python 3.12-3.14">
-  <img src="https://img.shields.io/badge/version-0.5.0-8B5CF6?style=flat-square" alt="v0.5.0">
+  <img src="https://img.shields.io/badge/version-0.5.1-8B5CF6?style=flat-square" alt="v0.5.1">
   <img src="https://img.shields.io/badge/status-beta-C17D10?style=flat-square" alt="Beta">
   <img src="https://img.shields.io/github/actions/workflow/status/LangeLab/PXAudit/ci.yml?branch=main&style=flat-square&logo=github&label=CI" alt="CI">
   <img src="https://img.shields.io/badge/coverage-100%25-22C55E?style=flat-square" alt="100% branch coverage">
@@ -22,254 +22,57 @@
   <a href="https://github.com/LangeLab/PXAudit/wiki"><img src="https://img.shields.io/badge/docs-Wiki-0F766E?style=flat-square" alt="Docs"></a>
 </p>
 
-PXAudit fetches a [PRIDE](https://www.ebi.ac.uk/pride/) dataset's project metadata and file list, classifies every file with a deterministic `FileTypeClassifier`, then assigns a 7-tier [FAIR](https://doi.org/10.1038/sdata.2016.18) ladder and a quantification-readiness tier. Results are written to a local SQLite database.
+I made PXAudit because I was checking PRIDE submissions by hand and got tired of repeating the same steps.
 
----
+PXAudit reads project metadata and file listings from the [PRIDE Archive](https://www.ebi.ac.uk/pride/), classifies the deposited files, assigns a seven-level [FAIR](https://doi.org/10.1038/sdata.2016.18) tier and a separate quantification-readiness tier, then saves the audit to SQLite. It does not download deposited data files.
 
-## Installation
+## Quick start
 
-Requires Python >= 3.12. [uv](https://docs.astral.sh/uv/) is the recommended runner.
+PXAudit supports Python 3.12 through 3.14. The source checkout uses [uv](https://docs.astral.sh/uv/):
 
 ```bash
 git clone https://github.com/LangeLab/PXAudit.git
 cd PXAudit
 uv sync
-uv run pxaudit --help
-```
-
----
-
-## Quick Start
-
-```bash
 uv run pxaudit check PXD000001
 ```
 
-On first run, PXAudit fetches project metadata and file lists from the PRIDE REST API and caches both responses under `~/.pxaudit_cache/`. Subsequent runs for the same accession are instant (cache hits skip the network entirely). Audit results are written to `pxaudit_results.db` in the current directory.
+The first audit queries PRIDE and creates `pxaudit_results.db` in the current directory. API responses are cached under `~/.pxaudit_cache/`, so a fresh repeat audit does not need another request.
 
----
+PXAudit currently audits PRIDE `PXD` accessions. Safe identifiers from other ProteomeXchange repositories are accepted as `Unverifiable`; repository adapters are not implemented yet.
 
-## Usage
-
-### `pxaudit check`
-
-Audit a single Proteomics Exchange accession.
+## Common tasks
 
 ```bash
-uv run pxaudit check PXD004683
-uv run pxaudit check PXD004683 --no-cache   # bypass local cache
-uv run pxaudit check PXD004683 --db ~/audits/lab.db
-```
-
-Options: `--refresh` (skip cache reads, still write), `--no-cache` (skip cache reads and writes), `--db PATH` (SQLite output path; config or `pxaudit_results.db`).
-
-Non-PRIDE accessions (`MSV`, `JPST`, `IPX`) are accepted without error and assigned the _Unverifiable_ tier; PXAudit only has access to the PRIDE API.
-
-### Global options
-
-```bash
-uv run pxaudit -q check PXD004683          # one-line summary
-uv run pxaudit -v check PXD004683          # checklist + detail
-uv run pxaudit --no-color check PXD004683  # plain text
-uv run pxaudit config show                 # effective settings
-uv run pxaudit cache info                  # cache summary
-uv run pxaudit cache clear                 # remove validated PXAudit cache entries
-```
-
-Optional user config: `~/.pxaudit.toml` (see the wiki CLI Reference).
-
-`cache info` counts only versioned entries whose PXAudit identity matches their filename and reports other directory entries as ignored. `cache clear` operates on that same validated set, never follows cache-entry symlinks, and refuses broad locations such as a filesystem root, the home directory, the working directory, or the system temporary directory. `--yes` skips confirmation only.
-
-### `pxaudit bulk-audit`
-
-Audit multiple accessions in batch.
-
-```bash
-uv run pxaudit bulk-audit --input accessions.txt
+# Audit a list containing one accession per line
 uv run pxaudit bulk-audit --input accessions.txt --format tsv --output results.tsv
-cat accessions.txt | uv run pxaudit bulk-audit --input -
+
+# Inspect the stored file inventory
+uv run pxaudit manifest PXD000001
+
+# Review effective settings and cache state
+uv run pxaudit config show
+uv run pxaudit cache info
+
+# Generate a self-contained HTML report
+uv sync --extra report
+uv run pxaudit report --db pxaudit_results.db --output report/
 ```
 
-Options: `--format tsv|json|csv`, `--output PATH`, `--delay SECONDS`, `--continue-on-error`, `--overwrite`.
+Run `uv run pxaudit --help` or `uv run pxaudit COMMAND --help` for command-line help.
 
-### `pxaudit manifest`
+## Documentation
 
-List files for an accession from the audit database.
+The [wiki](https://github.com/LangeLab/PXAudit/wiki) contains the detailed contracts and examples:
 
-```bash
-uv run pxaudit manifest PXD004683
-uv run pxaudit manifest PXD004683 --format json
-```
+- [Home](https://github.com/LangeLab/PXAudit/wiki/Home): workflow overview and report preview
+- [CLI Reference](https://github.com/LangeLab/PXAudit/wiki/CLI-Reference): commands, flags, configuration, caching, errors, and exit codes
+- [Tier System](https://github.com/LangeLab/PXAudit/wiki/Tier-System): FAIR and quantification tiers, evidence flags, and scoring rules
+- [Database Schema](https://github.com/LangeLab/PXAudit/wiki/Database-Schema): tables, columns, migrations, and example queries
+- [FAQ](https://github.com/LangeLab/PXAudit/wiki/FAQ): supported accessions, file classification, offline use, and common scoring questions
+- [Development](https://github.com/LangeLab/PXAudit/wiki/Development): setup, architecture, testing, style, and CI
 
-Options: `--db PATH` (default `pxaudit_results.db`), `--format tsv|json`.
-
-### `pxaudit report`
-
-Generate a self-contained HTML report from a populated database.
-
-```bash
-uv run pxaudit report --db pxaudit_results.db
-uv run pxaudit report --db pxaudit_results.db --output reports/ --title "Lab Audit Report"
-```
-
-Options: `--output DIR` (default: current directory), `--title TEXT` (default: "PXAudit Report"), `--overwrite` (overwrite existing output directory).
-
-Requires optional dependencies: `pip install pxaudit[report]` or `uv sync --extra report`.
-
----
-
-## Example Output
-
-```text
-Accession : PXD000001
-Tier      : Silver
-Quant Tier: Partial
-------------------------------------------------
-Metadata
-  ✔ Title         TMT proteomics of human cell lines
-  ✔ Organism      Homo sapiens (9606)
-  ✔ Instrument    LTQ Orbitrap Velos
-  ✘ Organism part annotated
-  ✔ Publication   linked
-  ✘ Quant metadata (CV methods)
-------------------------------------------------
-Files (142 total)
-  ✔ Result/Search files present
-  ✔ PSI-standard results (mzIdentML / mzTab-ID)
-  ✔ Open spectra (mzML / MGF)
-  ✘ SDRF file present
-  ✔ mzTab summary present
-  ✘ Tabular quant table (proteinGroups / evidence)
-------------------------------------------------
-```
-
----
-
-## Tier System
-
-PXAudit scores each dataset on a **7-tier FAIR ladder**. Every tier adds one FAIR requirement to the previous; a dataset must satisfy all criteria up to and including the tier it claims.
-
-| Tier         | Requirements                                                                              |
-| ------------ | ----------------------------------------------------------------------------------------- |
-| **None**     | Missing a mandatory metadata field (title, organism, or instrument).                      |
-| **Raw**      | Mandatory metadata present; no processed result files found.                              |
-| **Bronze**   | Result/search files present, but none are PSI-standard (mzIdentML / mzTab).               |
-| **Silver**   | PSI-standard results present; no SDRF experimental-design file.                           |
-| **Gold**     | SDRF present; open spectra (mzML / MGF) **or** organism-part annotation missing.          |
-| **Platinum** | Open spectra + organism-part annotation present; no linked PubMed publication.            |
-| **Diamond**  | All FAIR criteria met: PSI results, SDRF, open spectra, organism part, and a publication. |
-
-> Tier logic is version-stamped (`tier_logic_version = "v2.0"`) and stored in the database so that re-scoring after a logic update can be detected.
-
-### Quant Tier (secondary axis)
-
-The quant tier is independent of the FAIR tier and indicates quantification readiness.
-
-| Quant Tier         | Meaning                                                                         |
-| ------------------ | ------------------------------------------------------------------------------- |
-| **Unverifiable**   | Non-PRIDE accession; cannot be evaluated.                                       |
-| **No Quant**       | No PSI-standard results and no tabular quant files.                             |
-| **Partial**        | Either PSI-standard IDs **or** a quant table, but not both.                     |
-| **Quant-Ready**    | PSI IDs + tabular quant table present; CV-term quantification metadata missing. |
-| **Quant-Complete** | PSI IDs + tabular quant table + CV-term method metadata are fully described.    |
-
-### Validated Results
-
-The following scores were last verified against the live PRIDE REST API on 2026-03-21 and are included in the integration test suite.
-
-| Accession | Tier     | Quant Tier |
-| --------- | -------- | ---------- |
-| PXD057701 | Raw      | No Quant   |
-| PXD002244 | Bronze   | No Quant   |
-| PXD000001 | Silver   | Partial    |
-| PXD073444 | Platinum | Partial    |
-| PXD075811 | Platinum | Partial    |
-| PXD004683 | Diamond  | Partial    |
-
----
-
-## Output Database
-
-Every `check` run upserts three tables in the SQLite database:
-
-| Table         | Description                                                                                                                                    |
-| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `study`       | One row per accession: title, organism, instrument, submission year and type, keywords.                                                        |
-| `study_files` | One row per file: name, PRIDE category, extension, FTP URL, size in bytes.                                                                     |
-| `audit`       | One row per accession: computed tier, quant tier, 13 `has_*` quality flags, `files_fetch_failed`, `is_unverifiable`, and `tier_logic_version`. |
-
-> **Example queries**
-
-```sql
--- Tier distribution across all audited datasets
-SELECT tier, COUNT(*) AS n FROM audit GROUP BY tier ORDER BY n DESC;
-
--- All Diamond datasets
-SELECT accession, quant_tier FROM audit WHERE tier = 'Diamond';
-
--- Datasets ready for re-scoring after a logic update
-SELECT accession FROM audit WHERE tier_logic_version != 'v2.0';
-
--- File-type breakdown for a single accession
-SELECT file_category, COUNT(*) AS n
-FROM study_files
-WHERE accession = 'PXD004683'
-GROUP BY file_category;
-```
-
----
-
-## Development Setup
-
-```bash
-uv sync
-uv run pre-commit install
-```
-
-Pre-commit runs `ruff` (lint + format, line-length 100) and `mypy` (strict options) on every commit. See the [wiki](https://github.com/LangeLab/PXAudit/wiki) for detailed reference documentation.
-
-### Project Layout
-
-```text
-src/pxaudit/
-├── cli.py              # click entry points (check, bulk-audit, manifest, report)
-├── tier_engine.py      # 7-tier FAIR ladder + quant tier logic
-├── file_classifier.py  # deterministic FileClass assignment for every file type
-├── pride_client.py     # PRIDE REST API v3 client with pagination + retry/backoff
-├── db.py               # SQLite schema + upsert helpers + migrations
-├── cache.py            # local JSON response cache (~/.pxaudit_cache/)
-└── report.py           # HTML report generation with Jinja2 + matplotlib
-```
-
----
-
-## Testing
-
-```bash
-# Unit tests (default, no network required)
-uv run pytest
-
-# With coverage report
-uv run pytest --cov=pxaudit --cov-report=term-missing
-
-# Live integration tests against the real PRIDE API (requires network)
-uv run pytest -m integration -v --no-cov
-```
-
-The default run excludes integration tests (`-m 'not integration'` is set in `pyproject.toml`). The test suite has **506 unit tests** with **100% branch coverage** across all modules, plus **12 live integration tests** covering six real PRIDE accessions.
-
----
-
-## Roadmap
-
-- CLI polish, configuration defaults, and quieter/script-friendly output
-- Publish to PyPI (PRIDE-only; the public API may still evolve before 1.0)
-- Multi-repository adapters for MassIVE, jPOST, and iProX
-- A 1.0 release that freezes the public CLI and library API
-
-Panorama Public and PeptideAtlas/PASSEL are out of scope for now.
-
-Contributions and issue reports are welcome.
+Contributions and issue reports are much appreciated. The development guide explains the local checks and documentation workflow.
 
 ---
 
@@ -282,7 +85,7 @@ If you use PXAudit in your research, please cite it as:
   author   = {Ergin, Enes Kemal},
   title    = {{PXAudit}: A command-line tool for auditing {Proteomics Exchange} study metadata},
   year     = {2026},
-  version  = {0.5.0},
+  version  = {0.5.1},
   url      = {https://github.com/LangeLab/PXAudit},
   license  = {MIT},
 }
