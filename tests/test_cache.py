@@ -22,13 +22,16 @@ import pytest
 import pxaudit.cache as cache_module
 from pxaudit.cache import (
     _DEFAULT_TTL,
+    CachedResponse,
     CacheKeyError,
     CacheSafetyError,
     CacheWriteError,
     clear_cache,
     inspect_cache,
     read_cache,
+    read_cache_response,
     read_cache_stale,
+    read_cache_stale_response,
     validate_cache_root,
     write_cache,
 )
@@ -366,7 +369,126 @@ def test_cache_version_header_present_on_write(tmp_path: Path) -> None:
     assert raw["cache_owner"] == "pxaudit"
     assert raw["accession"] == "PXD000001"
     assert raw["endpoint"] == "project"
+    assert raw["retrieved_at"]
+    assert raw["snapshot_id"]
     assert raw["data"] == data
+
+
+def test_cache_response_preserves_embedded_provenance(tmp_path: Path) -> None:
+    """Provenance-aware reads return the stored retrieval time and snapshot identifier."""
+    retrieved_at = "2026-07-17T12:34:56-07:00"
+    write_cache(
+        "PXD000001",
+        "project",
+        {"title": "test"},
+        cache_dir=tmp_path,
+        retrieved_at=retrieved_at,
+        snapshot_id="audit-snapshot",
+    )
+
+    response = read_cache_response("PXD000001", "project", cache_dir=tmp_path)
+
+    assert isinstance(response, CachedResponse)
+    assert response.data == {"title": "test"}
+    assert response.retrieved_at == "2026-07-17T19:34:56+00:00"
+    assert response.snapshot_id == "audit-snapshot"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        {"cache_version": 1, "data": {"title": "legacy"}},
+        {"title": "legacy"},
+        {
+            "cache_version": 2,
+            "cache_owner": "pxaudit",
+            "accession": "PXD000001",
+            "endpoint": "project",
+            "retrieved_at": "not-a-timestamp",
+            "snapshot_id": "untrusted",
+            "data": {"title": "legacy"},
+        },
+        {
+            "cache_version": 2,
+            "cache_owner": "pxaudit",
+            "accession": "PXD000001",
+            "endpoint": "project",
+            "retrieved_at": "2026-01-01T00:00:00+00:00",
+            "snapshot_id": "   ",
+            "data": {"title": "legacy"},
+        },
+        {
+            "cache_version": 2,
+            "cache_owner": "pxaudit",
+            "accession": "PXD000001",
+            "endpoint": "project",
+            "retrieved_at": "0001-01-01T00:00:00+23:59",
+            "snapshot_id": "untrusted",
+            "data": {"title": "legacy"},
+        },
+    ],
+    ids=[
+        "version-one",
+        "unwrapped",
+        "invalid-version-two-timestamp",
+        "blank-version-two-snapshot",
+        "overflowing-version-two-timestamp",
+    ],
+)
+def test_compatible_entries_without_valid_provenance_use_file_time(
+    tmp_path: Path, raw: dict
+) -> None:
+    """Compatible older provenance falls back to mtime without claiming a snapshot."""
+    path = tmp_path / "PXD000001_project.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    modified_at = 1_700_000_000.0
+    os.utime(path, (modified_at, modified_at))
+
+    response = read_cache_response("PXD000001", "project", cache_dir=tmp_path, max_age=None)
+
+    assert response is not None
+    assert response.retrieved_at == "2023-11-14T22:13:20+00:00"
+    assert response.snapshot_id is None
+
+
+def test_unwrapped_legacy_files_use_file_time_provenance(tmp_path: Path) -> None:
+    """An unwrapped legacy files list receives mtime provenance without a snapshot claim."""
+    path = tmp_path / "PXD000001_files.json"
+    path.write_text(json.dumps([{"fileName": "legacy.raw"}]), encoding="utf-8")
+    modified_at = 1_700_000_000.0
+    os.utime(path, (modified_at, modified_at))
+
+    response = read_cache_response("PXD000001", "files", cache_dir=tmp_path, max_age=None)
+
+    assert response is not None
+    assert response.data == [{"fileName": "legacy.raw"}]
+    assert response.retrieved_at == "2023-11-14T22:13:20+00:00"
+    assert response.snapshot_id is None
+
+
+@pytest.mark.parametrize(
+    ("retrieved_at", "snapshot_id"),
+    [
+        ("2026-01-01T00:00:00", "snapshot"),
+        ("0001-01-01T00:00:00+23:59", "snapshot"),
+        (None, ""),
+        (None, "   "),
+    ],
+)
+def test_write_rejects_invalid_provenance(
+    tmp_path: Path, retrieved_at: str | None, snapshot_id: str
+) -> None:
+    """Writes reject timezone-free timestamps and blank snapshot identifiers."""
+    with pytest.raises(CacheWriteError):
+        write_cache(
+            "PXD000001",
+            "project",
+            {},
+            cache_dir=tmp_path,
+            retrieved_at=retrieved_at,
+            snapshot_id=snapshot_id,
+        )
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_cache_version_round_trip(tmp_path: Path) -> None:
@@ -447,6 +569,28 @@ def test_read_cache_stale_returns_data_and_age(tmp_path: Path) -> None:
     assert data == {"key": "value"}
     assert age is not None
     assert age > 7000  # roughly 7200 s, allow slight clock drift
+
+
+def test_read_cache_stale_response_includes_provenance_and_age(tmp_path: Path) -> None:
+    """A stale provenance read returns stored identity together with cache age."""
+    write_cache(
+        "PXD000001",
+        "project",
+        {"key": "value"},
+        cache_dir=tmp_path,
+        retrieved_at="2025-01-01T00:00:00+00:00",
+        snapshot_id="old-snapshot",
+    )
+    path = tmp_path / "PXD000001_project.json"
+    old = time.time() - 7200
+    os.utime(path, (old, old))
+
+    response = read_cache_stale_response("PXD000001", "project", cache_dir=tmp_path)
+
+    assert response is not None
+    assert response.retrieved_at == "2025-01-01T00:00:00+00:00"
+    assert response.snapshot_id == "old-snapshot"
+    assert response.age > 7000
 
 
 def test_read_cache_stale_missing_file_returns_none_none(tmp_path: Path) -> None:

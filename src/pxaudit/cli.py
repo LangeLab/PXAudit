@@ -19,6 +19,7 @@ import sqlite3
 import sys
 import time
 import typing
+import uuid
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -29,12 +30,13 @@ from tqdm import tqdm
 
 from pxaudit import _PRIDE_PREFIX, _output
 from pxaudit.cache import (
+    CachedResponse,
     CacheSafetyError,
     CacheWriteError,
     clear_cache,
     inspect_cache,
-    read_cache,
-    read_cache_stale,
+    read_cache_response,
+    read_cache_stale_response,
     validate_cache_root,
     write_cache,
 )
@@ -77,7 +79,8 @@ class AuditData(typing.NamedTuple):
     files_data:
         Raw file list from the PRIDE API response.
     fetched_at:
-        ISO 8601 timestamp of when the data was fetched.
+        ISO 8601 retrieval time of the project response. For a compatible older cache entry,
+        this is the cache file modification time used as migration provenance.
     warnings:
         Messages the CLI should emit via :func:`pxaudit._output.warn`.
     details:
@@ -91,7 +94,7 @@ class AuditData(typing.NamedTuple):
     study: dict
     files_df: pd.DataFrame
     files_data: list[dict]
-    fetched_at: str
+    fetched_at: str | None
     warnings: list[str]
     details: list[str]
     network_used: bool
@@ -202,7 +205,7 @@ def _parse_submission_year(date_str: str) -> int | None:
         return None
 
 
-def _extract_study(accession: str, project: dict, fetched_at: str) -> dict:
+def _extract_study(accession: str, project: dict, fetched_at: str | None) -> dict:
     """Map a raw PRIDE /projects response to a ``study`` table row dict."""
     organisms: list[dict] = project.get("organisms") or []
     instruments: list[dict] = project.get("instruments") or []
@@ -317,15 +320,16 @@ def _audit_single(
 ) -> AuditData:
     """Fetch, compute, persist, and return audit data for one accession.
 
-    On network failure, serves stale cached data with a warning if available.
-    Only raises ``PrideAPIError`` when no cache exists at all.
+    Default and refresh modes may serve stale cached data after a network failure. Disabled
+    cache mode performs no cache reads or writes. ``study.fetched_at`` records the project
+    response retrieval time, not the audit execution time.
 
     Does not write to the terminal. Warnings and verbose details are returned
     for the CLI layer to emit.
     """
-    fetched_at = datetime.now(UTC).isoformat()
-    project_data: dict | None = None
-    files_data: list[dict] | None = None
+    snapshot_id = uuid.uuid4().hex
+    project_response: CachedResponse | None = None
+    files_response: CachedResponse | None = None
     files_fetch_failed = False
     warnings: list[str] = []
     details: list[str] = []
@@ -338,13 +342,31 @@ def _audit_single(
     if cache_ttl_seconds is not None:
         ttl_kwargs["max_age"] = cache_ttl_seconds
 
-    use_cache = not (no_cache or refresh)
-    persist_cache = not no_cache  # --no-cache disables writes too
+    cache_mode = "disabled" if no_cache else "refresh" if refresh else "default"
+    read_fresh_cache = cache_mode == "default"
+    read_stale_cache = cache_mode != "disabled"
+    persist_cache = cache_mode != "disabled"
 
-    def persist_cache_entry(endpoint: str, data: dict | list) -> None:
+    def live_response(data: dict | list) -> CachedResponse:
+        """Attach retrieval and audit-snapshot provenance to a live response."""
+        return CachedResponse(
+            data=data,
+            retrieved_at=datetime.now(UTC).isoformat(),
+            snapshot_id=snapshot_id,
+            age=0.0,
+        )
+
+    def persist_cache_entry(endpoint: str, response: CachedResponse) -> None:
         """Write cache data without turning a cache failure into an audit failure."""
         try:
-            write_cache(accession, endpoint, data, **cache_kwargs)
+            write_cache(
+                accession,
+                endpoint,
+                response.data,
+                retrieved_at=response.retrieved_at,
+                snapshot_id=response.snapshot_id,
+                **cache_kwargs,
+            )
         except (CacheSafetyError, CacheWriteError):
             warnings.append(
                 f"Warning: cache write failed for {accession} {endpoint}; "
@@ -352,63 +374,85 @@ def _audit_single(
             )
 
     if accession.upper().startswith(_PRIDE_PREFIX):
-        if use_cache:
-            project_data = read_cache(accession, "project", **ttl_kwargs)  # type: ignore[assignment]
-            files_data = read_cache(accession, "files", **ttl_kwargs)  # type: ignore[assignment]
-            if project_data is not None:
+        if read_fresh_cache:
+            project_response = read_cache_response(accession, "project", **ttl_kwargs)
+            files_response = read_cache_response(accession, "files", **ttl_kwargs)
+            if project_response is not None:
                 details.append(f"cache hit: {accession} project")
             else:
                 details.append(f"cache miss: {accession} project")
-            if files_data is not None:
+            if files_response is not None:
                 details.append(f"cache hit: {accession} files")
             else:
                 details.append(f"cache miss: {accession} files")
 
-        if project_data is None:
+        if project_response is None:
             try:
                 details.append(f"fetch: {accession} project")
-                project_data = fetch_project(accession, delay=request_delay)
+                project_response = live_response(fetch_project(accession, delay=request_delay))
                 network_used = True
                 if persist_cache:
-                    persist_cache_entry("project", project_data)
+                    persist_cache_entry("project", project_response)
             except PrideAPIError:
                 # Count the attempt so bulk-audit still applies bulk_delay.
                 network_used = True
-                stale, age = read_cache_stale(accession, "project", **cache_kwargs)
+                stale = (
+                    read_cache_stale_response(accession, "project", **cache_kwargs)
+                    if read_stale_cache
+                    else None
+                )
                 if stale is not None:
-                    project_data = stale  # type: ignore[assignment]
+                    project_response = stale
                     warnings.append(
                         f"Warning: using stale cached project data for {accession} "
-                        f"(cache age: {age:.0f}s). API unreachable."
+                        f"(cache age: {stale.age:.0f}s). API unreachable."
                     )
-                    details.append(f"stale cache: {accession} project age={age:.0f}s")
+                    details.append(f"stale cache: {accession} project age={stale.age:.0f}s")
                 else:
                     raise
 
-        if files_data is None:
+        if files_response is None:
             try:
                 details.append(f"fetch: {accession} files")
-                files_data = fetch_files(accession, delay=request_delay)
+                files_response = live_response(fetch_files(accession, delay=request_delay))
                 network_used = True
                 if persist_cache:
-                    persist_cache_entry("files", files_data)
+                    persist_cache_entry("files", files_response)
             except PrideAPIError:
                 network_used = True
-                stale, age = read_cache_stale(accession, "files", **cache_kwargs)
+                stale = (
+                    read_cache_stale_response(accession, "files", **cache_kwargs)
+                    if read_stale_cache
+                    else None
+                )
                 if stale is not None:
-                    files_data = stale  # type: ignore[assignment]
+                    files_response = stale
                     warnings.append(
                         f"Warning: using stale cached file list for {accession} "
-                        f"(cache age: {age:.0f}s). API unreachable."
+                        f"(cache age: {stale.age:.0f}s). API unreachable."
                     )
-                    details.append(f"stale cache: {accession} files age={age:.0f}s")
+                    details.append(f"stale cache: {accession} files age={stale.age:.0f}s")
                 else:
                     files_fetch_failed = True
-                    files_data = []
                     warnings.append("Warning: files endpoint failed; file flags are unreliable.")
 
-    project_data = project_data or {}
-    files_data = files_data or []
+    if project_response is not None and files_response is not None:
+        snapshots_match = (
+            project_response.snapshot_id is not None
+            and bool(project_response.snapshot_id.strip())
+            and project_response.snapshot_id == files_response.snapshot_id
+        )
+        if not snapshots_match:
+            warnings.append(
+                "Warning: project and files responses are from different or unverified "
+                f"snapshots (project retrieved {project_response.retrieved_at}; "
+                f"files retrieved {files_response.retrieved_at}). The audit may combine "
+                "responses from different retrievals."
+            )
+
+    project_data = typing.cast(dict, project_response.data) if project_response is not None else {}
+    files_data = typing.cast(list[dict], files_response.data) if files_response is not None else []
+    fetched_at = project_response.retrieved_at if project_response is not None else None
 
     result = compute_audit(
         accession, project_data, files_data, files_fetch_failed=files_fetch_failed
@@ -552,7 +596,10 @@ def _cache_stats(cache_dir: Path) -> tuple[int, int, int, float | None, float | 
     "--refresh",
     is_flag=True,
     default=False,
-    help="Skip cache reads; still write fresh responses to the cache.",
+    help=(
+        "Skip fresh cache reads; fetch live responses, write successes, and allow stale "
+        "fallback after failure."
+    ),
 )
 @click.option(
     "--no-cache",

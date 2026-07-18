@@ -1,59 +1,4 @@
-"""Tests for pxaudit.cli.
-
-Coverage target: 100% branch coverage on cli.py.
-
-Test organisation
------------------
-1.  Accession validation : empty / numeric → exit 2
-2.  Happy-path Gold run : all cache misses, all API success → exit 0
-3.  Project API failure → exit 1
-4.  Files API failure → exit 0, Bronze, files_fetch_failed warning printed
-5.  Cache hit paths : project and/or files already cached → fetches skipped
-6.  --no-cache flag : read_cache never called; write_cache never called
-7.  --refresh flag : same semantics as --no-cache for reads; still fetches and writes
-8.  --db flag : correct path forwarded to get_or_create_db
-9.  Non-PXD prefix : Unverifiable result, no API calls, exit 0
-10. Output content : tier, accession, flag symbols present in stdout
-11. _extract_study unit tests : all field mappings and null branches
-12. _extract_files_df unit tests : FTP extraction, extension, empty input
-13. KeyboardInterrupt handling : clean exit 130, conn.close still called
-14. bulk-audit command : input, export, continue-on-error, stdin, empty, dedup, overwrite guard
-
-Branch map (cli.py)
-------------------
-check()
-  ├── A: not accession or not accession[0].isalpha()  → True/False
-  ├── B: accession.upper().startswith("PXD")          → True/False
-  ├── C: if use_cache (i.e. not (no_cache or refresh)) → True/False
-  ├── D: if project_data is None                      → True/False
-  ├── E: try fetch_project / except PrideAPIError     → normal/exception
-  ├── F: if files_data is None                        → True/False
-  ├── G: try fetch_files / except PrideAPIError       → normal/exception
-  └── H: try main body / except KeyboardInterrupt     → normal/exception
-
-_print_result()
-  └── H: if result.files_fetch_failed                 → True/False
-
-_extract_study()
-  ├── I: if organisms                                  → True/False
-  ├── J: if instruments                               → True/False
-  ├── K: if keywords                                  → True/False
-  └── L: if date_str                                  → True/False
-
-_extract_files_df()
-  ├── M: if not files                                 → True/False
-  └── N: next() FTP match                             → found/not-found
-
-bulk_audit()
-  ├── O: FileNotFoundError on input                   → sys.exit(2)
-  ├── P: empty input                                  → exit 0 with warning
-  ├── Q: duplicate accession                          → warn, skip
-  ├── R: fmt None vs set                              → export/no export
-  ├── S: export_path exists && not overwrite           → exit 2
-  ├── T: PrideAPIError + continue_on_error             → warn, continue
-  ├── U: PrideAPIError + not continue_on_error         → exit 1, partial
-  └── V: KeyboardInterrupt                            → partial, no crash
-"""
+"""Command-line orchestration, persistence, and output contract tests."""
 
 from __future__ import annotations
 
@@ -67,7 +12,7 @@ import pandas as pd
 import pytest
 from click.testing import CliRunner
 
-from pxaudit.cache import CacheSafetyError, CacheWriteError, write_cache
+from pxaudit.cache import CachedResponse, CacheSafetyError, CacheWriteError, write_cache
 from pxaudit.cli import (
     AuditData,
     _default_export_path,
@@ -179,6 +124,18 @@ _GOLD_FILES: list[dict] = [
     },
 ]
 
+
+def _cached(
+    data: dict | list,
+    *,
+    retrieved_at: str = "2026-01-01T00:00:00+00:00",
+    snapshot_id: str | None = "test-snapshot",
+    age: float = 0.0,
+) -> CachedResponse:
+    """Build deterministic cache provenance for CLI orchestration tests."""
+    return CachedResponse(data, retrieved_at, snapshot_id, age)
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -193,8 +150,8 @@ def mocks(monkeypatch: pytest.MonkeyPatch) -> dict:
     as needed via monkeypatch within the test body.
     """
     m: dict = {
-        "read_cache": MagicMock(return_value=None),
-        "read_cache_stale": MagicMock(return_value=(None, None)),
+        "read_cache_response": MagicMock(return_value=None),
+        "read_cache_stale_response": MagicMock(return_value=None),
         "write_cache": MagicMock(),
         "fetch_project": MagicMock(return_value=_GOLD_PROJECT),
         "fetch_files": MagicMock(return_value=_GOLD_FILES),
@@ -363,8 +320,10 @@ def test_check_project_cache_hit_skips_fetch_project(
 ) -> None:
     """If project is cached, fetch_project must not be called.  (branch D-False)."""
     monkeypatch.setattr(
-        "pxaudit.cli.read_cache",
-        MagicMock(side_effect=lambda acc, ep, **kw: _GOLD_PROJECT if ep == "project" else None),
+        "pxaudit.cli.read_cache_response",
+        MagicMock(
+            side_effect=lambda acc, ep, **kw: _cached(_GOLD_PROJECT) if ep == "project" else None
+        ),
     )
     runner = CliRunner()
     runner.invoke(main, ["check", "PXD000001"])
@@ -376,8 +335,10 @@ def test_check_files_cache_hit_skips_fetch_files(
 ) -> None:
     """If files are cached, fetch_files must not be called.  (branch F-False)."""
     monkeypatch.setattr(
-        "pxaudit.cli.read_cache",
-        MagicMock(side_effect=lambda acc, ep, **kw: _GOLD_FILES if ep == "files" else None),
+        "pxaudit.cli.read_cache_response",
+        MagicMock(
+            side_effect=lambda acc, ep, **kw: _cached(_GOLD_FILES) if ep == "files" else None
+        ),
     )
     runner = CliRunner()
     runner.invoke(main, ["check", "PXD000001"])
@@ -387,9 +348,11 @@ def test_check_files_cache_hit_skips_fetch_files(
 def test_check_both_cached_no_api_calls(mocks: dict, monkeypatch: pytest.MonkeyPatch) -> None:
     """Full cache hit → neither fetch_project nor fetch_files called."""
     monkeypatch.setattr(
-        "pxaudit.cli.read_cache",
+        "pxaudit.cli.read_cache_response",
         MagicMock(
-            side_effect=lambda acc, ep, **kw: _GOLD_PROJECT if ep == "project" else _GOLD_FILES
+            side_effect=lambda acc, ep, **kw: _cached(
+                _GOLD_PROJECT if ep == "project" else _GOLD_FILES
+            )
         ),
     )
     runner = CliRunner()
@@ -399,61 +362,294 @@ def test_check_both_cached_no_api_calls(mocks: dict, monkeypatch: pytest.MonkeyP
     mocks["fetch_files"].assert_not_called()
 
 
+def test_check_full_cache_hit_preserves_project_retrieval_time(
+    mocks: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cache hit persists the original project retrieval time as ``fetched_at``."""
+    project_retrieved_at = "2025-09-10T11:12:13+00:00"
+    monkeypatch.setattr(
+        "pxaudit.cli.read_cache_response",
+        MagicMock(
+            side_effect=lambda acc, ep, **kw: _cached(
+                _GOLD_PROJECT if ep == "project" else _GOLD_FILES,
+                retrieved_at=project_retrieved_at
+                if ep == "project"
+                else "2025-09-10T11:12:14+00:00",
+            )
+        ),
+    )
+
+    result = CliRunner().invoke(main, ["check", "PXD000001"])
+
+    assert result.exit_code == 0
+    study = mocks["insert_audit_record"].call_args.args[1]
+    assert study["fetched_at"] == project_retrieved_at
+
+
+def test_full_cache_hit_persists_retrieval_time_with_real_cache_and_database(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real cache-to-SQLite workflow preserves project retrieval provenance."""
+    import sqlite3
+
+    cache_dir = tmp_path / "cache"
+    database = tmp_path / "audit.db"
+    config = tmp_path / "missing.toml"
+    project_retrieved_at = "2025-08-09T10:11:12+00:00"
+    write_cache(
+        "PXD000001",
+        "project",
+        _GOLD_PROJECT,
+        cache_dir=cache_dir,
+        retrieved_at=project_retrieved_at,
+        snapshot_id="component-snapshot",
+    )
+    write_cache(
+        "PXD000001",
+        "files",
+        _GOLD_FILES,
+        cache_dir=cache_dir,
+        retrieved_at="2025-08-09T10:11:13+00:00",
+        snapshot_id="component-snapshot",
+    )
+    fetch_project_mock = MagicMock()
+    fetch_files_mock = MagicMock()
+    monkeypatch.setattr("pxaudit.cli.fetch_project", fetch_project_mock)
+    monkeypatch.setattr("pxaudit.cli.fetch_files", fetch_files_mock)
+    monkeypatch.setenv("PXAUDIT_CONFIG", str(config))
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "--cache-dir",
+            str(cache_dir),
+            "check",
+            "PXD000001",
+            "--db",
+            str(database),
+        ],
+    )
+
+    assert result.exit_code == 0
+    fetch_project_mock.assert_not_called()
+    fetch_files_mock.assert_not_called()
+    with sqlite3.connect(database) as connection:
+        stored = connection.execute(
+            "SELECT fetched_at FROM study WHERE accession = ?", ("PXD000001",)
+        ).fetchone()
+    assert stored == (project_retrieved_at,)
+    assert "different or unverified snapshots" not in result.output
+
+
+@pytest.mark.parametrize("global_flags", [[], ["-q"], ["-v"]])
+def test_check_mixed_snapshot_warning_survives_all_output_modes(
+    mocks: dict,
+    monkeypatch: pytest.MonkeyPatch,
+    global_flags: list[str],
+) -> None:
+    """Default, quiet, and verbose modes all report mixed endpoint provenance."""
+    monkeypatch.setattr(
+        "pxaudit.cli.read_cache_response",
+        MagicMock(
+            side_effect=lambda acc, ep, **kw: _cached(
+                _GOLD_PROJECT if ep == "project" else _GOLD_FILES,
+                retrieved_at="2025-01-01T00:00:00+00:00"
+                if ep == "project"
+                else "2025-02-01T00:00:00+00:00",
+                snapshot_id=f"{ep}-snapshot",
+            )
+        ),
+    )
+
+    result = CliRunner().invoke(main, [*global_flags, "check", "PXD000001"])
+
+    assert result.exit_code == 0
+    assert "different or unverified snapshots" in result.stderr
+    assert "project retrieved 2025-01-01" in result.stderr
+    assert "files retrieved 2025-02-01" in result.stderr
+
+
+def test_check_matching_snapshot_has_no_mixed_warning(
+    mocks: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Responses carrying one snapshot identifier do not produce a provenance warning."""
+    monkeypatch.setattr(
+        "pxaudit.cli.read_cache_response",
+        MagicMock(
+            side_effect=lambda acc, ep, **kw: _cached(
+                _GOLD_PROJECT if ep == "project" else _GOLD_FILES
+            )
+        ),
+    )
+
+    result = CliRunner().invoke(main, ["check", "PXD000001"])
+
+    assert result.exit_code == 0
+    assert "different or unverified snapshots" not in result.output
+
+
+@pytest.mark.parametrize("snapshot_id", [None, "   "])
+def test_check_missing_snapshot_provenance_warns(
+    mocks: dict, monkeypatch: pytest.MonkeyPatch, snapshot_id: str | None
+) -> None:
+    """Missing or blank snapshot identifiers are reported as unverified."""
+    monkeypatch.setattr(
+        "pxaudit.cli.read_cache_response",
+        MagicMock(
+            side_effect=lambda acc, ep, **kw: _cached(
+                _GOLD_PROJECT if ep == "project" else _GOLD_FILES,
+                snapshot_id=snapshot_id,
+            )
+        ),
+    )
+
+    result = CliRunner().invoke(main, ["check", "PXD000001"])
+
+    assert result.exit_code == 0
+    assert "different or unverified snapshots" in result.stderr
+
+
 # ---------------------------------------------------------------------------
-# 6. --no-cache flag  (branch C-False)
+# --no-cache flag
 # ---------------------------------------------------------------------------
 
 
 def test_check_no_cache_skips_read_cache(mocks: dict) -> None:
-    """--no-cache must not call read_cache.  (branch C-False)."""
+    """Disabled cache mode skips both fresh and stale cache reads."""
     runner = CliRunner()
     runner.invoke(main, ["check", "PXD000001", "--no-cache"])
-    mocks["read_cache"].assert_not_called()
+    mocks["read_cache_response"].assert_not_called()
+    mocks["read_cache_stale_response"].assert_not_called()
 
 
 def test_check_no_cache_does_not_write_cache(mocks: dict) -> None:
-    """--no-cache skips both reads AND writes to cache."""
+    """Disabled cache mode fetches live responses without writing them."""
     runner = CliRunner()
     runner.invoke(main, ["check", "PXD000001", "--no-cache"])
     mocks["fetch_project"].assert_called_once()
     mocks["fetch_files"].assert_called_once()
+    mocks["read_cache_stale_response"].assert_not_called()
+    mocks["write_cache"].assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("failed_fetch", "expected_exit"),
+    [("fetch_project", 1), ("fetch_files", 0)],
+)
+def test_check_no_cache_failure_never_uses_cache(
+    mocks: dict, failed_fetch: str, expected_exit: int
+) -> None:
+    """Disabled cache mode makes no cache call after either endpoint fails."""
+    mocks[failed_fetch].side_effect = PrideAPIError("down")
+
+    result = CliRunner().invoke(main, ["check", "PXD000001", "--no-cache"])
+
+    assert result.exit_code == expected_exit
+    mocks["read_cache_response"].assert_not_called()
+    mocks["read_cache_stale_response"].assert_not_called()
     mocks["write_cache"].assert_not_called()
 
 
 # ---------------------------------------------------------------------------
-# 7. --refresh flag  (branch C-False via refresh)
+# --refresh flag
 # ---------------------------------------------------------------------------
-
-# Rationale: --refresh is semantically "re-fetch, update cache".  It shares
-# the same read-skip behaviour as --no-cache but differs in intent.  The
-# implementation sets use_cache = not (no_cache or refresh), so both flags
-# exercise the same branch-C-false path.
 
 
 def test_check_refresh_skips_read_cache(mocks: dict) -> None:
-    """--refresh must not call read_cache.  (branch C-False via refresh)."""
+    """Refresh mode skips fresh cache reads."""
     runner = CliRunner()
     runner.invoke(main, ["check", "PXD000001", "--refresh"])
-    mocks["read_cache"].assert_not_called()
+    mocks["read_cache_response"].assert_not_called()
 
 
 def test_check_refresh_still_fetches_and_writes(mocks: dict) -> None:
-    """--refresh skips reads but still fetches from API and writes to cache."""
+    """Refresh skips fresh reads but fetches live responses and writes successes."""
     runner = CliRunner()
     runner.invoke(main, ["check", "PXD000001", "--refresh"])
     mocks["fetch_project"].assert_called_once()
     mocks["fetch_files"].assert_called_once()
     assert mocks["write_cache"].call_count == 2
+    project_write, files_write = mocks["write_cache"].call_args_list
+    assert project_write.kwargs["snapshot_id"] == files_write.kwargs["snapshot_id"]
+    assert project_write.kwargs["retrieved_at"]
+    assert files_write.kwargs["retrieved_at"]
 
 
 def test_check_refresh_with_no_cache_combined(mocks: dict) -> None:
     """--refresh combined with --no-cache must skip writes (--no-cache wins)."""
     runner = CliRunner()
     runner.invoke(main, ["check", "PXD000001", "--refresh", "--no-cache"])
-    mocks["read_cache"].assert_not_called()
+    mocks["read_cache_response"].assert_not_called()
+    mocks["read_cache_stale_response"].assert_not_called()
     mocks["fetch_project"].assert_called_once()
     mocks["fetch_files"].assert_called_once()
     mocks["write_cache"].assert_not_called()
+
+
+def test_check_refresh_project_failure_uses_stale_cache(mocks: dict) -> None:
+    """Refresh falls back to stale project data only after the live request fails."""
+    mocks["fetch_project"].side_effect = PrideAPIError("down")
+    mocks["read_cache_stale_response"].return_value = _cached(
+        _GOLD_PROJECT,
+        retrieved_at="2025-12-01T00:00:00+00:00",
+        snapshot_id="old-snapshot",
+        age=3600.0,
+    )
+
+    result = CliRunner().invoke(main, ["check", "PXD000001", "--refresh"])
+
+    assert result.exit_code == 0
+    mocks["read_cache_response"].assert_not_called()
+    mocks["read_cache_stale_response"].assert_called_once()
+    assert "cache age: 3600s" in result.output
+    assert "different or unverified snapshots" in result.output
+
+
+def test_check_refresh_files_failure_uses_stale_cache(mocks: dict) -> None:
+    """Refresh falls back to stale files data only after the live request fails."""
+    mocks["fetch_files"].side_effect = PrideAPIError("down")
+    mocks["read_cache_stale_response"].return_value = _cached(
+        _GOLD_FILES,
+        retrieved_at="2025-12-01T00:00:00+00:00",
+        snapshot_id="old-snapshot",
+        age=7200.0,
+    )
+
+    result = CliRunner().invoke(main, ["check", "PXD000001", "--refresh"])
+
+    assert result.exit_code == 0
+    mocks["read_cache_response"].assert_not_called()
+    mocks["read_cache_stale_response"].assert_called_once()
+    assert mocks["read_cache_stale_response"].call_args.args[1] == "files"
+    assert "cache age: 7200s" in result.output
+    assert "different or unverified snapshots" in result.output
+
+
+def test_check_refresh_project_failure_without_stale_exits_one(mocks: dict) -> None:
+    """Refresh reports project failure when no stale response is available."""
+    mocks["fetch_project"].side_effect = PrideAPIError("down")
+
+    result = CliRunner().invoke(main, ["check", "PXD000001", "--refresh"])
+
+    assert result.exit_code == 1
+    mocks["read_cache_response"].assert_not_called()
+    mocks["read_cache_stale_response"].assert_called_once()
+    mocks["write_cache"].assert_not_called()
+
+
+def test_check_refresh_files_failure_without_stale_does_not_cache_failure(
+    mocks: dict,
+) -> None:
+    """Refresh writes the project response but never caches a failed files response."""
+    mocks["fetch_files"].side_effect = PrideAPIError("down")
+
+    result = CliRunner().invoke(main, ["check", "PXD000001", "--refresh"])
+
+    assert result.exit_code == 0
+    mocks["read_cache_response"].assert_not_called()
+    mocks["read_cache_stale_response"].assert_called_once()
+    mocks["write_cache"].assert_called_once()
+    assert mocks["write_cache"].call_args.args[1] == "project"
 
 
 # ---------------------------------------------------------------------------
@@ -493,7 +689,7 @@ def test_check_non_pxd_makes_no_api_calls(mocks: dict) -> None:
     """Non-PXD accessions must not trigger cache reads or any API calls.  (branch B-False)."""
     runner = CliRunner()
     runner.invoke(main, ["check", "MSV000001"])
-    mocks["read_cache"].assert_not_called()
+    mocks["read_cache_response"].assert_not_called()
     mocks["fetch_project"].assert_not_called()
     mocks["fetch_files"].assert_not_called()
 
@@ -1239,8 +1435,8 @@ def test_check_stale_cache_fallback_on_project_failure(
     """When project fetch fails, stale cached project data must be served with warning."""
     monkeypatch.setattr("pxaudit.cli.fetch_project", MagicMock(side_effect=PrideAPIError("down")))
     monkeypatch.setattr(
-        "pxaudit.cli.read_cache_stale",
-        MagicMock(return_value=({"title": "stale"}, 9999.0)),
+        "pxaudit.cli.read_cache_stale_response",
+        MagicMock(return_value=_cached({"title": "stale"}, age=9999.0)),
     )
     runner = CliRunner()
     result = runner.invoke(main, ["check", "PXD000001"])
@@ -1254,8 +1450,8 @@ def test_check_stale_cache_fallback_on_files_failure(
     """When files fetch fails, stale cached files must be served with warning."""
     monkeypatch.setattr("pxaudit.cli.fetch_files", MagicMock(side_effect=PrideAPIError("down")))
     monkeypatch.setattr(
-        "pxaudit.cli.read_cache_stale",
-        MagicMock(return_value=([{"fileName": "stale.mzid"}], 9999.0)),
+        "pxaudit.cli.read_cache_stale_response",
+        MagicMock(return_value=_cached([{"fileName": "stale.mzid"}], age=9999.0)),
     )
     runner = CliRunner()
     result = runner.invoke(main, ["check", "PXD000001"])
@@ -1269,8 +1465,8 @@ def test_check_stale_cache_fallback_project_fails_no_cache(
     """When project fetch fails and no stale cache, must exit 1."""
     monkeypatch.setattr("pxaudit.cli.fetch_project", MagicMock(side_effect=PrideAPIError("down")))
     monkeypatch.setattr(
-        "pxaudit.cli.read_cache_stale",
-        MagicMock(return_value=(None, None)),
+        "pxaudit.cli.read_cache_stale_response",
+        MagicMock(return_value=None),
     )
     runner = CliRunner()
     result = runner.invoke(main, ["check", "PXD000001"])
@@ -1348,16 +1544,20 @@ def test_check_verbose_includes_detail(mocks: dict) -> None:
     assert "cache miss" in result.output or "fetch:" in result.output
 
 
-def test_check_stale_warning_survives_quiet(mocks: dict, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Quiet must not suppress stale-cache warnings on stderr."""
+@pytest.mark.parametrize("global_flags", [[], ["-q"], ["-v"]])
+def test_check_stale_warning_survives_all_output_modes(
+    mocks: dict, monkeypatch: pytest.MonkeyPatch, global_flags: list[str]
+) -> None:
+    """Default, quiet, and verbose modes do not suppress stale-cache warnings."""
     mocks["fetch_project"].side_effect = PrideAPIError("down")
-    mocks["read_cache_stale"].return_value = (_GOLD_PROJECT, 99999.0)
+    mocks["read_cache_stale_response"].return_value = _cached(_GOLD_PROJECT, age=99999.0)
     runner = CliRunner()
-    result = runner.invoke(main, ["-q", "check", "PXD000001"])
+    result = runner.invoke(main, [*global_flags, "check", "PXD000001"])
     assert result.exit_code == 0
-    assert "Metadata" not in result.stdout
     assert "stale" in result.stderr.lower()
     assert "Warning" in result.stderr
+    if global_flags == ["-q"]:
+        assert "Metadata" not in result.stdout
 
 
 def test_no_cache_help_mentions_reads_and_writes() -> None:
@@ -1369,11 +1569,12 @@ def test_no_cache_help_mentions_reads_and_writes() -> None:
 
 
 def test_refresh_help_mentions_still_write() -> None:
-    """--refresh help must say it still writes."""
+    """--refresh help distinguishes live fetches, writes, and stale fallback."""
     runner = CliRunner()
     result = runner.invoke(main, ["check", "--help"])
-    assert "Skip cache reads" in result.output
-    assert "write" in result.output.lower()
+    assert "Skip fresh cache reads" in result.output
+    assert "write successes" in result.output
+    assert "stale fallback" in result.output
 
 
 def test_audit_single_forwards_cache_and_delay(mocks: dict, tmp_path: Path) -> None:
@@ -1387,8 +1588,8 @@ def test_audit_single_forwards_cache_and_delay(mocks: dict, tmp_path: Path) -> N
         cache_ttl_seconds=123.0,
         request_delay=0.0,
     )
-    assert mocks["read_cache"].called
-    kwargs = mocks["read_cache"].call_args.kwargs
+    assert mocks["read_cache_response"].called
+    kwargs = mocks["read_cache_response"].call_args.kwargs
     assert kwargs["cache_dir"] == tmp_path / "cache"
     assert kwargs["max_age"] == 123.0
     assert mocks["fetch_project"].call_args.kwargs.get("delay") == 0.0
@@ -1411,7 +1612,7 @@ def test_audit_single_no_click_echo(
 
     monkeypatch.setattr(cli_mod.click, "echo", boom)
     mocks["fetch_project"].side_effect = PrideAPIError("down")
-    mocks["read_cache_stale"].return_value = (_GOLD_PROJECT, 10.0)
+    mocks["read_cache_stale_response"].return_value = _cached(_GOLD_PROJECT, age=10.0)
     data = _audit_single("PXD000001", str(tmp_path / "db.sqlite"), request_delay=0.0)
     assert echoed == []
     assert data.warnings
@@ -1927,8 +2128,8 @@ def test_stale_fallback_sets_network_used_and_sleeps(
     from pxaudit.cli import _audit_single
 
     mocks["fetch_project"].side_effect = PrideAPIError("down")
-    mocks["read_cache_stale"].return_value = (_GOLD_PROJECT, 50.0)
-    mocks["read_cache"].return_value = None
+    mocks["read_cache_stale_response"].return_value = _cached(_GOLD_PROJECT, age=50.0)
+    mocks["read_cache_response"].return_value = None
     data = _audit_single(
         "PXD000001",
         str(tmp_path / "db.sqlite"),
@@ -2039,7 +2240,7 @@ def test_config_cache_ttl_reaches_read_cache(
         ],
     )
     assert result.exit_code == 0
-    assert mocks["read_cache"].call_args.kwargs.get("max_age") == 42.0
+    assert mocks["read_cache_response"].call_args.kwargs.get("max_age") == 42.0
 
 
 def test_config_export_format_triggers_bulk_export(

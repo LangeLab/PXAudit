@@ -15,7 +15,9 @@ import stat
 import tempfile
 import time
 import typing
+import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 _log = logging.getLogger(__name__)
@@ -61,6 +63,21 @@ class CacheInventory:
     ignored: int
 
 
+@dataclass(frozen=True)
+class CachedResponse:
+    """Decoded cache payload with retrieval and snapshot provenance.
+
+    ``retrieved_at`` falls back to the cache file modification time for compatible entries
+    written before provenance fields existed. A missing ``snapshot_id`` means that PXAudit
+    cannot prove the project and files responses came from the same audit fetch.
+    """
+
+    data: dict | list
+    retrieved_at: str
+    snapshot_id: str | None
+    age: float
+
+
 __all__ = [
     "CacheEntry",
     "CacheError",
@@ -68,10 +85,13 @@ __all__ = [
     "CacheKeyError",
     "CacheSafetyError",
     "CacheWriteError",
+    "CachedResponse",
     "clear_cache",
     "inspect_cache",
     "read_cache",
+    "read_cache_response",
     "read_cache_stale",
+    "read_cache_stale_response",
     "validate_cache_root",
     "write_cache",
 ]
@@ -166,6 +186,30 @@ def _unwrap_cache(raw: typing.Any, accession: str, endpoint: str) -> dict | list
     return None
 
 
+def _normalized_timestamp(value: typing.Any) -> str | None:
+    """Return a timezone-aware ISO 8601 timestamp normalized to UTC."""
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+        if parsed.tzinfo is None:
+            return None
+        return parsed.astimezone(UTC).isoformat()
+    except (OverflowError, ValueError):
+        return None
+
+
+def _cache_provenance(raw: typing.Any, modified_at: float) -> tuple[str, str | None]:
+    """Extract embedded provenance or use file time for compatible older entries."""
+    if isinstance(raw, dict):
+        retrieved_at = _normalized_timestamp(raw.get("retrieved_at"))
+        snapshot_id = raw.get("snapshot_id")
+        if retrieved_at is not None and isinstance(snapshot_id, str) and snapshot_id.strip():
+            return retrieved_at, snapshot_id
+    fallback = datetime.fromtimestamp(modified_at, tz=UTC).isoformat()
+    return fallback, None
+
+
 def _read_json_file(
     path: Path,
     *,
@@ -204,23 +248,62 @@ def _read_entry(
     *,
     cache_dir: str | os.PathLike[str],
     max_age: float | None,
-) -> tuple[dict | list, float] | tuple[None, None]:
-    """Read and validate one cache entry, returning its payload and age."""
+) -> CachedResponse | None:
+    """Read and validate one cache entry with its provenance and age."""
     try:
         path = _cache_path(accession, endpoint, cache_dir)
     except CacheSafetyError as exc:
         _log.warning("Ignoring unsafe cache location: %s", exc)
-        return None, None
+        return None
 
     loaded = _read_json_file(path, max_age=max_age, log_failures=True)
     if loaded is None:
-        return None, None
+        return None
     raw, file_stat = loaded
     data = _unwrap_cache(raw, accession, endpoint)
     if data is None:
         _log.warning("Ignoring invalid cache entry %s", path.name)
-        return None, None
-    return data, max(0.0, time.time() - file_stat.st_mtime)
+        return None
+    retrieved_at, snapshot_id = _cache_provenance(raw, file_stat.st_mtime)
+    return CachedResponse(
+        data=data,
+        retrieved_at=retrieved_at,
+        snapshot_id=snapshot_id,
+        age=max(0.0, time.time() - file_stat.st_mtime),
+    )
+
+
+def read_cache_response(
+    accession: str,
+    endpoint: str,
+    *,
+    cache_dir: str | os.PathLike[str] = _DEFAULT_CACHE_DIR,
+    max_age: float | None = _DEFAULT_TTL,
+) -> CachedResponse | None:
+    """Return a fresh compatible response with cache provenance, or ``None``.
+
+    Parameters
+    ----------
+    accession:
+        Accession component of the cache identity.
+    endpoint:
+        Either ``"project"`` for a mapping or ``"files"`` for a list.
+    cache_dir:
+        Dedicated cache directory.
+    max_age:
+        Maximum entry age in seconds. ``None`` disables expiry.
+
+    Returns
+    -------
+    CachedResponse | None
+        The decoded response and provenance, or ``None`` on a cache miss.
+
+    Raises
+    ------
+    CacheKeyError
+        If the accession or endpoint cannot form a safe cache key.
+    """
+    return _read_entry(accession, endpoint, cache_dir=cache_dir, max_age=max_age)
 
 
 def read_cache(
@@ -257,13 +340,43 @@ def read_cache(
     CacheKeyError
         If the accession or endpoint cannot form a safe cache key.
     """
-    data, _age = _read_entry(
+    response = read_cache_response(
         accession,
         endpoint,
         cache_dir=cache_dir,
         max_age=max_age,
     )
-    return data
+    return response.data if response is not None else None
+
+
+def read_cache_stale_response(
+    accession: str,
+    endpoint: str,
+    *,
+    cache_dir: str | os.PathLike[str] = _DEFAULT_CACHE_DIR,
+) -> CachedResponse | None:
+    """Return a compatible response with provenance without applying the TTL.
+
+    Parameters
+    ----------
+    accession:
+        Accession component of the cache identity.
+    endpoint:
+        Either ``"project"`` for a mapping or ``"files"`` for a list.
+    cache_dir:
+        Dedicated cache directory.
+
+    Returns
+    -------
+    CachedResponse | None
+        The decoded response and provenance, or ``None`` on a cache miss.
+
+    Raises
+    ------
+    CacheKeyError
+        If the accession or endpoint cannot form a safe cache key.
+    """
+    return _read_entry(accession, endpoint, cache_dir=cache_dir, max_age=None)
 
 
 def read_cache_stale(
@@ -293,7 +406,10 @@ def read_cache_stale(
     CacheKeyError
         If the accession or endpoint cannot form a safe cache key.
     """
-    return _read_entry(accession, endpoint, cache_dir=cache_dir, max_age=None)
+    response = read_cache_stale_response(accession, endpoint, cache_dir=cache_dir)
+    if response is None:
+        return None, None
+    return response.data, response.age
 
 
 def _parse_entry_name(name: str) -> tuple[str, str] | None:
@@ -443,6 +559,8 @@ def write_cache(
     data: dict | list,
     *,
     cache_dir: str | os.PathLike[str] = _DEFAULT_CACHE_DIR,
+    retrieved_at: str | None = None,
+    snapshot_id: str | None = None,
 ) -> None:
     """Atomically write one owned cache entry with a unique temporary file.
 
@@ -459,6 +577,11 @@ def write_cache(
         Decoded endpoint payload with the shape required by ``endpoint``.
     cache_dir:
         Dedicated cache directory.
+    retrieved_at:
+        Time the source response completed. Defaults to the current UTC time.
+    snapshot_id:
+        Identifier shared by endpoint responses fetched in one audit. Defaults to a new
+        identifier for this standalone write.
 
     Raises
     ------
@@ -473,6 +596,15 @@ def write_cache(
     if not _payload_matches_endpoint(data, endpoint):
         raise CacheWriteError("cache payload does not match its endpoint")
 
+    normalized_retrieved_at = _normalized_timestamp(
+        retrieved_at if retrieved_at is not None else datetime.now(UTC).isoformat()
+    )
+    if normalized_retrieved_at is None:
+        raise CacheWriteError("cache retrieval timestamp must include a timezone")
+    if snapshot_id is not None and (not isinstance(snapshot_id, str) or not snapshot_id.strip()):
+        raise CacheWriteError("cache snapshot identifier must be a nonblank string")
+    resolved_snapshot_id = snapshot_id or uuid.uuid4().hex
+
     path = _cache_path(accession, endpoint, cache_dir)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -486,6 +618,8 @@ def write_cache(
         "cache_owner": _CACHE_OWNER,
         "accession": accession,
         "endpoint": endpoint,
+        "retrieved_at": normalized_retrieved_at,
+        "snapshot_id": resolved_snapshot_id,
         "data": data,
     }
     temporary_path: Path | None = None

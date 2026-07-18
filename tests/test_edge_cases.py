@@ -71,7 +71,7 @@ def _api_mocks(
 ) -> dict:
     """Patch cache and API; leave get_or_create_db and insert_* untouched."""
     m = {
-        "read_cache": MagicMock(return_value=None),
+        "read_cache_response": MagicMock(return_value=None),
         "write_cache": MagicMock(),
         "fetch_project": MagicMock(return_value=pride_project_gold),
         "fetch_files": MagicMock(return_value=pride_files_gold),
@@ -117,7 +117,7 @@ def test_lowercase_pxd_cli_routes_correctly(
 ) -> None:
     """CLI must also route lowercase 'pxd...' to the PXD fetch path."""
     fetch_project = MagicMock(return_value=pride_project_gold)
-    monkeypatch.setattr("pxaudit.cli.read_cache", MagicMock(return_value=None))
+    monkeypatch.setattr("pxaudit.cli.read_cache_response", MagicMock(return_value=None))
     monkeypatch.setattr("pxaudit.cli.write_cache", MagicMock())
     monkeypatch.setattr("pxaudit.cli.fetch_project", fetch_project)
     monkeypatch.setattr("pxaudit.cli.fetch_files", MagicMock(return_value=pride_files_gold))
@@ -314,7 +314,7 @@ def test_pipeline_silver_audit_row(
     pride_files_silver: list,
 ) -> None:
     """Silver run: audit row must have tier=Silver and has_sdrf=0."""
-    monkeypatch.setattr("pxaudit.cli.read_cache", MagicMock(return_value=None))
+    monkeypatch.setattr("pxaudit.cli.read_cache_response", MagicMock(return_value=None))
     monkeypatch.setattr("pxaudit.cli.write_cache", MagicMock())
     monkeypatch.setattr("pxaudit.cli.fetch_project", MagicMock(return_value=pride_project_gold))
     monkeypatch.setattr("pxaudit.cli.fetch_files", MagicMock(return_value=pride_files_silver))
@@ -332,8 +332,8 @@ def test_pipeline_files_fetch_failed_bronze_in_db(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, pride_project_gold: dict
 ) -> None:
     """Files endpoint failure: audit row must have tier=Raw, files_fetch_failed=1."""
-    monkeypatch.setattr("pxaudit.cli.read_cache", MagicMock(return_value=None))
-    monkeypatch.setattr("pxaudit.cli.read_cache_stale", MagicMock(return_value=(None, None)))
+    monkeypatch.setattr("pxaudit.cli.read_cache_response", MagicMock(return_value=None))
+    monkeypatch.setattr("pxaudit.cli.read_cache_stale_response", MagicMock(return_value=None))
     monkeypatch.setattr("pxaudit.cli.write_cache", MagicMock())
     monkeypatch.setattr("pxaudit.cli.fetch_project", MagicMock(return_value=pride_project_gold))
     monkeypatch.setattr("pxaudit.cli.fetch_files", MagicMock(side_effect=PrideAPIError("down")))
@@ -353,7 +353,7 @@ def test_pipeline_unverifiable_accession_in_db(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Non-PXD accession: audit row must have tier=Unverifiable, is_unverifiable=1."""
-    monkeypatch.setattr("pxaudit.cli.read_cache", MagicMock(return_value=None))
+    monkeypatch.setattr("pxaudit.cli.read_cache_response", MagicMock(return_value=None))
     monkeypatch.setattr("pxaudit.cli.write_cache", MagicMock())
     fetch_project = MagicMock()
     fetch_files = MagicMock()
@@ -371,6 +371,7 @@ def test_pipeline_unverifiable_accession_in_db(
     row = _read_audit(db, accession="MSV000001")
     assert row["tier"] == "Unverifiable"
     assert row["is_unverifiable"] == 1
+    assert _read_study(db, accession="MSV000001")["fetched_at"] is None
 
 
 def test_pipeline_upsert_second_run_does_not_duplicate_rows(
@@ -411,7 +412,7 @@ def test_silver_output_shows_cross_for_sdrf(
     pride_files_silver: list,
 ) -> None:
     """Silver tier output must show ✘ for SDRF line and ✔ for result files."""
-    monkeypatch.setattr("pxaudit.cli.read_cache", MagicMock(return_value=None))
+    monkeypatch.setattr("pxaudit.cli.read_cache_response", MagicMock(return_value=None))
     monkeypatch.setattr("pxaudit.cli.write_cache", MagicMock())
     monkeypatch.setattr("pxaudit.cli.fetch_project", MagicMock(return_value=pride_project_gold))
     monkeypatch.setattr("pxaudit.cli.fetch_files", MagicMock(return_value=pride_files_silver))
@@ -428,7 +429,7 @@ def test_unverifiable_output_shows_tier(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Unverifiable output must show the tier string and not crash."""
-    monkeypatch.setattr("pxaudit.cli.read_cache", MagicMock(return_value=None))
+    monkeypatch.setattr("pxaudit.cli.read_cache_response", MagicMock(return_value=None))
     monkeypatch.setattr("pxaudit.cli.write_cache", MagicMock())
     monkeypatch.setattr("pxaudit.cli.get_or_create_db", MagicMock(return_value=MagicMock()))
     monkeypatch.setattr("pxaudit.cli.insert_audit_record", MagicMock())
