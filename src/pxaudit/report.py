@@ -468,10 +468,10 @@ def generate_report(db_path: str | Path, output_dir: str | Path, title: str) -> 
 
 
 def _open_db(db_path: Path) -> sqlite3.Connection:
-    """Open a SQLite connection (runs migrations on the same path)."""
-    from pxaudit.db import get_or_create_db
+    """Open an existing report database without creating or migrating it."""
+    from pxaudit.db import open_existing_db
 
-    return get_or_create_db(db_path)
+    return open_existing_db(db_path)
 
 
 def _collect_report_data(conn: sqlite3.Connection, db_path: Path) -> ReportData:

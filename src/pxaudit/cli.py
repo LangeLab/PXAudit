@@ -46,7 +46,7 @@ from pxaudit.config import (
     load_file_config,
     merge_config,
 )
-from pxaudit.db import get_or_create_db, insert_audit_record
+from pxaudit.db import get_or_create_db, insert_audit_record, open_existing_db
 from pxaudit.pride_client import PrideAPIError, fetch_files, fetch_project
 from pxaudit.tier_engine import AuditResult, compute_audit
 
@@ -98,6 +98,10 @@ class AuditData(typing.NamedTuple):
     warnings: list[str]
     details: list[str]
     network_used: bool
+
+
+class _IncompleteAuditError(RuntimeError):
+    """Raised when unavailable evidence prevents a truthful completed audit."""
 
 
 def _emit_config_warnings(cfg: EffectiveConfig) -> None:
@@ -206,7 +210,7 @@ def _parse_submission_year(date_str: str) -> int | None:
 
 
 def _extract_study(accession: str, project: dict, fetched_at: str | None) -> dict:
-    """Map a raw PRIDE /projects response to a ``study`` table row dict."""
+    """Map project metadata and accession provenance to a ``study`` row."""
     organisms: list[dict] = project.get("organisms") or []
     instruments: list[dict] = project.get("instruments") or []
     keywords: list[str] = project.get("keywords") or []
@@ -220,9 +224,28 @@ def _extract_study(accession: str, project: dict, fetched_at: str | None) -> dic
         "submission_year": _parse_submission_year(date_str),
         "submission_type": project.get("submissionType") or None,
         "keywords": ", ".join(keywords) if keywords else None,
-        "repository": "PRIDE",
+        "repository": _repository_for_accession(accession),
         "fetched_at": fetched_at,
     }
+
+
+def _repository_for_accession(accession: str) -> str | None:
+    """Return the repository implied by a recognized accession prefix."""
+    upper_accession = accession.upper()
+    repositories = {
+        "PXD": "PRIDE",
+        "MSV": "MassIVE",
+        "JPST": "jPOST",
+        "IPX": "iProX",
+    }
+    return next(
+        (
+            repository
+            for prefix, repository in repositories.items()
+            if upper_accession.startswith(prefix)
+        ),
+        None,
+    )
 
 
 def _extract_files_df(accession: str, files: list[dict]) -> pd.DataFrame:
@@ -298,8 +321,6 @@ def _print_result(result: AuditResult, study: dict, file_count: int) -> None:
     click.echo(f"  {flag(result.has_sdrf)} SDRF file present")
     click.echo(f"  {flag(result.has_mztab)} mzTab summary present")
     click.echo(f"  {flag(result.has_tabular_quant)} Tabular quant table (proteinGroups / evidence)")
-    if result.files_fetch_failed:
-        click.echo("  ! Files endpoint failed: file flags are unreliable")
     click.echo("-" * 48)
 
 
@@ -330,7 +351,6 @@ def _audit_single(
     snapshot_id = uuid.uuid4().hex
     project_response: CachedResponse | None = None
     files_response: CachedResponse | None = None
-    files_fetch_failed = False
     warnings: list[str] = []
     details: list[str] = []
     network_used = False
@@ -418,7 +438,7 @@ def _audit_single(
                 network_used = True
                 if persist_cache:
                     persist_cache_entry("files", files_response)
-            except PrideAPIError:
+            except PrideAPIError as exc:
                 network_used = True
                 stale = (
                     read_cache_stale_response(accession, "files", **cache_kwargs)
@@ -433,8 +453,10 @@ def _audit_single(
                     )
                     details.append(f"stale cache: {accession} files age={stale.age:.0f}s")
                 else:
-                    files_fetch_failed = True
-                    warnings.append("Warning: files endpoint failed; file flags are unreliable.")
+                    raise _IncompleteAuditError(
+                        f"files response unavailable for {accession}; the audit is incomplete "
+                        "and no database records were created or replaced"
+                    ) from exc
 
     if project_response is not None and files_response is not None:
         snapshots_match = (
@@ -454,9 +476,7 @@ def _audit_single(
     files_data = typing.cast(list[dict], files_response.data) if files_response is not None else []
     fetched_at = project_response.retrieved_at if project_response is not None else None
 
-    result = compute_audit(
-        accession, project_data, files_data, files_fetch_failed=files_fetch_failed
-    )
+    result = compute_audit(accession, project_data, files_data, files_fetch_failed=False)
 
     study = _extract_study(accession, project_data, fetched_at)
     files_df = _extract_files_df(accession, files_data)
@@ -653,6 +673,9 @@ def check(
             )
         else:
             _print_result(data.result, data.study, len(data.files_data))
+    except _IncompleteAuditError as exc:
+        _output.warn(f"Warning: {exc}.")
+        sys.exit(1)
     except PrideAPIError as exc:
         _output.error(f"Error: {exc}")
         sys.exit(1)
@@ -783,7 +806,7 @@ def bulk_audit(
                     _output.detail(message)
                 if data.network_used:
                     time.sleep(bulk_delay)
-            except PrideAPIError as exc:
+            except (_IncompleteAuditError, PrideAPIError) as exc:
                 if continue_on_error:
                     _output.warn(f"\nWarning: {accession} failed ({exc}). Skipping.")
                     failed.append(accession)
@@ -859,7 +882,15 @@ def manifest(ctx: click.Context, accession: str, db_path: str | None, fmt: str) 
     _emit_config_warnings(cfg)
     resolved_db = cfg.db_path
 
-    conn = get_or_create_db(resolved_db)
+    try:
+        conn = open_existing_db(resolved_db)
+    except FileNotFoundError as exc:
+        _output.error(f"Error: {exc}")
+        sys.exit(2)
+    except sqlite3.DatabaseError as exc:
+        _output.error(f"Error: cannot read database {resolved_db}: {exc}")
+        sys.exit(2)
+
     try:
         cursor = conn.execute(
             "SELECT file_name, file_category, file_extension, ftp_location, "
@@ -868,6 +899,9 @@ def manifest(ctx: click.Context, accession: str, db_path: str | None, fmt: str) 
             (accession,),
         )
         rows = cursor.fetchall()
+    except sqlite3.DatabaseError as exc:
+        _output.error(f"Error: cannot read database {resolved_db}: {exc}")
+        sys.exit(2)
     finally:
         conn.close()
 
@@ -954,7 +988,7 @@ def report(
 
     _output.status(f"Report written to {report_path}")
     if ctx.obj["verbose"]:
-        conn = get_or_create_db(db_path)
+        conn = open_existing_db(db_path)
         try:
             n_audit = conn.execute("SELECT COUNT(*) FROM audit").fetchone()[0]
             n_files = conn.execute("SELECT COUNT(*) FROM study_files").fetchone()[0]

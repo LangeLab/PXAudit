@@ -187,6 +187,38 @@ def get_or_create_db(path: str | Path) -> sqlite3.Connection:
     return conn
 
 
+def open_existing_db(path: str | Path) -> sqlite3.Connection:
+    """Open an existing SQLite database without creating or migrating it.
+
+    The returned connection is read-only and has SQLite query-only enforcement enabled.
+
+    Parameters
+    ----------
+    path:
+        Existing SQLite database file.
+
+    Returns
+    -------
+    sqlite3.Connection
+        Read-only connection to the existing database.
+
+    Raises
+    ------
+    FileNotFoundError
+        If ``path`` does not identify an existing regular file.
+    sqlite3.Error
+        If SQLite cannot open the file as a database.
+    """
+    database_path = Path(path)
+    if not database_path.is_file():
+        raise FileNotFoundError(f"database not found: {database_path}")
+
+    uri = f"{database_path.absolute().as_uri()}?mode=ro"
+    conn = sqlite3.connect(uri, uri=True)
+    conn.execute("PRAGMA query_only = ON")
+    return conn
+
+
 def insert_study(conn: sqlite3.Connection, data: dict) -> None:
     """Upsert one row into the ``study`` table.
 
@@ -353,6 +385,7 @@ def migrate_study_files_v2(conn: sqlite3.Connection) -> None:
 __all__ = [
     "create_tables",
     "get_or_create_db",
+    "open_existing_db",
     "insert_audit",
     "insert_audit_record",
     "insert_study",

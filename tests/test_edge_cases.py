@@ -1,22 +1,4 @@
-"""Dedicated edge-case and false-positive test module.
-
-This module consolidates cross-module edge cases that do not belong to a
-single unit.  Every test here covers ground that is NOT already tested in
-test_tier_engine.py, test_cli.py, test_cache.py, or test_db.py.
-
-Test organisation
------------------
-1.  Accession validation : whitespace, tab-prefix, lowercase/mixed-case PXD
-2.  fileCategory near-matches : trailing spaces, SEARCHING, RESULTSET
-3.  SDRF token-boundary near-misses : bare token, underscores, letters-both-sides
-4.  Full pipeline → DB row verification (most critical: not tested anywhere else)
-      a. Gold:    audit + study + study_files rows match expected values
-      b. Silver:  audit row has tier=Silver, has_sdrf=0
-      c. files_fetch_failed Bronze: tier=Bronze, files_fetch_failed=1
-      d. Unverifiable (MSV): tier=Unverifiable, is_unverifiable=1
-      e. Upsert: second run overwrites, does not duplicate
-5.  Output formatting guard : correct ✔/✘ symbols for non-Gold tiers
-"""
+"""Cross-module edge cases and real temporary-database workflows."""
 
 from __future__ import annotations
 
@@ -72,6 +54,7 @@ def _api_mocks(
     """Patch cache and API; leave get_or_create_db and insert_* untouched."""
     m = {
         "read_cache_response": MagicMock(return_value=None),
+        "read_cache_stale_response": MagicMock(return_value=None),
         "write_cache": MagicMock(),
         "fetch_project": MagicMock(return_value=pride_project_gold),
         "fetch_files": MagicMock(return_value=pride_files_gold),
@@ -328,10 +311,10 @@ def test_pipeline_silver_audit_row(
     assert row["has_result_files"] == 1
 
 
-def test_pipeline_files_fetch_failed_bronze_in_db(
+def test_pipeline_new_accession_files_failure_creates_no_database(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, pride_project_gold: dict
 ) -> None:
-    """Files endpoint failure: audit row must have tier=Raw, files_fetch_failed=1."""
+    """An incomplete new audit creates no database or misleading tier output."""
     monkeypatch.setattr("pxaudit.cli.read_cache_response", MagicMock(return_value=None))
     monkeypatch.setattr("pxaudit.cli.read_cache_stale_response", MagicMock(return_value=None))
     monkeypatch.setattr("pxaudit.cli.write_cache", MagicMock())
@@ -340,13 +323,74 @@ def test_pipeline_files_fetch_failed_bronze_in_db(
 
     db = str(tmp_path / "audit.db")
     res = CliRunner().invoke(main, ["check", "PXD000001", "--db", db])
-    assert res.exit_code == 0
+    assert res.exit_code == 1
+    assert "Warning" in res.stderr
+    assert "audit is incomplete" in res.stderr
+    assert "Tier" not in res.stdout
+    assert not Path(db).exists()
 
-    row = _read_audit(db)
-    assert row["tier"] == "Raw"  # 7-tier: no result files → Raw
-    assert row["files_fetch_failed"] == 1
-    assert row["has_result_files"] == 0
-    assert row["has_sdrf"] == 0
+
+def test_pipeline_verified_empty_files_response_persists_completed_raw_audit(
+    _api_mocks: dict, tmp_path: Path
+) -> None:
+    """A successful empty files response remains distinct from an unavailable response."""
+    _api_mocks["fetch_files"].return_value = []
+    database = str(tmp_path / "audit.db")
+
+    result = CliRunner().invoke(main, ["check", "PXD000001", "--db", database])
+
+    assert result.exit_code == 0
+    assert "Raw" in result.stdout
+    assert _count_rows(database, "study") == 1
+    assert _count_rows(database, "study_files") == 0
+    audit = _read_audit(database)
+    assert audit["tier"] == "Raw"
+    assert audit["files_fetch_failed"] == 0
+
+
+def test_pipeline_files_failure_preserves_database_and_manifest(
+    _api_mocks: dict, tmp_path: Path
+) -> None:
+    """An incomplete repeat audit preserves every prior row and manifest byte."""
+    database = tmp_path / "audit.db"
+    runner = CliRunner()
+    first = runner.invoke(main, ["check", "PXD000001", "--db", str(database)])
+    assert first.exit_code == 0
+
+    manifest_before = runner.invoke(
+        main,
+        ["manifest", "PXD000001", "--db", str(database)],
+    )
+    with sqlite3.connect(database) as connection:
+        rows_before = (
+            connection.execute("SELECT * FROM study ORDER BY accession").fetchall(),
+            connection.execute("SELECT * FROM study_files ORDER BY file_name").fetchall(),
+            connection.execute("SELECT * FROM audit ORDER BY accession").fetchall(),
+        )
+
+    _api_mocks["fetch_files"].side_effect = PrideAPIError("down")
+    failed = runner.invoke(
+        main,
+        ["check", "PXD000001", "--db", str(database), "--no-cache"],
+    )
+
+    manifest_after = runner.invoke(
+        main,
+        ["manifest", "PXD000001", "--db", str(database)],
+    )
+    with sqlite3.connect(database) as connection:
+        rows_after = (
+            connection.execute("SELECT * FROM study ORDER BY accession").fetchall(),
+            connection.execute("SELECT * FROM study_files ORDER BY file_name").fetchall(),
+            connection.execute("SELECT * FROM audit ORDER BY accession").fetchall(),
+        )
+
+    assert failed.exit_code == 1
+    assert "Warning" in failed.stderr
+    assert "Tier" not in failed.stdout
+    assert manifest_before.exit_code == manifest_after.exit_code == 0
+    assert manifest_after.stdout_bytes == manifest_before.stdout_bytes
+    assert rows_after == rows_before
 
 
 def test_pipeline_unverifiable_accession_in_db(
@@ -371,7 +415,9 @@ def test_pipeline_unverifiable_accession_in_db(
     row = _read_audit(db, accession="MSV000001")
     assert row["tier"] == "Unverifiable"
     assert row["is_unverifiable"] == 1
-    assert _read_study(db, accession="MSV000001")["fetched_at"] is None
+    study = _read_study(db, accession="MSV000001")
+    assert study["fetched_at"] is None
+    assert study["repository"] == "MassIVE"
 
 
 def test_pipeline_upsert_second_run_does_not_duplicate_rows(

@@ -19,6 +19,7 @@ from pxaudit.db import (
     migrate_audit_v2,
     migrate_study_files_v2,
     migrate_study_v2,
+    open_existing_db,
 )
 
 # ---------------------------------------------------------------------------
@@ -359,6 +360,27 @@ def test_insert_audit_missing_pk_raises(conn: sqlite3.Connection) -> None:
         insert_audit(conn, bad)
 
 
+def test_historical_files_fetch_failed_row_remains_readable(tmp_path: Path) -> None:
+    """Existing incomplete-evidence rows remain readable through the read-only path."""
+    database = tmp_path / "historical.db"
+    writer = get_or_create_db(database)
+    try:
+        insert_study(writer, _STUDY_DATA)
+        insert_audit(writer, {**_AUDIT_DATA, "files_fetch_failed": 1})
+    finally:
+        writer.close()
+
+    reader = open_existing_db(database)
+    try:
+        stored = reader.execute(
+            "SELECT files_fetch_failed FROM audit WHERE accession = ?", ("PXD000001",)
+        ).fetchone()
+    finally:
+        reader.close()
+
+    assert stored == (1,)
+
+
 # ---------------------------------------------------------------------------
 # get_or_create_db
 # ---------------------------------------------------------------------------
@@ -406,6 +428,43 @@ def test_get_or_create_db_upgrades_v1_to_v2(tmp_path: Path) -> None:
     study_cols = {row[1] for row in conn.execute("PRAGMA table_info(study)")}
     assert "submission_type" in study_cols
     conn.close()
+
+
+def test_open_existing_db_refuses_missing_path_without_creating_it(tmp_path: Path) -> None:
+    """Existing-only database access leaves a missing path untouched."""
+    database = tmp_path / "missing.db"
+
+    with pytest.raises(FileNotFoundError, match="database not found"):
+        open_existing_db(database)
+
+    assert not database.exists()
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_open_existing_db_is_read_only_and_does_not_migrate(tmp_path: Path) -> None:
+    """Existing-only access rejects writes and leaves a legacy schema unchanged."""
+    database = tmp_path / "legacy.db"
+    writer = sqlite3.connect(database)
+    writer.execute("CREATE TABLE audit (accession TEXT PRIMARY KEY, tier TEXT)")
+    writer.commit()
+    writer.close()
+
+    connection = open_existing_db(database)
+    try:
+        before = connection.execute("PRAGMA table_info(audit)").fetchall()
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            connection.execute("INSERT INTO audit VALUES ('PXD000001', 'Gold')")
+        after = connection.execute("PRAGMA table_info(audit)").fetchall()
+    finally:
+        connection.close()
+
+    assert before == after
+    assert [row[1] for row in after] == ["accession", "tier"]
+
+
+def test_audit_accession_has_no_v2_foreign_key(conn: sqlite3.Connection) -> None:
+    """The v2 audit table intentionally remains independent of study."""
+    assert conn.execute("PRAGMA foreign_key_list(audit)").fetchall() == []
 
 
 # ---------------------------------------------------------------------------
@@ -711,5 +770,43 @@ def test_insert_audit_record_study_files_rollback(tmp_path: Path) -> None:
         assert conn.execute("SELECT COUNT(*) FROM study").fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM study_files").fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM audit").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("failure_stage", ["study", "files", "audit"])
+def test_insert_audit_record_failure_preserves_prior_complete_record(
+    tmp_path: Path, failure_stage: str
+) -> None:
+    """A failure at any insert stage rolls back to the prior complete record."""
+    conn = get_or_create_db(tmp_path / "test.db")
+    try:
+        original_files = _make_files_df("PXD000001", 2)
+        insert_audit_record(conn, _STUDY_DATA, "PXD000001", original_files, _AUDIT_DATA)
+        before = (
+            conn.execute("SELECT * FROM study ORDER BY accession").fetchall(),
+            conn.execute("SELECT * FROM study_files ORDER BY file_name").fetchall(),
+            conn.execute("SELECT * FROM audit ORDER BY accession").fetchall(),
+        )
+
+        study = {**_STUDY_DATA, "title": "Replacement"}
+        files = _make_files_df("PXD000001", 1)
+        audit = {**_AUDIT_DATA, "tier": "Diamond"}
+        if failure_stage == "study":
+            study["accession"] = None
+        elif failure_stage == "files":
+            files.loc[0, "file_name"] = None
+        else:
+            audit["accession"] = None
+
+        with pytest.raises(sqlite3.IntegrityError):
+            insert_audit_record(conn, study, "PXD000001", files, audit)
+
+        after = (
+            conn.execute("SELECT * FROM study ORDER BY accession").fetchall(),
+            conn.execute("SELECT * FROM study_files ORDER BY file_name").fetchall(),
+            conn.execute("SELECT * FROM audit ORDER BY accession").fetchall(),
+        )
+        assert after == before
     finally:
         conn.close()

@@ -652,6 +652,7 @@ class TestCliIntegration:
         )
         assert r.exit_code == 2
         assert "database not found" in r.output
+        assert list(tmp_path.iterdir()) == []
 
     def test_empty_db(self, empty_db: Path, tmp_path: Path) -> None:
         r = self._runner().invoke(

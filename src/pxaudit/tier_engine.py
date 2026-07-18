@@ -156,8 +156,10 @@ def compute_audit(
         Raw JSON list from ``GET /projects/{accession}/files``.
         Pass ``[]`` when the endpoint returned no files.
     files_fetch_failed:
-        ``True`` when the files endpoint failed after all retries.
-        All file-based flags are set to ``False``; tier is capped at Bronze.
+        ``True`` to interpret the input as a historical failed files fetch.
+        All file-based flags are set to ``False`` and the tier is ``Raw``.
+        Current CLI audits do not compute or persist an audit when the files
+        response is unavailable and no stale response can be used.
 
     Returns
     -------

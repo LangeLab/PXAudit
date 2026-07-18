@@ -7,7 +7,7 @@ Test organisation
 1.  Invalid accession → ValueError
 2.  Non-PXD prefix routing → Unverifiable
 3.  Tier boundary (parametrized): Gold / Silver / Bronze×2 / None×3
-4.  files_fetch_failed override : caps tier at Bronze
+4.  Historical files_fetch_failed override: produces a Raw result
 5.  SDRF pattern : case sensitivity and token-boundary checks
 6.  mzTab extension : matches .mztab variants, rejects .mztabdata
 7.  fileCategory canonical matching : RESULT/SEARCH recognised, RESULTS not

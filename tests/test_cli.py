@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import sys
 from collections.abc import Generator, Iterable, Iterator
 from pathlib import Path
@@ -275,27 +276,38 @@ def test_check_project_api_failure_message_on_stderr(
 # ---------------------------------------------------------------------------
 
 
-def test_check_files_api_failure_exits_zero(mocks: dict, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Files endpoint failure is not fatal : exit 0 with Raw tier (no result files)."""
+def test_check_files_api_failure_is_incomplete_without_computing_or_persisting(
+    mocks: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unavailable files evidence exits nonzero before tier computation or persistence."""
+    compute = MagicMock()
     monkeypatch.setattr(
         "pxaudit.cli.fetch_files", MagicMock(side_effect=PrideAPIError("files down"))
     )
-    runner = CliRunner()
-    result = runner.invoke(main, ["check", "PXD000001"])
-    assert result.exit_code == 0
-    assert "Raw" in result.output
+    monkeypatch.setattr("pxaudit.cli.compute_audit", compute)
+
+    result = CliRunner().invoke(main, ["check", "PXD000001"])
+
+    assert result.exit_code == 1
+    assert "audit is incomplete" in result.stderr
+    assert "Tier" not in result.stdout
+    compute.assert_not_called()
+    mocks["get_or_create_db"].assert_not_called()
+    mocks["insert_audit_record"].assert_not_called()
 
 
 def test_check_files_api_failure_prints_warning(
     mocks: dict, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """files_fetch_failed=True must trigger the warning line in output.  (branch H-True)."""
+    """An incomplete files response reports that no database records changed."""
     monkeypatch.setattr(
         "pxaudit.cli.fetch_files", MagicMock(side_effect=PrideAPIError("files down"))
     )
     runner = CliRunner()
     result = runner.invoke(main, ["check", "PXD000001"])
-    assert "Files endpoint failed" in result.output
+    assert result.exit_code == 1
+    assert "Warning" in result.stderr
+    assert "no database records were created or replaced" in result.stderr
 
 
 def test_check_files_api_failure_does_not_write_files_cache(
@@ -534,7 +546,7 @@ def test_check_no_cache_does_not_write_cache(mocks: dict) -> None:
 
 @pytest.mark.parametrize(
     ("failed_fetch", "expected_exit"),
-    [("fetch_project", 1), ("fetch_files", 0)],
+    [("fetch_project", 1), ("fetch_files", 1)],
 )
 def test_check_no_cache_failure_never_uses_cache(
     mocks: dict, failed_fetch: str, expected_exit: int
@@ -645,7 +657,7 @@ def test_check_refresh_files_failure_without_stale_does_not_cache_failure(
 
     result = CliRunner().invoke(main, ["check", "PXD000001", "--refresh"])
 
-    assert result.exit_code == 0
+    assert result.exit_code == 1
     mocks["read_cache_response"].assert_not_called()
     mocks["read_cache_stale_response"].assert_called_once()
     mocks["write_cache"].assert_called_once()
@@ -771,9 +783,25 @@ def test_extract_study_multi_keyword_joined() -> None:
     assert row["keywords"] == "a, b, c"
 
 
-def test_extract_study_repository_always_pride() -> None:
+def test_extract_study_records_pride_repository() -> None:
     row = _extract_study("PXD999", {}, "ts")
     assert row["repository"] == "PRIDE"
+
+
+@pytest.mark.parametrize(
+    ("accession", "repository"),
+    [
+        ("MSV000001", "MassIVE"),
+        ("JPST000001", "jPOST"),
+        ("IPX000001", "iProX"),
+        ("MTBLS000001", None),
+    ],
+)
+def test_extract_study_records_truthful_non_pride_repository(
+    accession: str, repository: str | None
+) -> None:
+    """Recognized partner prefixes are inferred without claiming a PRIDE fetch."""
+    assert _extract_study(accession, {}, None)["repository"] == repository
 
 
 def test_extract_study_submission_type_extracted() -> None:
@@ -1112,6 +1140,29 @@ def test_bulk_audit_continue_on_error(bulk_mocks: dict, tmp_path: Path) -> None:
     assert "Failed    : 1" in result.output
 
 
+def test_bulk_audit_continue_on_incomplete_audit_records_failure(
+    bulk_mocks: dict, tmp_path: Path
+) -> None:
+    """An incomplete audit participates in the per-accession continue-on-error contract."""
+    from pxaudit.cli import _IncompleteAuditError
+
+    bulk_mocks["_audit_single"].side_effect = _IncompleteAuditError(
+        "files response unavailable; no database records were created or replaced"
+    )
+    accessions = tmp_path / "ids.txt"
+    accessions.write_text("PXD000001\n", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        main,
+        ["bulk-audit", "--input", str(accessions), "--continue-on-error"],
+    )
+
+    assert result.exit_code == 0
+    assert "Warning" in result.stderr
+    assert "Completed : 0" in result.stdout
+    assert "Failed    : 1" in result.stdout
+
+
 def test_bulk_audit_stop_on_error(bulk_mocks: dict, tmp_path: Path) -> None:
     """Without --continue-on-error, first failure exits 1."""
     acc_file = tmp_path / "ids.txt"
@@ -1349,6 +1400,59 @@ def test_manifest_no_files_errors(tmp_path: Path) -> None:
     )
     assert result.exit_code == 1
     assert "No files found" in result.output
+
+
+def test_manifest_missing_database_leaves_filesystem_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Manifest inspection refuses a missing database without creating artifacts."""
+    database = tmp_path / "missing.db"
+    monkeypatch.setenv("PXAUDIT_CONFIG", str(tmp_path / "missing.toml"))
+
+    result = CliRunner().invoke(
+        main,
+        ["manifest", "PXD000001", "--db", str(database)],
+    )
+
+    assert result.exit_code == 2
+    assert "database not found" in result.stderr
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_manifest_corrupt_database_is_preserved(tmp_path: Path) -> None:
+    """Manifest reports an unreadable database without modifying its bytes."""
+    database = tmp_path / "corrupt.db"
+    original = b"not a sqlite database"
+    database.write_bytes(original)
+
+    result = CliRunner().invoke(
+        main,
+        ["manifest", "PXD000001", "--db", str(database)],
+    )
+
+    assert result.exit_code == 2
+    assert "cannot read database" in result.stderr
+    assert database.read_bytes() == original
+
+
+def test_manifest_database_open_error_exits_two(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Manifest reports SQLite failures raised while opening an existing path."""
+    database = tmp_path / "audit.db"
+    database.touch()
+    monkeypatch.setattr(
+        "pxaudit.cli.open_existing_db",
+        MagicMock(side_effect=sqlite3.DatabaseError("open failed")),
+    )
+
+    result = CliRunner().invoke(
+        main,
+        ["manifest", "PXD000001", "--db", str(database)],
+    )
+
+    assert result.exit_code == 2
+    assert "cannot read database" in result.stderr
 
 
 def test_manifest_tsv_output(tmp_path: Path) -> None:
@@ -1974,9 +2078,12 @@ def test_report_missing_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     """report exits 2 when database is missing."""
     monkeypatch.setenv("PXAUDIT_CONFIG", str(tmp_path / "none.toml"))
     runner = CliRunner()
-    result = runner.invoke(main, ["report", "--db", str(tmp_path / "no.db")])
+    database = tmp_path / "no.db"
+    result = runner.invoke(main, ["report", "--db", str(database)])
     assert result.exit_code == 2
     assert "database not found" in result.output
+    assert not database.exists()
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_report_existing_output_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1996,7 +2103,9 @@ def test_report_success_and_verbose(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     """report success path and verbose detail."""
     monkeypatch.setenv("PXAUDIT_CONFIG", str(tmp_path / "none.toml"))
     db = tmp_path / "x.db"
-    db.write_text("")
+    from pxaudit.db import get_or_create_db
+
+    get_or_create_db(db).close()
     out = tmp_path / "outdir"
     monkeypatch.setattr(
         "pxaudit.report.generate_report",
