@@ -7,9 +7,9 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
-    "click>=8.3.1",
+    "click>=8.3.3",
     "pandas>=3.0",
-    "requests>=2.32.5",
+    "requests>=2.33.0",
     "tqdm>=4.67.0",
 ]
 
@@ -30,7 +30,7 @@ build-backend = "uv_build"
 dev = [
     "mypy>=1.15.0",
     "pre-commit>=4.5.1",
-    "pytest>=9.0.2",
+    "pytest>=9.0.3",
     "pytest-cov>=7.0.0",
     "ruff>=0.15.7",
 ]
@@ -48,7 +48,9 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 [tool.pytest.ini_options]
 addopts = "--strict-markers --tb=short --cov=pxaudit --cov-report=term-missing -m 'not integration'"
 markers = [
-    "integration: marks tests as integration tests requiring live PRIDE API access",
+    "component: L1 workflow using controlled real components and mocked external services",
+    "recorded: L2 contract using a reviewed, sanitized PRIDE response fixture",
+    "integration: L3 test requiring live PRIDE API access",
 ]
 
 [tool.coverage.run]

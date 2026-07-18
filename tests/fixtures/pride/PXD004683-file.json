@@ -1,0 +1,23 @@
+{
+  "fixture": {
+    "accession": "PXD004683",
+    "api_version": "PRIDE Archive REST API v3",
+    "retrieved_at": "2026-07-17",
+    "files_url": "https://www.ebi.ac.uk/pride/ws/archive/v3/projects/PXD004683/files",
+    "scope": "Reviewed projection of one public file record used by checksum extraction"
+  },
+  "file": {
+    "fileName": "20150820_Haura-Pilot-TMT1-bRPLC10-2.rawF002442.mzid_20150820_Haura-Pilot-TMT1-bRPLC10-2.raw_F002442.MGF",
+    "fileCategory": {
+      "value": "PEAK"
+    },
+    "fileSizeBytes": 5907753,
+    "publicFileLocations": [
+      {
+        "name": "FTP Protocol",
+        "value": "ftp://ftp.pride.ebi.ac.uk/pride/data/archive/2017/02/PXD004683/20150820_Haura-Pilot-TMT1-bRPLC10-2.rawF002442.mzid_20150820_Haura-Pilot-TMT1-bRPLC10-2.raw_F002442.MGF"
+      }
+    ],
+    "checksum": "d7e9bc8469b477884f7c76c05d2ee87abca53393"
+  }
+}

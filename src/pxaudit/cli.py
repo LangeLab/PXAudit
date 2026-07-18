@@ -265,26 +265,42 @@ def _extract_files_df(accession: str, files: list[dict]) -> pd.DataFrame:
     ]
     if not files:
         return pd.DataFrame(columns=cols)
-    rows = [
-        {
-            "accession": accession,
-            "file_name": f.get("fileName") or "",
-            "file_category": (f.get("fileCategory") or {}).get("value") or None,
-            "file_extension": Path(f.get("fileName") or "").suffix or None,
-            "ftp_location": next(
-                (
-                    loc.get("value")
-                    for loc in (f.get("publicFileLocations") or [])
-                    if loc.get("name") == "FTP Protocol"
+    rows = []
+    checksum_types = {32: "MD5", 40: "SHA-1", 64: "SHA-256"}
+    for file_data in files:
+        raw_current_checksum = file_data.get("checksum")
+        raw_legacy_checksum = file_data.get("fileChecksum")
+        current_checksum = (
+            raw_current_checksum.strip() if isinstance(raw_current_checksum, str) else ""
+        )
+        legacy_checksum = (
+            raw_legacy_checksum.strip() if isinstance(raw_legacy_checksum, str) else ""
+        )
+        checksum = current_checksum or legacy_checksum or None
+        if current_checksum and checksum:
+            is_hex = all(character in "0123456789abcdefABCDEF" for character in checksum)
+            checksum_type = checksum_types.get(len(checksum)) if is_hex else None
+        else:
+            checksum_type = "MD5" if legacy_checksum and checksum else None
+        rows.append(
+            {
+                "accession": accession,
+                "file_name": file_data.get("fileName") or "",
+                "file_category": (file_data.get("fileCategory") or {}).get("value") or None,
+                "file_extension": Path(file_data.get("fileName") or "").suffix or None,
+                "ftp_location": next(
+                    (
+                        loc.get("value")
+                        for loc in (file_data.get("publicFileLocations") or [])
+                        if loc.get("name") == "FTP Protocol"
+                    ),
+                    None,
                 ),
-                None,
-            ),
-            "file_size": f.get("fileSizeBytes"),
-            "checksum": f.get("fileChecksum") or None,
-            "checksum_type": "MD5" if f.get("fileChecksum") else None,
-        }
-        for f in files
-    ]
+                "file_size": file_data.get("fileSizeBytes"),
+                "checksum": checksum,
+                "checksum_type": checksum_type,
+            }
+        )
     return pd.DataFrame(rows)
 
 

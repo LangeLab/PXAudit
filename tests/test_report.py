@@ -782,12 +782,9 @@ class TestEdgeCases:
         assert "Cohort Analysis" in path.read_text(encoding="utf-8")
 
 
-# ---------------------------------------------------------------------------
-# CLI integration tests
-# ---------------------------------------------------------------------------
+class TestReportComponent:
+    pytestmark = pytest.mark.component
 
-
-class TestCliIntegration:
     def _runner(self) -> CliRunner:
         return CliRunner()
 
@@ -921,6 +918,8 @@ class TestCliIntegration:
         finally:
             readonly.chmod(0o755)
 
+
+class TestReportErrorContracts:
     def test_missing_jinja2(self, realistic_db: Path, output_dir: Path) -> None:
         with (
             patch.dict(sys.modules, {"jinja2": None}),

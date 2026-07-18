@@ -8,14 +8,59 @@ Naming convention
 ``pride_project_*``  : synthetic /projects API response dicts.
 ``pride_files_*``    : synthetic /files API response lists.
 
-All payloads use the real PRIDE v3 JSON shape (CvParam dicts with ``value``
-fields, ``publicFileLocations`` lists, etc.) so they exercise the same
-extraction code paths as production data.
+Payloads model the PRIDE v3 field structure used by PXAudit while keeping
+their values synthetic and deterministic.
 """
 
 from __future__ import annotations
 
+import socket
+from collections.abc import Generator
+from pathlib import Path
+from typing import NoReturn
+
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _isolate_process_state(
+    request: pytest.FixtureRequest,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Generator[None, None, None]:
+    """Isolate ambient paths, configuration, output mode, and network access."""
+    root = tmp_path.parent / f"{tmp_path.name}-ambient"
+    home = root / "home"
+    work = root / "work"
+    cache = root / "cache"
+    home.mkdir(parents=True)
+    work.mkdir()
+    cache.mkdir()
+
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
+    monkeypatch.setenv("PXAUDIT_CONFIG", str(root / "missing.toml"))
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.chdir(work)
+
+    from pxaudit import _output, config
+
+    monkeypatch.setitem(config.DEFAULTS, "cache_dir", str(cache))
+    _output.configure(quiet=False, verbose=False, no_color=False)
+
+    if request.node.get_closest_marker("integration") is None:
+
+        def block_network(*_args: object, **_kwargs: object) -> NoReturn:
+            pytest.fail("offline tests must not open network connections")
+
+        monkeypatch.setattr(socket.socket, "connect", block_network)
+        monkeypatch.setattr(socket.socket, "connect_ex", block_network)
+        monkeypatch.setattr(socket, "create_connection", block_network)
+
+    yield
+    _output.configure(quiet=False, verbose=False, no_color=False)
+
 
 # ---------------------------------------------------------------------------
 # /projects payloads

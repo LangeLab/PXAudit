@@ -1,0 +1,91 @@
+{
+  "fixture": {
+    "accession": "PXD000001",
+    "api_version": "PRIDE Archive REST API v3",
+    "retrieved_at": "2026-07-17",
+    "project_url": "https://www.ebi.ac.uk/pride/ws/archive/v3/projects/PXD000001",
+    "files_url": "https://www.ebi.ac.uk/pride/ws/archive/v3/projects/PXD000001/files?page=0&pageSize=100&sortDirection=DESC&sortCondition=id",
+    "scope": "Reviewed projection of public fields used by PXAudit; submitter and download metadata removed."
+  },
+  "project": {
+    "accession": "PXD000001",
+    "title": "TMT spikes - Using R and Bioconductor for proteomics data analysis",
+    "submissionType": "COMPLETE",
+    "submissionDate": "2012-03-13",
+    "keywords": ["Spikes", "Tmt", "Eriwinia"],
+    "organisms": [
+      {
+        "@type": "CvParam",
+        "cvLabel": "NEWT",
+        "accession": "NEWT:554",
+        "name": "Erwinia carotovora"
+      }
+    ],
+    "instruments": [
+      {
+        "@type": "CvParam",
+        "cvLabel": "MS",
+        "accession": "MS:1001742",
+        "name": "LTQ Orbitrap Velos"
+      }
+    ],
+    "organismParts": [],
+    "references": [
+      {
+        "pubmedID": 23692960,
+        "doi": "10.1016/j.bbapap.2013.04.032"
+      }
+    ],
+    "quantificationMethods": []
+  },
+  "files": [
+    {
+      "fileName": "PRIDE_Exp_Complete_Ac_22134.pride.mztab.gz",
+      "fileCategory": {"@type": "CvParam", "value": "OTHER"},
+      "fileSizeBytes": 497985,
+      "publicFileLocations": []
+    },
+    {
+      "fileName": "PRIDE_Exp_Complete_Ac_22134.pride.mgf.gz",
+      "fileCategory": {"@type": "CvParam", "value": "PEAK"},
+      "fileSizeBytes": 16448103,
+      "publicFileLocations": []
+    },
+    {
+      "fileName": "TMT_Erwinia_1uLSike_Top10HCD_isol2_45stepped_60min_01.mzXML",
+      "fileCategory": {"@type": "CvParam", "value": "PEAK"},
+      "fileSizeBytes": 243031280,
+      "publicFileLocations": []
+    },
+    {
+      "fileName": "erwinia_carotovora.fasta",
+      "fileCategory": {"@type": "CvParam", "value": "OTHER"},
+      "fileSizeBytes": 1657668,
+      "publicFileLocations": []
+    },
+    {
+      "fileName": "TMT_Erwinia_1uLSike_Top10HCD_isol2_45stepped_60min_01.raw",
+      "fileCategory": {"@type": "CvParam", "value": "RAW"},
+      "fileSizeBytes": 220475548,
+      "publicFileLocations": []
+    },
+    {
+      "fileName": "F063721.dat-mztab.txt",
+      "fileCategory": {"@type": "CvParam", "value": "OTHER"},
+      "fileSizeBytes": 304798,
+      "publicFileLocations": []
+    },
+    {
+      "fileName": "PRIDE_Exp_Complete_Ac_22134.xml.gz",
+      "fileCategory": {"@type": "CvParam", "value": "RESULT"},
+      "fileSizeBytes": 10677205,
+      "publicFileLocations": []
+    },
+    {
+      "fileName": "F063721.dat",
+      "fileCategory": {"@type": "CvParam", "value": "SEARCH"},
+      "fileSizeBytes": 21185462,
+      "publicFileLocations": []
+    }
+  ]
+}

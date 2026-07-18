@@ -2,11 +2,12 @@
 
 These tests make real network requests to the PRIDE Archive REST API (v3) and
 verify that ``compute_audit()`` returns the expected ``tier`` and ``quant_tier``
-for six well-known submissions whose file contents and project metadata have
-been manually verified against the live API on 2026-03-21.
+for six well-known submissions. When ``PXAUDIT_LIVE_RECORD`` is set, the run
+writes a JSON record containing its date, API version, inventory, completeness,
+and changes.
 
 Run with:
-    uv run pytest -m integration -v
+    uv run pytest -m integration -v --no-cov
 
 Excluded from the default test suite (``-m 'not integration'`` in addopts) to
 avoid network dependency during CI and offline development.
@@ -30,6 +31,10 @@ Quant-Ready and Quant-Complete values are covered by unit tests in
 
 from __future__ import annotations
 
+import json
+import os
+from collections.abc import Iterator
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -51,6 +56,36 @@ _LIVE_CASES = [
     ("PXD075811", "Platinum", "Partial"),
 ]
 
+_LIVE_OBSERVATIONS: list[dict[str, str | bool]] = []
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _write_live_verification_record() -> Iterator[None]:
+    """Write machine-readable live evidence when the caller requests it."""
+    _LIVE_OBSERVATIONS.clear()
+    yield
+
+    destination = os.environ.get("PXAUDIT_LIVE_RECORD")
+    if not destination:
+        return
+    observations = sorted(_LIVE_OBSERVATIONS, key=lambda item: str(item["accession"]))
+    observed_accessions = [str(item["accession"]) for item in observations]
+    missing_accessions = [case[0] for case in _LIVE_CASES if case[0] not in observed_accessions]
+    record = {
+        "run_date": datetime.now(UTC).date().isoformat(),
+        "api_version": "PRIDE Archive REST API v3",
+        "api_base_url": "https://www.ebi.ac.uk/pride/ws/archive/v3",
+        "accession_inventory": [case[0] for case in _LIVE_CASES],
+        "observed_accessions": observed_accessions,
+        "missing_accessions": missing_accessions,
+        "complete": not missing_accessions,
+        "observations": observations,
+        "tier_changes": [item for item in observations if item["changed"]],
+    }
+    record_path = Path(destination)
+    record_path.parent.mkdir(parents=True, exist_ok=True)
+    record_path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+
 
 @pytest.mark.integration
 @pytest.mark.parametrize(
@@ -67,6 +102,16 @@ def test_live_tier_and_quant_tier(
     project = fetch_project(accession)
     files = fetch_files(accession)
     result = compute_audit(accession, project, files)
+    _LIVE_OBSERVATIONS.append(
+        {
+            "accession": accession,
+            "expected_tier": expected_tier,
+            "observed_tier": result.tier,
+            "expected_quant_tier": expected_quant_tier,
+            "observed_quant_tier": result.quant_tier,
+            "changed": result.tier != expected_tier or result.quant_tier != expected_quant_tier,
+        }
+    )
 
     assert result.tier == expected_tier, (
         f"{accession}: tier : got {result.tier!r}, expected {expected_tier!r}\n"
@@ -80,22 +125,6 @@ def test_live_tier_and_quant_tier(
         f"has_tabular_quant={result.has_tabular_quant},\n"
         f"  has_quant_metadata={result.has_quant_metadata}"
     )
-
-
-# ---------------------------------------------------------------------------
-# Non-PRIDE routing (no API call needed : covered here for completeness)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.integration
-def test_live_non_pxd_accession_is_unverifiable() -> None:
-    """Non-PXD accession returns Unverifiable/Unverifiable without hitting the API."""
-    result = compute_audit("MSV000079514", {}, [])
-    assert result.tier == "Unverifiable"
-    assert result.quant_tier == "Unverifiable"
-    assert result.is_unverifiable is True
-    assert result.has_psi_results is False
-    assert result.has_tabular_quant is False
 
 
 # ---------------------------------------------------------------------------
@@ -236,4 +265,4 @@ def test_live_checksum_and_fetched_at_present() -> None:
     assert len(df) > 0
     checksums = df["checksum"].dropna()
     assert len(checksums) > 0, "Expected at least one file with a checksum from live PRIDE"
-    assert df["checksum_type"].dropna().iloc[0] == "MD5"
+    assert df["checksum_type"].dropna().iloc[0] == "SHA-1"

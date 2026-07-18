@@ -670,21 +670,38 @@ def test_migrate_study_files_v2_no_op_on_current_schema(conn: sqlite3.Connection
 
 
 def test_study_files_checksum_stored_when_present(conn: sqlite3.Connection) -> None:
-    """File with fileChecksum in PRIDE response must store checksum and MD5 type."""
+    """Legacy fileChecksum values retain their MD5 contract."""
     from pxaudit.cli import _extract_files_df
 
-    files = [
+    files: list[dict] = [
         {
             "fileName": "results.mzid",
             "fileCategory": {"value": "RESULT"},
             "fileSizeBytes": 100,
             "publicFileLocations": [],
-            "fileChecksum": "abc123",
+            "fileChecksum": "a" * 32,
         }
     ]
     df = _extract_files_df("PXD000001", files)
-    assert df.loc[0, "checksum"] == "abc123"
+    assert df.loc[0, "checksum"] == "a" * 32
     assert df.loc[0, "checksum_type"] == "MD5"
+
+
+def test_study_files_current_checksum_infers_supported_hash_type() -> None:
+    """Current checksum values receive an algorithm label only when defensible."""
+    from pxaudit.cli import _extract_files_df
+
+    files: list[dict] = [
+        {"fileName": "sha1.mzid", "checksum": "b" * 40},
+        {"fileName": "sha256.mzid", "checksum": "c" * 64},
+        {"fileName": "unknown.mzid", "checksum": "not-a-declared-hash"},
+        {"fileName": "malformed.mzid", "checksum": 1234},
+    ]
+    df = _extract_files_df("PXD000001", files)
+
+    assert list(df["checksum_type"][:2]) == ["SHA-1", "SHA-256"]
+    assert pd.isna(df.loc[2, "checksum_type"])
+    assert pd.isna(df.loc[3, "checksum"])
 
 
 def test_study_files_checksum_null_when_absent(conn: sqlite3.Connection) -> None:

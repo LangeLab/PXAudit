@@ -9,7 +9,7 @@ The ``pxaudit report`` command generates a self-contained HTML report showing:
 
 Charts are produced with ``matplotlib`` and embedded as base64-encoded PNG
 images. The page template is rendered with ``jinja2``. Both libraries are
-optional dependencies installed via ``pip install pxaudit[report]``.
+optional dependencies installed from a source checkout via ``uv sync --extra report``.
 """
 
 from __future__ import annotations
@@ -38,11 +38,9 @@ __all__ = [
 ]
 
 JINJA2_MISSING_MSG = (
-    "jinja2 is required for report generation. Install with: pip install pxaudit[report]"
+    "jinja2 is required for report generation. Install with: uv sync --extra report"
 )
-MATPLOTLIB_MISSING_MSG = (
-    "matplotlib is required for charts. Install with: pip install pxaudit[report]"
-)
+MATPLOTLIB_MISSING_MSG = "matplotlib is required for charts. Install with: uv sync --extra report"
 
 # ---------------------------------------------------------------------------
 # Tier metadata (colours and display order)

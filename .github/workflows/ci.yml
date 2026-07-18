@@ -6,9 +6,45 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+          cache-suffix: quality-3.12
+
+      - name: Set up Python 3.12
+        run: uv python pin 3.12
+
+      - name: Install dependencies
+        run: uv sync --frozen --dev --all-extras
+
+      - name: Lint
+        run: uv run ruff check src/ tests/
+
+      - name: Check formatting
+        run: uv run ruff format --check src/ tests/
+
+      - name: Check types
+        run: uv run mypy src/ tests/
+
   test:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -16,7 +52,8 @@ jobs:
         python-version: ["3.12", "3.13", "3.14"]
 
     steps:
-      - uses: actions/checkout@v6
+      - name: Check out repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Install uv
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
@@ -28,16 +65,42 @@ jobs:
         run: uv python pin ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: uv sync --dev --all-extras
+        run: uv sync --frozen --dev --all-extras
 
-      - name: Lint (ruff)
-        run: uv run ruff check src/ tests/
+      - name: Run offline suite
+        run: uv run pytest
 
-      - name: Format check (ruff)
-        run: uv run ruff format --check src/ tests/
+  dependency-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
-      - name: Type check (mypy)
-        run: uv run mypy src/ tests/
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
 
-      - name: Test with coverage
-        run: uv run pytest --cov=pxaudit --cov-report=term-missing --cov-fail-under=100
+      - name: Export locked dependencies
+        run: >-
+          uv export --frozen --all-extras --no-emit-project
+          --output-file "${{ runner.temp }}/requirements-audit.txt"
+
+      - name: Audit locked dependencies
+        run: >-
+          uv tool run --from pip-audit==2.10.0 pip-audit
+          --require-hashes --requirement "${{ runner.temp }}/requirements-audit.txt"
+
+  secret-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out full history
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Scan changed commits for secrets
+        uses: trufflesecurity/trufflehog@27b0417c16317ca9a472a9a8092acce143b49c55 # v3.95.9
+        with:
+          version: 3.95.9
+          extra_args: --results=verified,unknown --fail-on-scan-errors

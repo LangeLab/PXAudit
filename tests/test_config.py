@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import socket
 from pathlib import Path
 
 import pytest
@@ -16,6 +18,30 @@ from pxaudit.config import (
     load_file_config,
     merge_config,
 )
+
+
+def test_shared_fixture_isolates_ambient_paths(tmp_path: Path) -> None:
+    """Every test runs with temporary home, config, cache, and working paths."""
+    home = Path.home()
+    config_path = Path(os.environ["PXAUDIT_CONFIG"])
+    cache_dir = DEFAULTS["cache_dir"]
+
+    assert home.name == "home"
+    assert home.parent.name.endswith("-ambient")
+    assert config_path.parent == home.parent
+    assert isinstance(cache_dir, str)
+    assert Path(cache_dir).parent == home.parent
+    assert Path.cwd() == home.parent / "work"
+
+
+def test_shared_fixture_blocks_offline_socket_access() -> None:
+    """The default evidence tiers fail before opening a network connection."""
+    with pytest.raises(pytest.fail.Exception, match="offline tests must not open"):
+        socket.create_connection(("example.invalid", 443))
+
+    connect_ex = vars(socket.socket)["connect_ex"]
+    with pytest.raises(pytest.fail.Exception, match="offline tests must not open"):
+        connect_ex(None, ("example.invalid", 443))
 
 
 def test_missing_file_returns_empty(tmp_path: Path) -> None:

@@ -6,7 +6,7 @@ import json
 import os
 import sqlite3
 import sys
-from collections.abc import Generator, Iterable, Iterator
+from collections.abc import Iterable, Iterator
 from io import StringIO
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -30,20 +30,6 @@ from pxaudit.cli import (
 )
 from pxaudit.pride_client import PrideAPIError
 from pxaudit.tier_engine import AuditResult
-
-# ---------------------------------------------------------------------------
-# Output mode reset (module globals on _output)
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture(autouse=True)
-def _reset_output_mode() -> Generator[None, None, None]:
-    from pxaudit import _output
-
-    _output.configure(quiet=False, verbose=False, no_color=False)
-    yield
-    _output.configure(quiet=False, verbose=False, no_color=False)
-
 
 # ---------------------------------------------------------------------------
 # Synthetic PRIDE API payloads
@@ -146,7 +132,7 @@ def _cached(
 
 @pytest.fixture()
 def mocks(monkeypatch: pytest.MonkeyPatch) -> dict:
-    """Patch all external I/O (cache, API, DB) for CLI integration tests.
+    """Patch external I/O for CLI orchestration tests.
 
     Default behaviour: cache miss, successful API fetch of _GOLD_PROJECT and
     _GOLD_FILES, no-op DB writes.  Individual tests override specific mocks
@@ -416,6 +402,7 @@ def test_check_full_cache_hit_preserves_project_retrieval_time(
     assert study["fetched_at"] == project_retrieved_at
 
 
+@pytest.mark.component
 def test_full_cache_hit_persists_retrieval_time_with_real_cache_and_database(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1056,11 +1043,6 @@ def test_export_json(tmp_path: Path) -> None:
     assert len(data) == 1
     assert data[0]["accession"] == "PXD000001"
     assert data[0]["tier"] == "Diamond"
-
-
-# ---------------------------------------------------------------------------
-# 14. bulk-audit command : integration tests
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture()

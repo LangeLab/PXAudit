@@ -1,0 +1,46 @@
+name: Live PRIDE verification
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-pride-verification
+  cancel-in-progress: false
+
+jobs:
+  live-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PXAUDIT_LIVE_RECORD: ${{ github.workspace }}/live-verification.json
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+          cache-suffix: live-3.12
+
+      - name: Set up Python 3.12
+        run: uv python pin 3.12
+
+      - name: Install dependencies
+        run: uv sync --frozen --dev --all-extras
+
+      - name: Run live PRIDE integration tests
+        run: uv run pytest -m integration -v --no-cov
+
+      - name: Upload live verification record
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: live-pride-verification-${{ github.run_id }}
+          path: ${{ env.PXAUDIT_LIVE_RECORD }}
+          if-no-files-found: error
+          retention-days: 90

@@ -1,4 +1,4 @@
-"""Cross-module edge cases and real temporary-database workflows."""
+"""L0 edge contracts and L1 workflows with controlled real components."""
 
 from __future__ import annotations
 
@@ -187,12 +187,7 @@ def test_sdrf_token_boundary_cases(filename: str, expected: bool) -> None:
     )
 
 
-# ---------------------------------------------------------------------------
-# 4. Full pipeline → DB row verification
-#    These are integration-style tests: only the API layer is mocked; the DB
-#    write path (get_or_create_db, insert_study, insert_study_files,
-#    insert_audit) runs for real against a tmp_path SQLite file.
-# ---------------------------------------------------------------------------
+# The API boundary stays mocked so these workflows exercise deterministic real SQLite I/O.
 
 _AUDIT_COLS = (
     "accession",
@@ -250,6 +245,7 @@ def _count_rows(db_path: str, table: str, accession: str = "PXD000001") -> int:
     return n
 
 
+@pytest.mark.component
 def test_pipeline_gold_audit_row_tier_and_flags(_api_mocks: dict, tmp_path: Path) -> None:
     """Gold run: audit table must have tier=Gold and all Boolean flags correct."""
     db = str(tmp_path / "audit.db")
@@ -269,6 +265,7 @@ def test_pipeline_gold_audit_row_tier_and_flags(_api_mocks: dict, tmp_path: Path
     assert row["is_unverifiable"] == 0
 
 
+@pytest.mark.component
 def test_pipeline_gold_study_row_fields(_api_mocks: dict, tmp_path: Path) -> None:
     """Gold run: study table must have correct title, organism, organism_id, instrument, year."""
     db = str(tmp_path / "audit.db")
@@ -284,6 +281,7 @@ def test_pipeline_gold_study_row_fields(_api_mocks: dict, tmp_path: Path) -> Non
     assert row["repository"] == "PRIDE"
 
 
+@pytest.mark.component
 def test_pipeline_lowercase_accession_persists_one_canonical_identity(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -324,6 +322,7 @@ def test_pipeline_lowercase_accession_persists_one_canonical_identity(
         ]
 
 
+@pytest.mark.component
 def test_pipeline_gold_study_files_row_count(
     _api_mocks: dict, tmp_path: Path, pride_files_psi_sdrf: list
 ) -> None:
@@ -333,6 +332,7 @@ def test_pipeline_gold_study_files_row_count(
     assert _count_rows(db, "study_files") == len(pride_files_psi_sdrf)
 
 
+@pytest.mark.component
 def test_pipeline_silver_audit_row(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -356,6 +356,7 @@ def test_pipeline_silver_audit_row(
     assert row["has_result_files"] == 1
 
 
+@pytest.mark.component
 def test_pipeline_category_only_result_does_not_persist_psi_evidence(
     _api_mocks: dict, tmp_path: Path
 ) -> None:
@@ -380,6 +381,7 @@ def test_pipeline_category_only_result_does_not_persist_psi_evidence(
     assert audit["tier_logic_version"] == "v2.1"
 
 
+@pytest.mark.component
 def test_pipeline_new_accession_files_failure_creates_no_database(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -403,6 +405,7 @@ def test_pipeline_new_accession_files_failure_creates_no_database(
     assert not Path(db).exists()
 
 
+@pytest.mark.component
 def test_pipeline_verified_empty_files_response_persists_completed_raw_audit(
     _api_mocks: dict, tmp_path: Path
 ) -> None:
@@ -421,6 +424,7 @@ def test_pipeline_verified_empty_files_response_persists_completed_raw_audit(
     assert audit["files_fetch_failed"] == 0
 
 
+@pytest.mark.component
 def test_pipeline_files_failure_preserves_database_and_manifest(
     _api_mocks: dict, tmp_path: Path
 ) -> None:
@@ -466,6 +470,7 @@ def test_pipeline_files_failure_preserves_database_and_manifest(
     assert rows_after == rows_before
 
 
+@pytest.mark.component
 def test_pipeline_unverifiable_accession_in_db(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -493,6 +498,7 @@ def test_pipeline_unverifiable_accession_in_db(
     assert study["repository"] == "MassIVE"
 
 
+@pytest.mark.component
 def test_pipeline_upsert_second_run_does_not_duplicate_rows(
     _api_mocks: dict, tmp_path: Path
 ) -> None:
@@ -507,6 +513,7 @@ def test_pipeline_upsert_second_run_does_not_duplicate_rows(
     assert _count_rows(db, "audit") == 1
 
 
+@pytest.mark.component
 def test_pipeline_upsert_study_files_replaced_on_second_run(
     _api_mocks: dict, tmp_path: Path, pride_files_psi_sdrf: list
 ) -> None:
