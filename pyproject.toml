@@ -8,31 +8,31 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "click>=8.3.3",
-    "pandas>=3.0",
+    "pandas>=3.0.3",
     "requests>=2.33.0",
-    "tqdm>=4.67.0",
+    "tqdm>=4.69.0",
 ]
 
 [project.optional-dependencies]
 report = [
     "jinja2>=3.1",
-    "matplotlib>=3.8",
+    "matplotlib>=3.11.1",
 ]
 
 [project.scripts]
 pxaudit = "pxaudit.cli:main"
 
 [build-system]
-requires = ["uv_build>=0.10.6,<0.11.0"]
+requires = ["uv_build>=0.11.29,<0.12.0"]
 build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
-    "mypy>=1.15.0",
-    "pre-commit>=4.5.1",
+    "mypy>=2.3.0",
+    "pre-commit>=4.6.0",
     "pytest>=9.0.3",
-    "pytest-cov>=7.0.0",
-    "ruff>=0.15.7",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.15.22",
 ]
 
 [tool.ruff]
