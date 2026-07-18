@@ -810,15 +810,63 @@ def test_concurrent_process_writes_leave_one_valid_entry_and_no_temporaries(
     assert [path.name for path in cache_dir.iterdir()] == ["PXD000001_project.json"]
 
 
+def test_transient_replace_permission_error_is_retried(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A transient Windows-style replacement conflict succeeds on a bounded retry."""
+    real_replace = os.replace
+    calls = 0
+
+    def replace_after_contention(source: Path, destination: Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise PermissionError("busy")
+        real_replace(source, destination)
+
+    sleep = MagicMock()
+    monkeypatch.setattr(cache_module, "_ATOMIC_REPLACE_ATTEMPTS", 2)
+    monkeypatch.setattr("pxaudit.cache.os.replace", replace_after_contention)
+    monkeypatch.setattr("pxaudit.cache.time.sleep", sleep)
+
+    write_cache("PXD000001", "project", {"value": "new"}, cache_dir=tmp_path)
+
+    assert read_cache("PXD000001", "project", cache_dir=tmp_path) == {"value": "new"}
+    assert calls == 2
+    sleep.assert_called_once_with(cache_module._ATOMIC_REPLACE_RETRY_DELAY)
+
+
+def test_replace_permission_error_exhaustion_preserves_final(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Persistent replacement contention keeps the prior entry and removes the temporary."""
+    write_cache("PXD000001", "project", {"value": "old"}, cache_dir=tmp_path)
+    replace = MagicMock(side_effect=PermissionError("busy"))
+    sleep = MagicMock()
+    monkeypatch.setattr(cache_module, "_ATOMIC_REPLACE_ATTEMPTS", 3)
+    monkeypatch.setattr("pxaudit.cache.os.replace", replace)
+    monkeypatch.setattr("pxaudit.cache.time.sleep", sleep)
+
+    with pytest.raises(CacheWriteError):
+        write_cache("PXD000001", "project", {"value": "new"}, cache_dir=tmp_path)
+
+    assert replace.call_count == 3
+    assert sleep.call_count == 2
+    assert read_cache("PXD000001", "project", cache_dir=tmp_path) == {"value": "old"}
+    assert not list(tmp_path.glob("*.tmp"))
+
+
 def test_replace_failure_preserves_final_and_cleans_temporary(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A failed atomic replacement preserves the prior entry and removes its temporary."""
     write_cache("PXD000001", "project", {"value": "old"}, cache_dir=tmp_path)
-    monkeypatch.setattr("pxaudit.cache.os.replace", MagicMock(side_effect=OSError("busy")))
+    replace = MagicMock(side_effect=OSError("busy"))
+    monkeypatch.setattr("pxaudit.cache.os.replace", replace)
 
     with pytest.raises(CacheWriteError):
         write_cache("PXD000001", "project", {"value": "new"}, cache_dir=tmp_path)
+    replace.assert_called_once()
     assert read_cache("PXD000001", "project", cache_dir=tmp_path) == {"value": "old"}
     assert not list(tmp_path.glob("*.tmp"))
 

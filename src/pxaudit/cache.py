@@ -30,6 +30,8 @@ _CACHE_OWNER = "pxaudit"
 _CACHE_ENDPOINTS = frozenset({"project", "files"})
 _MAX_CACHE_COMPONENT_LENGTH = 64
 _CACHE_COMPONENT_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?\Z")
+_ATOMIC_REPLACE_ATTEMPTS = 5 if os.name == "nt" else 1
+_ATOMIC_REPLACE_RETRY_DELAY = 0.02
 
 
 class CacheError(Exception):
@@ -568,6 +570,20 @@ def _existing_entry_is_replaceable(path: Path, accession: str, endpoint: str) ->
     return _unwrap_cache(raw, accession, endpoint) is not None
 
 
+def _replace_atomically(temporary_path: Path, path: Path) -> None:
+    """Replace a cache entry, tolerating bounded Windows sharing contention."""
+    attempts = 0
+    while True:
+        try:
+            os.replace(temporary_path, path)
+            return
+        except PermissionError:
+            attempts += 1
+            if attempts >= _ATOMIC_REPLACE_ATTEMPTS:
+                raise
+            time.sleep(_ATOMIC_REPLACE_RETRY_DELAY)
+
+
 def write_cache(
     accession: str,
     endpoint: str,
@@ -649,7 +665,7 @@ def write_cache(
         ) as handle:
             temporary_path = Path(handle.name)
             json.dump(payload, handle, ensure_ascii=False)
-        os.replace(temporary_path, path)
+        _replace_atomically(temporary_path, path)
     except (OSError, TypeError, ValueError) as exc:
         raise CacheWriteError("cache entry could not be written atomically") from exc
     finally:
