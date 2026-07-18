@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import sys
 from collections.abc import Generator, Iterable, Iterator
@@ -955,6 +956,17 @@ def test_check_keyboard_interrupt_before_db_clean_close(
     mocks["get_or_create_db"].return_value.close.assert_called_once()
 
 
+def test_check_database_failure_is_clean_runtime_error(mocks: dict) -> None:
+    """A persistence failure exits 1 without exposing an uncaught exception."""
+    mocks["get_or_create_db"].side_effect = sqlite3.DatabaseError("database unavailable")
+
+    result = CliRunner().invoke(main, ["check", "PXD000001"])
+
+    assert result.exit_code == 1
+    assert "audit failed" in result.stderr
+    assert isinstance(result.exception, SystemExit)
+
+
 # ---------------------------------------------------------------------------
 # 13. bulk-audit helpers : unit tests
 # ---------------------------------------------------------------------------
@@ -1271,6 +1283,90 @@ def test_bulk_audit_keyboard_interrupt_writes_partial_export(
     assert "Partial export written" in result.output
 
 
+def test_bulk_audit_keyboard_interrupt_reports_partial_export_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An export failure cannot replace interrupt exit 130 with an uncaught error."""
+    completed = AuditData(
+        AuditResult(accession="PXD000001", tier="Gold"),
+        {},
+        MagicMock(),
+        [],
+        "ts",
+        [],
+        [],
+        False,
+    )
+    monkeypatch.setattr(
+        "pxaudit.cli._audit_single",
+        MagicMock(side_effect=[completed, KeyboardInterrupt()]),
+    )
+    monkeypatch.setattr(
+        "pxaudit.cli._write_export", MagicMock(side_effect=OSError("disk unavailable"))
+    )
+    accessions = tmp_path / "ids.txt"
+    accessions.write_text("PXD000001\nPXD000002\n", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "bulk-audit",
+            "--input",
+            str(accessions),
+            "--format",
+            "tsv",
+            "--output",
+            str(tmp_path / "partial.tsv"),
+        ],
+    )
+
+    assert result.exit_code == 130
+    assert "partial export could not be written" in result.stderr
+
+
+def test_bulk_audit_fatal_failure_reports_partial_export_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A partial-export encoding failure remains a clean runtime error."""
+    completed = AuditData(
+        AuditResult(accession="PXD000001", tier="Gold"),
+        {},
+        MagicMock(),
+        [],
+        "ts",
+        [],
+        [],
+        False,
+    )
+    monkeypatch.setattr(
+        "pxaudit.cli._audit_single",
+        MagicMock(side_effect=[completed, PrideAPIError("API unavailable")]),
+    )
+    monkeypatch.setattr(
+        "pxaudit.cli._write_export", MagicMock(side_effect=ValueError("cannot encode export"))
+    )
+    accessions = tmp_path / "ids.txt"
+    accessions.write_text("PXD000001\nPXD000002\n", encoding="utf-8")
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "bulk-audit",
+            "--input",
+            str(accessions),
+            "--format",
+            "tsv",
+            "--output",
+            str(tmp_path / "partial.tsv"),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "partial export" in result.stderr
+    assert "cannot encode export" in result.stderr
+    assert isinstance(result.exception, SystemExit)
+
+
 def test_bulk_audit_stdin_input(bulk_mocks: dict, tmp_path: Path) -> None:
     """--input - reads from stdin."""
     runner = CliRunner()
@@ -1305,6 +1401,62 @@ def test_bulk_audit_missing_input_file() -> None:
     )
     assert result.exit_code == 2
     assert "not found" in result.output
+
+
+def test_bulk_audit_invalid_utf8_input_exits_two(tmp_path: Path) -> None:
+    """An undecodable accession file is an input-validation error."""
+    accessions = tmp_path / "invalid.txt"
+    accessions.write_bytes(b"PXD000001\n\xff")
+
+    result = CliRunner().invoke(main, ["bulk-audit", "--input", str(accessions)])
+
+    assert result.exit_code == 2
+    assert "cannot read input file" in result.stderr
+
+
+def test_bulk_audit_database_failure_is_clean_runtime_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A shared database failure aborts the batch with runtime exit 1."""
+    accessions = tmp_path / "ids.txt"
+    accessions.write_text("PXD000001\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "pxaudit.cli._audit_single",
+        MagicMock(side_effect=sqlite3.DatabaseError("database unavailable")),
+    )
+
+    result = CliRunner().invoke(main, ["bulk-audit", "--input", str(accessions)])
+
+    assert result.exit_code == 1
+    assert "bulk audit failed" in result.stderr
+
+
+def test_bulk_audit_export_failure_is_clean_runtime_error(
+    bulk_mocks: dict, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An export write failure exits 1 after completed audits remain persisted."""
+    accessions = tmp_path / "ids.txt"
+    accessions.write_text("PXD000001\n", encoding="utf-8")
+    output = tmp_path / "results.tsv"
+    monkeypatch.setattr(
+        "pxaudit.cli._write_export", MagicMock(side_effect=OSError("disk unavailable"))
+    )
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "bulk-audit",
+            "--input",
+            str(accessions),
+            "--format",
+            "tsv",
+            "--output",
+            str(output),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "cannot write export" in result.stderr
 
 
 def test_bulk_audit_duplicate_warning(bulk_mocks: dict, tmp_path: Path) -> None:
@@ -1538,12 +1690,12 @@ def test_manifest_corrupt_database_is_preserved(tmp_path: Path) -> None:
         ["manifest", "PXD000001", "--db", str(database)],
     )
 
-    assert result.exit_code == 2
+    assert result.exit_code == 1
     assert "cannot read database" in result.stderr
     assert database.read_bytes() == original
 
 
-def test_manifest_database_open_error_exits_two(
+def test_manifest_database_open_error_exits_one(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Manifest reports SQLite failures raised while opening an existing path."""
@@ -1559,7 +1711,7 @@ def test_manifest_database_open_error_exits_two(
         ["manifest", "PXD000001", "--db", str(database)],
     )
 
-    assert result.exit_code == 2
+    assert result.exit_code == 1
     assert "cannot read database" in result.stderr
 
 
@@ -1634,6 +1786,115 @@ def test_manifest_json_output(tmp_path: Path) -> None:
     assert result.exit_code == 0
     assert "test.raw" in result.output
     assert "file_name" in result.output
+
+
+def test_manifest_invalid_text_bytes_are_clean_runtime_error(tmp_path: Path) -> None:
+    """Invalid UTF-8 stored in a text field produces a clean manifest error."""
+    from pxaudit.db import get_or_create_db
+
+    database = tmp_path / "invalid-text.db"
+    connection = get_or_create_db(database)
+    connection.execute("INSERT INTO study (accession) VALUES (?)", ("PXD000001",))
+    connection.execute(
+        "INSERT INTO study_files (accession, file_name) VALUES (?, ?)",
+        ("PXD000001", sqlite3.Binary(b"\xff")),
+    )
+    connection.commit()
+    connection.close()
+
+    result = CliRunner().invoke(
+        main,
+        ["manifest", "PXD000001", "--db", str(database), "--format", "json"],
+    )
+
+    assert result.exit_code == 1
+    assert "cannot format manifest" in result.stderr
+    assert isinstance(result.exception, SystemExit)
+
+
+def _create_manifest_golden_db(tmp_path: Path) -> Path:
+    """Create one deterministic manifest row for byte-level CLI assertions."""
+    from pxaudit.db import get_or_create_db, insert_study, insert_study_files
+
+    database = tmp_path / "manifest-golden.db"
+    connection = get_or_create_db(database)
+    try:
+        insert_study(connection, {"accession": "PXD000001", "fetched_at": "now"})
+        insert_study_files(
+            connection,
+            "PXD000001",
+            pd.DataFrame(
+                [
+                    {
+                        "accession": "PXD000001",
+                        "file_name": "a.mzid",
+                        "file_category": "RESULT",
+                        "file_extension": ".mzid",
+                        "ftp_location": None,
+                        "file_size": 1,
+                        "checksum": None,
+                        "checksum_type": None,
+                    }
+                ]
+            ),
+        )
+    finally:
+        connection.close()
+    return database
+
+
+@pytest.mark.parametrize(
+    ("global_flags", "use_no_color_env"),
+    [
+        ([], False),
+        (["-q"], False),
+        (["-v"], False),
+        (["--no-color"], False),
+        ([], True),
+    ],
+    ids=["default-nontty", "quiet", "verbose", "no-color-flag", "no-color-env"],
+)
+@pytest.mark.parametrize(
+    ("fmt", "expected"),
+    [
+        (
+            "tsv",
+            "file_name\tfile_category\tfile_extension\tftp_location\tfile_size\tchecksum\t"
+            "checksum_type\na.mzid\tRESULT\t.mzid\t\t1\t\t\n",
+        ),
+        (
+            "json",
+            '[\n  {\n    "file_name":"a.mzid",\n    "file_category":"RESULT",\n'
+            '    "file_extension":".mzid",\n    "ftp_location":null,\n'
+            '    "file_size":1,\n    "checksum":null,\n    "checksum_type":null\n  }\n]\n',
+        ),
+    ],
+)
+def test_manifest_body_golden_in_every_output_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    global_flags: list[str],
+    use_no_color_env: bool,
+    fmt: str,
+    expected: str,
+) -> None:
+    """Manifest stdout is exact data with no status or ANSI contamination."""
+    database = _create_manifest_golden_db(tmp_path)
+    monkeypatch.setenv("PXAUDIT_CONFIG", str(tmp_path / "missing.toml"))
+    if use_no_color_env:
+        monkeypatch.setenv("NO_COLOR", "1")
+    else:
+        monkeypatch.delenv("NO_COLOR", raising=False)
+
+    result = CliRunner().invoke(
+        main,
+        [*global_flags, "manifest", "PXD000001", "--db", str(database), "--format", fmt],
+    )
+
+    assert result.exit_code == 0
+    assert result.stdout == expected
+    assert result.stderr == ""
+    assert "\x1b[" not in result.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -2194,17 +2455,54 @@ def test_report_missing_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     assert list(tmp_path.iterdir()) == []
 
 
+def test_report_database_path_must_be_file(tmp_path: Path) -> None:
+    """An existing database directory is rejected as invalid input."""
+    database = tmp_path / "database"
+    database.mkdir()
+
+    result = CliRunner().invoke(main, ["report", "--db", str(database)])
+
+    assert result.exit_code == 2
+    assert "database path is not a file" in result.stderr
+    assert list(database.iterdir()) == []
+
+
+def test_report_database_access_error_exits_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A database metadata-access failure is operational, not a missing path."""
+    database = tmp_path / "audit.db"
+    database.touch()
+    original_stat = Path.stat
+
+    def fail_database_stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        if path == database:
+            raise PermissionError("metadata denied")
+        return original_stat(path, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(Path, "stat", fail_database_stat)
+
+    result = CliRunner().invoke(main, ["report", "--db", str(database)])
+
+    assert result.exit_code == 1
+    assert "cannot access database" in result.stderr
+    assert isinstance(result.exception, SystemExit)
+
+
 def test_report_existing_output_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """report exits 2 when output dir exists without --overwrite."""
+    """An existing directory is allowed unless its report file conflicts."""
     monkeypatch.setenv("PXAUDIT_CONFIG", str(tmp_path / "none.toml"))
     db = tmp_path / "x.db"
     db.write_text("")
     out = tmp_path / "outdir"
     out.mkdir()
+    report = out / "report.html"
+    report.write_text("keep", encoding="utf-8")
     runner = CliRunner()
     result = runner.invoke(main, ["report", "--db", str(db), "--output", str(out)])
     assert result.exit_code == 2
     assert "already exists" in result.output
+    assert report.read_text(encoding="utf-8") == "keep"
 
 
 def test_report_success_and_verbose(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2231,12 +2529,57 @@ def test_report_success_and_verbose(tmp_path: Path, monkeypatch: pytest.MonkeyPa
 
 
 @pytest.mark.parametrize(
+    ("global_flags", "use_no_color_env", "verbose"),
+    [
+        ([], False, False),
+        (["-q"], False, False),
+        (["-v"], False, True),
+        (["--no-color"], False, False),
+        ([], True, False),
+    ],
+    ids=["default-nontty", "quiet", "verbose", "no-color-flag", "no-color-env"],
+)
+def test_report_plain_text_golden_in_every_output_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    global_flags: list[str],
+    use_no_color_env: bool,
+    verbose: bool,
+) -> None:
+    """Report status and verbose detail have stable plain-text streams."""
+    from pxaudit.db import get_or_create_db
+
+    database = tmp_path / "report.db"
+    get_or_create_db(database).close()
+    report_path = tmp_path / "output" / "report.html"
+    monkeypatch.setenv("PXAUDIT_CONFIG", str(tmp_path / "missing.toml"))
+    if use_no_color_env:
+        monkeypatch.setenv("NO_COLOR", "1")
+    else:
+        monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setattr("pxaudit.report.generate_report", MagicMock(return_value=report_path))
+
+    result = CliRunner().invoke(
+        main,
+        [*global_flags, "report", "--db", str(database), "--output", str(report_path.parent)],
+    )
+
+    expected = f"Report written to {report_path}\n"
+    if verbose:
+        expected += f"report rows=0 files=0 db={database} output={report_path}\n"
+    assert result.exit_code == 0
+    assert result.stdout == expected
+    assert result.stderr == ""
+    assert "\x1b[" not in result.stdout
+
+
+@pytest.mark.parametrize(
     ("exc", "code"),
     [
         (ValueError("bad"), 1),
         (ImportError("no jinja"), 1),
-        (FileNotFoundError("gone"), 2),
-        (PermissionError("denied"), 2),
+        (FileNotFoundError("gone"), 1),
+        (PermissionError("denied"), 1),
     ],
 )
 def test_report_error_paths(
@@ -2258,7 +2601,7 @@ def test_report_error_paths(
 
 
 def test_report_sqlite_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """sqlite3.DatabaseError maps to exit 2."""
+    """sqlite3.DatabaseError maps to runtime exit 1."""
     import sqlite3
 
     monkeypatch.setenv("PXAUDIT_CONFIG", str(tmp_path / "none.toml"))
@@ -2272,7 +2615,7 @@ def test_report_sqlite_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr("pxaudit.report.generate_report", boom)
     runner = CliRunner()
     result = runner.invoke(main, ["report", "--db", str(db), "--output", str(out), "--overwrite"])
-    assert result.exit_code == 2
+    assert result.exit_code == 1
 
 
 def test_cache_stats_skips_directories(tmp_path: Path) -> None:

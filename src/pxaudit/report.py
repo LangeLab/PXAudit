@@ -16,7 +16,10 @@ from __future__ import annotations
 
 import base64
 import importlib
+import logging
+import os
 import sqlite3
+import tempfile
 import typing
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -25,6 +28,8 @@ from io import BytesIO
 from pathlib import Path
 
 import pandas as pd
+
+_log = logging.getLogger(__name__)
 
 __all__ = [
     "generate_report",
@@ -52,6 +57,7 @@ _TIER_ORDER: list[str] = [
     "Raw",
     "None",
     "Unverifiable",
+    "Unknown",
 ]
 
 _TIER_COLORS: dict[str, str] = {
@@ -63,6 +69,7 @@ _TIER_COLORS: dict[str, str] = {
     "Raw": "#64748b",  # Dark gray - unprocessed
     "None": "#e2e8f0",  # Very light gray - missing
     "Unverifiable": "#ef4444",  # Red - error/unknown
+    "Unknown": "#7c3aed",
 }
 
 _QUANT_TIER_ORDER: list[str] = [
@@ -71,6 +78,7 @@ _QUANT_TIER_ORDER: list[str] = [
     "Partial",
     "No Quant",
     "Unverifiable",
+    "Unknown",
 ]
 
 _QUANT_TIER_COLORS: dict[str, str] = {
@@ -79,6 +87,7 @@ _QUANT_TIER_COLORS: dict[str, str] = {
     "Partial": "#f59e0b",  # Amber - partial quantification
     "No Quant": "#94a3b8",  # Gray - no quantification
     "Unverifiable": "#ef4444",  # Red - error/unknown
+    "Unknown": "#7c3aed",
 }
 
 # All metadata flag columns in the audit table, in display order.
@@ -193,6 +202,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   .tier-Raw { color: #64748b; font-weight: 600; }
   .tier-None { color: #e2e8f0; }
   .tier-Unverifiable { color: #ef4444; }
+  .tier-Unknown { color: #7c3aed; }
 
   .tier-Quant-Complete { color: #16a34a; font-weight: 600; }
   .tier-Quant-Ready { color: #3b82f6; font-weight: 600; }
@@ -436,7 +446,38 @@ def _series_int_sum(series: pd.Series) -> int:
 
 
 def generate_report(db_path: str | Path, output_dir: str | Path, title: str) -> Path:
-    """Generate a self-contained HTML report from a populated database."""
+    """Generate a self-contained HTML report from a populated database.
+
+    The input database is opened read-only. The output is atomically written to
+    ``report.html`` inside ``output_dir``; direct callers replace that file if it exists.
+
+    Parameters
+    ----------
+    db_path:
+        Existing PXAudit SQLite database.
+    output_dir:
+        Directory that will contain ``report.html``.
+    title:
+        Report title rendered in the page header and HTML title.
+
+    Returns
+    -------
+    pathlib.Path
+        Path to the completed report.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the input database does not exist.
+    ValueError
+        If the database has no audited accessions.
+    ImportError
+        If a report dependency is unavailable.
+    OSError
+        If the output directory or report cannot be written.
+    sqlite3.DatabaseError
+        If the input is not a readable PXAudit database.
+    """
     db_path = Path(db_path)
     if not db_path.exists():
         raise FileNotFoundError(f"database not found: {db_path}")
@@ -450,16 +491,42 @@ def generate_report(db_path: str | Path, output_dir: str | Path, title: str) -> 
     output_dir = Path(output_dir)
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
-    except PermissionError as exc:  # pragma: no cover: chmod ineffective on Windows NTFS
+    except PermissionError as exc:
         raise PermissionError(f"cannot create output directory {output_dir}: {exc}") from exc
+    except OSError as exc:
+        raise OSError(f"cannot create output directory {output_dir}: {exc}") from exc
 
     html = _render_html(data, db_path, title)
     out_path = output_dir / "report.html"
-    try:
-        out_path.write_text(html, encoding="utf-8")
-    except PermissionError as exc:  # pragma: no cover: chmod ineffective on Windows NTFS
-        raise PermissionError(f"cannot write {out_path}: {exc}") from exc
+    _write_report(out_path, html)
     return out_path
+
+
+def _write_report(out_path: Path, html: str) -> None:
+    """Atomically replace a report and clean its unique temporary file."""
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=out_path.parent,
+            prefix=f".{out_path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary_path = Path(handle.name)
+            handle.write(html)
+        os.replace(temporary_path, out_path)
+    except PermissionError as exc:
+        raise PermissionError(f"cannot write {out_path}: {exc}") from exc
+    except OSError as exc:
+        raise OSError(f"cannot write {out_path}: {exc}") from exc
+    finally:
+        if temporary_path is not None and temporary_path.exists():
+            try:
+                temporary_path.unlink()
+            except OSError:
+                _log.warning("Could not remove report temporary file %s", temporary_path.name)
 
 
 # ---------------------------------------------------------------------------
@@ -527,7 +594,7 @@ def _get_version() -> str:
 
 
 def _query_tier_distribution(conn: sqlite3.Connection) -> pd.DataFrame:
-    """Return tier counts across ALL tiers (including zeros), sorted best-to-worst."""
+    """Return counts for known tiers plus an explicit unknown bucket."""
     df = pd.read_sql_query("SELECT tier, COUNT(*) AS count FROM audit GROUP BY tier", conn)
     if df.empty:
         return pd.DataFrame(
@@ -537,6 +604,8 @@ def _query_tier_distribution(conn: sqlite3.Connection) -> pd.DataFrame:
                 "percentage": [0.0] * len(_TIER_ORDER),
             }
         )
+    df["tier"] = df["tier"].where(df["tier"].isin(_TIER_ORDER), "Unknown")
+    df = df.groupby("tier", as_index=False, dropna=False)["count"].sum()
     total = _series_int_sum(df["count"])
     full = pd.DataFrame({"tier": _TIER_ORDER})
     df = full.merge(df, on="tier", how="left").fillna(0)
@@ -546,12 +615,13 @@ def _query_tier_distribution(conn: sqlite3.Connection) -> pd.DataFrame:
 
 
 def _query_quant_tier_distribution(conn: sqlite3.Connection) -> pd.DataFrame:
-    """Return quant tier counts across ALL tiers (including zeros), sorted best-to-worst."""
+    """Return counts for known quant tiers plus an explicit unknown bucket."""
     df = pd.read_sql_query(
-        "SELECT quant_tier, COUNT(*) AS count FROM audit "
-        "WHERE quant_tier IS NOT NULL GROUP BY quant_tier",
+        "SELECT quant_tier, COUNT(*) AS count FROM audit GROUP BY quant_tier",
         conn,
     )
+    df["quant_tier"] = df["quant_tier"].where(df["quant_tier"].isin(_QUANT_TIER_ORDER), "Unknown")
+    df = df.groupby("quant_tier", as_index=False, dropna=False)["count"].sum()
     total = _series_int_sum(df["count"]) if not df.empty else 0
     full = pd.DataFrame({"quant_tier": _QUANT_TIER_ORDER})
     df = full.merge(df, on="quant_tier", how="left").fillna(0)
@@ -582,8 +652,8 @@ def _query_all_accessions(conn: sqlite3.Connection) -> list[dict]:
         row: dict[str, typing.Any] = {
             "accession": str(db_row[0]),
             "title": str(db_row[1]),
-            "tier": str(db_row[2]),
-            "quant_tier": str(db_row[3] or ""),
+            "tier": db_row[2] if db_row[2] in _TIER_ORDER else "Unknown",
+            "quant_tier": db_row[3] if db_row[3] in _QUANT_TIER_ORDER else "Unknown",
             "flags": [],
         }
         raw_flags = list(db_row[4:])
@@ -618,29 +688,36 @@ _GAP_SEVERITY: dict[str, str] = {
 
 
 def _query_metadata_gaps(conn: sqlite3.Connection) -> list[dict]:
-    """Return metadata gap counts for verifiable studies, ranked by frequency."""
+    """Return present, missing, and unknown flag counts for verifiable studies."""
     results: list[dict[str, typing.Any]] = []
     for label, col in _FLAG_COLUMNS:
-        row = conn.execute(f"SELECT SUM(1 - {col}) FROM audit WHERE is_unverifiable = 0").fetchone()
-        missing = int(row[0]) if row and row[0] else 0
+        row = conn.execute(
+            f"SELECT "
+            f"SUM(CASE WHEN {col} = 0 THEN 1 ELSE 0 END), "
+            f"SUM(CASE WHEN {col} IS NULL THEN 1 ELSE 0 END), "
+            f"SUM(CASE WHEN {col} != 0 THEN 1 ELSE 0 END) "
+            "FROM audit WHERE is_unverifiable = 0"
+        ).fetchone()
+        missing, unknown, present = (int(value or 0) for value in row)
         results.append(
             {
                 "field": label,
                 "missing": missing,
+                "unknown": unknown,
+                "present": present,
                 "severity": _GAP_SEVERITY.get(label, "moderate"),
             }
         )
     ver_row = conn.execute("SELECT COUNT(*) FROM audit WHERE is_unverifiable = 0").fetchone()
     verifiable = int(ver_row[0]) if ver_row else 0
     for item in results:
-        item["present"] = verifiable - item["missing"]
         item["pct_missing"] = round(100.0 * item["missing"] / verifiable, 1) if verifiable else 0.0
     results.sort(key=lambda x: x["missing"], reverse=True)
     return results
 
 
 def _query_cohort_organism(conn: sqlite3.Connection) -> pd.DataFrame:
-    """Return quality distribution by organism (top 5 organisms)."""
+    """Return quality distribution for the ten largest organism cohorts."""
     sql = (
         "SELECT COALESCE(s.organism, 'Unknown') AS organism, a.tier, COUNT(*) AS count "
         "FROM audit a LEFT JOIN study s USING(accession) "
@@ -654,11 +731,11 @@ def _query_cohort_organism(conn: sqlite3.Connection) -> pd.DataFrame:
         "    WHEN 'None' THEN 7 ELSE 8 "
         "  END"
     )
-    return pd.read_sql_query(sql, conn)
+    return _limit_cohorts(pd.read_sql_query(sql, conn), "organism")
 
 
 def _query_cohort_instrument(conn: sqlite3.Connection) -> pd.DataFrame:
-    """Return quality distribution by instrument type (top 5 instruments)."""
+    """Return quality distribution for the ten largest instrument cohorts."""
     sql = (
         "SELECT COALESCE(s.instrument, 'Unknown') AS instrument, a.tier, COUNT(*) AS count "
         "FROM audit a LEFT JOIN study s USING(accession) "
@@ -672,7 +749,22 @@ def _query_cohort_instrument(conn: sqlite3.Connection) -> pd.DataFrame:
         "    WHEN 'None' THEN 7 ELSE 8 "
         "  END"
     )
-    return pd.read_sql_query(sql, conn)
+    return _limit_cohorts(pd.read_sql_query(sql, conn), "instrument")
+
+
+def _limit_cohorts(df: pd.DataFrame, group_col: str) -> pd.DataFrame:
+    """Normalize tiers and select the ten largest cohorts with alphabetical ties."""
+    if df.empty:
+        return df
+    df["tier"] = df["tier"].where(df["tier"].isin(_TIER_ORDER), "Unknown")
+    df = df.groupby([group_col, "tier"], as_index=False, dropna=False)["count"].sum()
+    totals = (
+        df.groupby(group_col, as_index=False)["count"]
+        .sum()
+        .sort_values(["count", group_col], ascending=[False, True])
+        .head(10)
+    )
+    return df[df[group_col].isin(totals[group_col])].copy()
 
 
 # ---------------------------------------------------------------------------
@@ -994,10 +1086,6 @@ def _render_cohort_chart(df: pd.DataFrame, group_col: str) -> str:
         pivot = pivot[ordered_cols]
         # Sort rows by total count descending.
         pivot = pivot.loc[pivot.sum(axis=1).sort_values(ascending=True).index]
-        # Limit to top 10 for readability.
-        if len(pivot) > 10:
-            pivot = pivot.tail(10)
-
         fig, ax = plt.subplots(figsize=(6, 0.35 * len(pivot) + 0.8))
         colors = [_TIER_COLORS.get(t, "#999999") for t in ordered_cols]
         pivot.plot(kind="barh", stacked=True, ax=ax, color=colors, edgecolor="white")

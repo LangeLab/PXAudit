@@ -6,11 +6,12 @@ Coverage target: 100% branch coverage on report.py.
 from __future__ import annotations
 
 import importlib.metadata as importlib_metadata
+import logging
 import sys
 import threading
 from collections.abc import Mapping
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pandas as pd
 import pytest
@@ -360,6 +361,36 @@ def null_flag_db(tmp_path: Path) -> Path:
 
 
 @pytest.fixture()
+def unknown_tier_db(tmp_path: Path) -> Path:
+    """Database containing tier values outside the current report vocabulary."""
+    db_path = tmp_path / "unknown-tier.db"
+    conn = get_or_create_db(db_path)
+    conn.execute(
+        "INSERT INTO audit (accession, tier, quant_tier, is_unverifiable) "
+        "VALUES ('PXD000001', 'Future Tier', 'Future Quant', 0)"
+    )
+    conn.close()
+    return db_path
+
+
+@pytest.fixture()
+def all_gaps_db(tmp_path: Path) -> Path:
+    """Database whose one verifiable row is missing every report flag."""
+    from pxaudit.report import _FLAG_COLUMNS
+
+    db_path = tmp_path / "all-gaps.db"
+    conn = get_or_create_db(db_path)
+    columns = [column for _label, column in _FLAG_COLUMNS]
+    conn.execute(
+        f"INSERT INTO audit (accession, tier, quant_tier, is_unverifiable, "
+        f"{', '.join(columns)}) VALUES ({', '.join('?' for _ in range(4 + len(columns)))})",
+        ("PXD000001", "None", "No Quant", 0, *([0] * len(columns))),
+    )
+    conn.close()
+    return db_path
+
+
+@pytest.fixture()
 def xss_db(tmp_path: Path) -> Path:
     db_path = tmp_path / "xss.db"
     conn = get_or_create_db(db_path)
@@ -398,7 +429,7 @@ def output_dir(tmp_path: Path) -> Path:
 
 @pytest.fixture()
 def many_organisms_db(tmp_path: Path) -> Path:
-    """DB with 12 unique organisms to test cohort chart truncation (>10 rows)."""
+    """Database with 12 equal-sized organisms for deterministic top-ten selection."""
     db_path = tmp_path / "many_orgs.db"
     conn = get_or_create_db(db_path)
     from pxaudit.db import _AUDIT_COLS, _STUDY_COLS
@@ -495,6 +526,17 @@ class TestQueryFunctions:
         assert "Orbitrap" in instruments
         assert "Q Exactive" in instruments
 
+    def test_cohort_queries_return_top_ten_with_deterministic_ties(
+        self, many_organisms_db: Path
+    ) -> None:
+        from pxaudit.report import _query_cohort_organism
+
+        conn = get_or_create_db(many_organisms_db)
+        df = _query_cohort_organism(conn)
+        conn.close()
+
+        assert set(df["organism"]) == set(sorted(f"Organism_{i}" for i in range(12))[:10])
+
     def test_metadata_gaps_populated(self, realistic_db: Path) -> None:
         from pxaudit.report import _query_metadata_gaps
 
@@ -503,6 +545,28 @@ class TestQueryFunctions:
         conn.close()
         assert len(gaps) > 0
         assert all("field" in g and "missing" in g and "severity" in g for g in gaps)
+
+    def test_unknown_tiers_are_counted_and_normalized(self, unknown_tier_db: Path) -> None:
+        from pxaudit.report import (
+            _query_all_accessions,
+            _query_cohort_organism,
+            _query_quant_tier_distribution,
+            _query_tier_distribution,
+        )
+
+        conn = get_or_create_db(unknown_tier_db)
+        tier_dist = _query_tier_distribution(conn)
+        quant_dist = _query_quant_tier_distribution(conn)
+        cohort_dist = _query_cohort_organism(conn)
+        rows = _query_all_accessions(conn)
+        conn.close()
+
+        assert int(tier_dist.loc[tier_dist["tier"] == "Unknown", "count"].iloc[0]) == 1
+        assert int(quant_dist.loc[quant_dist["quant_tier"] == "Unknown", "count"].iloc[0]) == 1
+        assert cohort_dist[["tier", "count"]].to_dict(orient="records") == [
+            {"tier": "Unknown", "count": 1}
+        ]
+        assert rows[0]["tier"] == rows[0]["quant_tier"] == "Unknown"
 
     def test_all_accessions_sorted(self, realistic_db: Path) -> None:
         from pxaudit.report import _TIER_ORDER, _query_all_accessions
@@ -555,9 +619,10 @@ class TestEmptyDataFrames:
         conn = get_or_create_db(db_path)
         df = _query_quant_tier_distribution(conn)
         conn.close()
-        # Returns full quant tier list with zero counts.
+        # A NULL stored value is retained as unknown rather than disappearing.
         assert not df.empty
-        assert int(df["count"].sum()) == 0
+        assert int(df["count"].sum()) == 1
+        assert int(df.loc[df["quant_tier"] == "Unknown", "count"].iloc[0]) == 1
 
     def test_empty_tier_chart(self) -> None:
         from pxaudit.report import _render_tier_chart
@@ -587,6 +652,12 @@ class TestEdgeCases:
         html = out.read_text(encoding="utf-8")
         assert "Unverifiable" in html
 
+    def test_unknown_tier_report_renders(self, unknown_tier_db: Path, output_dir: Path) -> None:
+        """Unknown stored tiers remain renderable in every report section."""
+        out = generate_report(unknown_tier_db, output_dir, "Unknown")
+
+        assert out.read_text(encoding="utf-8").startswith("<!DOCTYPE html>")
+
     def test_xss_escaped(self, xss_db: Path, output_dir: Path) -> None:
         out = generate_report(xss_db, output_dir, "X")
         html = out.read_text(encoding="utf-8")
@@ -594,11 +665,37 @@ class TestEdgeCases:
         assert "&lt;script&gt;" in html
 
     def test_null_flags(self, null_flag_db: Path, output_dir: Path) -> None:
+        from pxaudit.report import _query_metadata_gaps
+
+        conn = get_or_create_db(null_flag_db)
+        result_files = next(
+            item for item in _query_metadata_gaps(conn) if item["field"] == "result_files"
+        )
+        conn.close()
+
+        assert result_files == {
+            "field": "result_files",
+            "missing": 1,
+            "unknown": 1,
+            "present": 1,
+            "severity": "critical",
+            "pct_missing": 33.3,
+        }
         out = generate_report(null_flag_db, output_dir, "Null")
         html = out.read_text(encoding="utf-8")
         assert "?" in html
         assert "+" in html
         assert "-" in html
+
+    def test_every_missing_flag_reports_one_hundred_percent(self, all_gaps_db: Path) -> None:
+        from pxaudit.report import _query_metadata_gaps
+
+        conn = get_or_create_db(all_gaps_db)
+        gaps = _query_metadata_gaps(conn)
+        conn.close()
+
+        assert all(item["pct_missing"] == 100.0 for item in gaps)
+        assert all(item["present"] == 0 and item["unknown"] == 0 for item in gaps)
 
     def test_direct_filenotfound(self, tmp_path: Path) -> None:
         with pytest.raises(FileNotFoundError, match="database not found"):
@@ -615,6 +712,15 @@ class TestEdgeCases:
         finally:
             readonly.chmod(0o755)
 
+    def test_output_directory_creation_os_error(
+        self, realistic_db: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A non-permission directory failure retains output context."""
+        monkeypatch.setattr(Path, "mkdir", Mock(side_effect=OSError("filesystem unavailable")))
+
+        with pytest.raises(OSError, match="cannot create output directory"):
+            generate_report(realistic_db, tmp_path / "out", "X")
+
     @pytest.mark.skipif(sys.platform == "win32", reason="chmod has no effect on NTFS")
     def test_permission_error_write(self, realistic_db: Path, tmp_path: Path) -> None:
         """PermissionError when report.html can't be written."""
@@ -627,7 +733,46 @@ class TestEdgeCases:
         finally:
             readonly.chmod(0o755)
 
-    def test_many_organisms_truncates_cohort_chart(
+    def test_atomic_write_failure_preserves_report_and_cleans_temporary(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        import pxaudit.report as report_mod
+
+        report = tmp_path / "report.html"
+        report.write_text("keep", encoding="utf-8")
+        monkeypatch.setattr(report_mod.os, "replace", Mock(side_effect=OSError("disk full")))
+
+        with pytest.raises(OSError, match="cannot write"):
+            report_mod._write_report(report, "replacement")
+
+        assert report.read_text(encoding="utf-8") == "keep"
+        assert list(tmp_path.glob(".report.html.*.tmp")) == []
+
+    def test_temporary_cleanup_failure_is_logged(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        import pxaudit.report as report_mod
+
+        report = tmp_path / "report.html"
+        original_unlink = Path.unlink
+
+        def refuse_temporary(path: Path, missing_ok: bool = False) -> None:
+            if path.name.startswith(".report.html."):
+                raise OSError("cleanup failed")
+            original_unlink(path, missing_ok=missing_ok)
+
+        monkeypatch.setattr(report_mod.os, "replace", Mock(side_effect=OSError("disk full")))
+        monkeypatch.setattr(Path, "unlink", refuse_temporary)
+
+        with caplog.at_level(logging.WARNING), pytest.raises(OSError, match="cannot write"):
+            report_mod._write_report(report, "replacement")
+
+        assert "Could not remove report temporary file" in caplog.text
+
+    def test_many_organisms_generate_top_ten_cohort_chart(
         self, many_organisms_db: Path, output_dir: Path
     ) -> None:
         from pxaudit.report import generate_report
@@ -669,25 +814,97 @@ class TestCliIntegration:
 
     def test_overwrite_guard(self, realistic_db: Path, output_dir: Path) -> None:
         output_dir.mkdir()
+        report = output_dir / "report.html"
+        report.write_text("keep", encoding="utf-8")
         r = self._runner().invoke(
             main, ["report", "--db", str(realistic_db), "--output", str(output_dir)]
         )
         assert r.exit_code == 2
         assert "already exists" in r.output
+        assert report.read_text(encoding="utf-8") == "keep"
+
+    def test_existing_output_directory_preserves_unrelated_files(
+        self, realistic_db: Path, output_dir: Path
+    ) -> None:
+        output_dir.mkdir()
+        unrelated = output_dir / "notes.txt"
+        unrelated.write_text("keep", encoding="utf-8")
+
+        r = self._runner().invoke(
+            main, ["report", "--db", str(realistic_db), "--output", str(output_dir)]
+        )
+
+        assert r.exit_code == 0
+        assert (output_dir / "report.html").exists()
+        assert unrelated.read_text(encoding="utf-8") == "keep"
+
+    def test_default_output_writes_report_in_current_directory(
+        self, realistic_db: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+
+        r = self._runner().invoke(main, ["report", "--db", str(realistic_db)])
+
+        assert r.exit_code == 0
+        assert (tmp_path / "report.html").exists()
 
     def test_overwrite_flag(self, realistic_db: Path, output_dir: Path) -> None:
         output_dir.mkdir()
+        report = output_dir / "report.html"
+        report.write_text("old", encoding="utf-8")
+        unrelated = output_dir / "notes.txt"
+        unrelated.write_text("keep", encoding="utf-8")
+
         r = self._runner().invoke(
             main, ["report", "--db", str(realistic_db), "--output", str(output_dir), "--overwrite"]
         )
+
         assert r.exit_code == 0
-        assert (output_dir / "report.html").exists()
+        assert report.read_text(encoding="utf-8").startswith("<!DOCTYPE html>")
+        assert unrelated.read_text(encoding="utf-8") == "keep"
+
+    def test_output_path_must_be_directory(self, realistic_db: Path, tmp_path: Path) -> None:
+        output = tmp_path / "not-a-directory"
+        output.write_text("keep", encoding="utf-8")
+
+        r = self._runner().invoke(
+            main, ["report", "--db", str(realistic_db), "--output", str(output)]
+        )
+
+        assert r.exit_code == 2
+        assert "not a directory" in r.stderr
+        assert output.read_text(encoding="utf-8") == "keep"
+
+    def test_overwrite_refuses_report_target_directory(
+        self, realistic_db: Path, output_dir: Path
+    ) -> None:
+        """Overwrite cannot replace a directory that PXAudit does not own as a report."""
+        report_target = output_dir / "report.html"
+        report_target.mkdir(parents=True)
+        unrelated = report_target / "keep.txt"
+        unrelated.write_text("keep", encoding="utf-8")
+
+        result = self._runner().invoke(
+            main,
+            [
+                "report",
+                "--db",
+                str(realistic_db),
+                "--output",
+                str(output_dir),
+                "--overwrite",
+            ],
+        )
+
+        assert result.exit_code == 2
+        assert "report target" in result.stderr
+        assert unrelated.read_text(encoding="utf-8") == "keep"
 
     def test_corrupted_db(self, corrupted_db: Path, tmp_path: Path) -> None:
         r = self._runner().invoke(
             main, ["report", "--db", str(corrupted_db), "--output", str(tmp_path / "out")]
         )
-        assert r.exit_code == 2
+        assert r.exit_code == 1
         assert "not a database" in r.output
 
     @pytest.mark.skipif(sys.platform == "win32", reason="chmod has no effect on NTFS")
@@ -699,7 +916,7 @@ class TestCliIntegration:
             r = self._runner().invoke(
                 main, ["report", "--db", str(realistic_db), "--output", str(readonly / "sub")]
             )
-            assert r.exit_code == 2
+            assert r.exit_code == 1
             assert "Permission" in r.output
         finally:
             readonly.chmod(0o755)
@@ -737,7 +954,7 @@ class TestCliIntegration:
             r = CliRunner().invoke(
                 main, ["report", "--db", str(realistic_db), "--output", str(tmp_path / "fnf")]
             )
-        assert r.exit_code == 2
+        assert r.exit_code == 1
         assert "db vanished" in r.output
 
 
@@ -843,15 +1060,18 @@ class TestHtmlOutput:
             except Exception as e:
                 errors.append(str(e))
 
-        t1 = threading.Thread(target=run, args=(str(tmp_path / "c1"),))
-        t2 = threading.Thread(target=run, args=(str(tmp_path / "c2"),))
+        output = tmp_path / "shared"
+        t1 = threading.Thread(target=run, args=(str(output),))
+        t2 = threading.Thread(target=run, args=(str(output),))
         t1.start()
         t2.start()
         t1.join(timeout=30)
         t2.join(timeout=30)
         assert not errors
-        assert (tmp_path / "c1" / "report.html").exists()
-        assert (tmp_path / "c2" / "report.html").exists()
+        html = (output / "report.html").read_text(encoding="utf-8")
+        assert html.startswith("<!DOCTYPE html>")
+        assert html.endswith("</html>")
+        assert list(output.glob(".report.html.*.tmp")) == []
 
 
 class TestVersionFallback:

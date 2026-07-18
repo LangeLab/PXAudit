@@ -16,6 +16,7 @@ from __future__ import annotations
 import importlib.metadata
 import json
 import sqlite3
+import stat
 import sys
 import time
 import typing
@@ -32,6 +33,7 @@ from pxaudit import _PRIDE_PREFIX, _output
 from pxaudit.accession import InvalidAccessionError, normalize_accession
 from pxaudit.cache import (
     CachedResponse,
+    CacheError,
     CacheSafetyError,
     CacheWriteError,
     clear_cache,
@@ -679,6 +681,9 @@ def check(
     except PrideAPIError as exc:
         _output.error(f"Error: {exc}")
         sys.exit(1)
+    except (CacheError, sqlite3.DatabaseError, OSError) as exc:
+        _output.error(f"Error: audit failed: {exc}")
+        sys.exit(1)
     except KeyboardInterrupt:
         _output.error("\nInterrupted.")
         sys.exit(130)
@@ -755,6 +760,9 @@ def bulk_audit(
     except FileNotFoundError:
         _output.error(f"Error: input file not found: {input_path}")
         sys.exit(2)
+    except (OSError, UnicodeError) as exc:
+        _output.error(f"Error: cannot read input file {input_path!r}: {exc}")
+        sys.exit(2)
 
     if not raw_accessions:
         _output.warn("Warning: no accessions found in input.")
@@ -830,7 +838,14 @@ def bulk_audit(
                     _output.error(f"\nError: {accession} failed ({exc}).")
                     _output.error("Use --continue-on-error to skip failures.")
                     if results and export_path:
-                        _write_export(results, export_path, resolved_fmt or "tsv")
+                        try:
+                            _write_export(results, export_path, resolved_fmt or "tsv")
+                        except (OSError, TypeError, ValueError) as export_exc:
+                            _output.error(
+                                f"Error: partial export {export_path!r} could not be written: "
+                                f"{export_exc}"
+                            )
+                            sys.exit(1)
                         _output.status(
                             f"Partial export written to {export_path} "
                             f"({len(results)} accessions completed)."
@@ -842,12 +857,23 @@ def bulk_audit(
     except KeyboardInterrupt:
         _output.warn("\nInterrupted. Partial results written to database.")
         if results and export_path:
-            _write_export(results, export_path, resolved_fmt or "tsv")
-            _output.status(f"Partial export written to {export_path}")
+            try:
+                _write_export(results, export_path, resolved_fmt or "tsv")
+            except (OSError, TypeError, ValueError) as exc:
+                _output.warn(f"Warning: partial export could not be written: {exc}")
+            else:
+                _output.status(f"Partial export written to {export_path}")
         sys.exit(130)
+    except (CacheError, sqlite3.DatabaseError, OSError) as exc:
+        _output.error(f"Error: bulk audit failed: {exc}")
+        sys.exit(1)
 
     if results and export_path:
-        _write_export(results, export_path, resolved_fmt or "tsv")
+        try:
+            _write_export(results, export_path, resolved_fmt or "tsv")
+        except (OSError, TypeError, ValueError) as exc:
+            _output.error(f"Error: cannot write export {export_path!r}: {exc}")
+            sys.exit(1)
         if not quiet:
             _output.status(f"Exported {len(results)} results to {export_path}")
 
@@ -907,7 +933,7 @@ def manifest(ctx: click.Context, accession: str, db_path: str | None, fmt: str) 
         sys.exit(2)
     except sqlite3.DatabaseError as exc:
         _output.error(f"Error: cannot read database {resolved_db}: {exc}")
-        sys.exit(2)
+        sys.exit(1)
 
     try:
         cursor = conn.execute(
@@ -919,7 +945,7 @@ def manifest(ctx: click.Context, accession: str, db_path: str | None, fmt: str) 
         rows = cursor.fetchall()
     except sqlite3.DatabaseError as exc:
         _output.error(f"Error: cannot read database {resolved_db}: {exc}")
-        sys.exit(2)
+        sys.exit(1)
     finally:
         conn.close()
 
@@ -938,10 +964,16 @@ def manifest(ctx: click.Context, accession: str, db_path: str | None, fmt: str) 
     ]
     df = pd.DataFrame(rows, columns=columns)
 
-    if fmt == "json":
-        click.echo(df.to_json(orient="records", indent=2))
-    else:
-        click.echo(df.to_csv(sep="\t", index=False))
+    try:
+        body = (
+            df.to_json(orient="records", indent=2)
+            if fmt == "json"
+            else df.to_csv(sep="\t", index=False)
+        )
+    except (TypeError, ValueError, UnicodeError) as exc:
+        _output.error(f"Error: cannot format manifest for {accession!r}: {exc}")
+        sys.exit(1)
+    click.echo(body, nl=not body.endswith("\n"))
 
 
 @main.command("report")
@@ -963,7 +995,7 @@ def manifest(ctx: click.Context, accession: str, db_path: str | None, fmt: str) 
     "--overwrite",
     is_flag=True,
     default=False,
-    help="Overwrite existing output directory.",
+    help="Overwrite report.html if it already exists.",
 )
 @click.pass_context
 def report(
@@ -978,40 +1010,49 @@ def report(
 
     _emit_config_warnings(_resolve_effective(ctx))
 
-    if not Path(db_path).exists():
+    database_path = Path(db_path)
+    try:
+        database_mode = database_path.stat().st_mode
+    except FileNotFoundError:
         _output.error(f"Error: database not found: {db_path}")
+        sys.exit(2)
+    except OSError as exc:
+        _output.error(f"Error: cannot access database {db_path}: {exc}")
+        sys.exit(1)
+    if not stat.S_ISREG(database_mode):
+        _output.error(f"Error: database path is not a file: {db_path}")
         sys.exit(2)
 
     out = Path(output_dir)
-    if out.exists() and not overwrite:
+    if out.exists() and not out.is_dir():
+        _output.error(f"Error: output path {output_dir!r} is not a directory.")
+        sys.exit(2)
+    report_target = out / "report.html"
+    if report_target.exists() and not report_target.is_file():
+        _output.error(f"Error: report target {str(report_target)!r} is not a file.")
+        sys.exit(2)
+    if report_target.exists() and not overwrite:
         _output.error(
-            f"Error: output directory {output_dir!r} already exists. Use --overwrite to overwrite."
+            f"Error: output file {str(report_target)!r} already exists. "
+            "Use --overwrite to overwrite it."
         )
         sys.exit(2)
 
     try:
         report_path = generate_report(db_path, output_dir, title)
-    except ValueError as exc:
+        if ctx.obj["verbose"]:
+            conn = open_existing_db(db_path)
+            try:
+                n_audit = conn.execute("SELECT COUNT(*) FROM audit").fetchone()[0]
+                n_files = conn.execute("SELECT COUNT(*) FROM study_files").fetchone()[0]
+            finally:
+                conn.close()
+    except (ImportError, ValueError, OSError, sqlite3.DatabaseError) as exc:
         _output.error(f"Error: {exc}")
         sys.exit(1)
-    except ImportError as exc:
-        _output.error(f"Error: {exc}")
-        sys.exit(1)
-    except FileNotFoundError as exc:
-        _output.error(f"Error: {exc}")
-        sys.exit(2)
-    except (PermissionError, sqlite3.DatabaseError) as exc:
-        _output.error(f"Error: {exc}")
-        sys.exit(2)
 
     _output.status(f"Report written to {report_path}")
     if ctx.obj["verbose"]:
-        conn = open_existing_db(db_path)
-        try:
-            n_audit = conn.execute("SELECT COUNT(*) FROM audit").fetchone()[0]
-            n_files = conn.execute("SELECT COUNT(*) FROM study_files").fetchone()[0]
-        finally:
-            conn.close()
         _output.detail(f"report rows={n_audit} files={n_files} db={db_path} output={report_path}")
 
 
