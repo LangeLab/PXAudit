@@ -57,7 +57,7 @@ _AUDIT_DATA: dict = {
     "has_mztab": 0,
     "files_fetch_failed": 0,
     "is_unverifiable": 0,
-    "tier_logic_version": "v2.0",
+    "tier_logic_version": "v2.1",
     "quant_tier": "No Quant",
 }
 
@@ -340,7 +340,7 @@ def test_insert_audit_roundtrip(conn: sqlite3.Connection) -> None:
     assert has_mztab == 0
     assert files_fetch_failed == 0
     assert is_unverifiable == 0
-    assert tier_logic_version == "v2.0"
+    assert tier_logic_version == "v2.1"
     assert quant_tier == "No Quant"
 
 

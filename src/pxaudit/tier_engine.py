@@ -5,13 +5,10 @@ Public API
 compute_audit(accession, project_data, files_data, *, files_fetch_failed)
     -> AuditResult
 
-Flag computation mixes two strategies:
+Flag computation uses two strategies:
 - Project-level flags are derived directly from the ``project_data`` dict.
-- File-level flags are derived in two stages: ``FileTypeClassifier`` classifies
-  every file into a ``FileClass`` (one Python call per file), and then set
-  membership tests derive the Boolean flags.  SDRF and mzTab detection remain
-  as vectorized pandas operations because they require pattern matching across
-  all filenames simultaneously.
+- File-level classes come from ``FileTypeClassifier``. Narrow PSI-identification
+  and mzTab flags use exact supported filename suffixes after compression removal.
 
 The tier derivation mirrors the SQL CASE expression in
 the project wiki Database Schema page exactly.
@@ -24,10 +21,7 @@ trigger in practice, though it is exercised by synthetic test payloads.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
-
-import pandas as pd
 
 from pxaudit import _PRIDE_PREFIX
 from pxaudit.file_classifier import FileClass, FileTypeClassifier, strip_compression
@@ -36,37 +30,8 @@ from pxaudit.file_classifier import FileClass, FileTypeClassifier, strip_compres
 # Module-level constants
 # ---------------------------------------------------------------------------
 
-_TIER_LOGIC_VERSION: str = "v2.0"  # increment when tier derivation rules change
-
-# ---------------------------------------------------------------------------
-# SDRF detection
-# ---------------------------------------------------------------------------
-
-# Primary path: PRIDE applies this category to all SDRF files in well-annotated
-# submissions.  We require the filename to ALSO contain "sdrf" because the category
-# can be applied to any experimental-design document (Excel, plain text) that is
-# not an SDRF.
-_SDRF_CATEGORY: str = "experimental design"
-
-# Fallback path: pre-category-era submissions where the SDRF exists but was not
-# tagged with the EXPERIMENTAL DESIGN category.
-#
-# Two requirements to avoid false positives:
-#   1. The word-boundary lookbehind/lookahead (?<![a-zA-Z])sdrf(?![a-zA-Z]) ensures
-#      that "sdrfile.txt", "asdrf.tsv", "prefixsdrfsuffix" are NOT matched.
-#      Underscores and digits are NOT letters, so "_sdrf_.tsv" and "123sdrf456.tsv"
-#      still match; that is intentional and matches the token-boundary test suite.
-#   2. The tabular extension guard \.(tsv|txt|csv) ensures "sdrf_instructions.pdf"
-#      and "sdrf_template.docx" are NOT matched.  An SDRF must be a tab/comma-
-#      delimited text file; the extension is the authoritative discriminator.
-#   3. An optional compression suffix allows "PXD073444.sdrf.tsv.gz" to match.
-#
-# The regex uses a word-boundary lookbehind/lookahead to avoid matching
-# sdrfile.txt, asdrf.tsv, or sdrfdata.tsv as false positives.
-_SDRF_FALLBACK_RE: re.Pattern[str] = re.compile(
-    r"(?<![a-zA-Z])sdrf(?![a-zA-Z]).*\.(?:tsv|txt|csv)(?:\.(?:gz|zip|bz2|7z))?$",
-    re.IGNORECASE,
-)
+_TIER_LOGIC_VERSION: str = "v2.1"
+_PSI_RESULT_EXTENSIONS: tuple[str, ...] = (".mzid", ".mzidentml", ".mztab")
 
 # Module-level classifier instance: stateless after construction, safe to share.
 _classifier: FileTypeClassifier = FileTypeClassifier()
@@ -88,6 +53,26 @@ def _safe_pubmed_id(value: object) -> int:
         return int(value)  # type: ignore[call-overload]
     except (TypeError, ValueError):
         return 0
+
+
+def _has_cv_quant_method(methods: object) -> bool:
+    """Return whether quantification methods contain a usable CV name or accession."""
+    if not isinstance(methods, list):
+        return False
+    return any(
+        isinstance(method, dict)
+        and any(
+            isinstance(value := method.get(field), str) and bool(value.strip())
+            for field in ("name", "accession")
+        )
+        for method in methods
+    )
+
+
+def _is_psi_result(filename: str) -> bool:
+    """Return whether a filename establishes supported PSI identification evidence."""
+    base = strip_compression(filename).casefold()
+    return base.endswith(_PSI_RESULT_EXTENSIONS)
 
 
 # ---------------------------------------------------------------------------
@@ -117,12 +102,12 @@ class AuditResult:
     has_instrument: bool = False
     has_result_files: bool = False
     # File-level flags
-    has_psi_results: bool = False  # FileClass.RESULT found (mzIdentML / mzTab)
+    has_psi_results: bool = False
     has_open_spectra: bool = False  # FileClass.PEAK found
     has_organism_part: bool = False  # len(project["organismParts"]) > 0
     has_publication: bool = False  # pubmedID present, non-null, != 0
-    has_tabular_quant: bool = False  # FileClass.QUANT_MATRIX or ID_LIST found
-    has_quant_metadata: bool = False  # quantificationMethods[] non-empty
+    has_tabular_quant: bool = False
+    has_quant_metadata: bool = False
     # Legacy flags
     has_sdrf: bool = False
     has_mztab: bool = False
@@ -218,10 +203,10 @@ def compute_audit(
 
     organism_parts: list = project_data.get("organismParts") or []
     references: list = project_data.get("references") or []
-    quant_methods: list = project_data.get("quantificationMethods") or []
+    quant_methods: object = project_data.get("quantificationMethods") or []
 
     has_organism_part = bool(organism_parts)
-    has_quant_metadata = bool(quant_methods)
+    has_quant_metadata = _has_cv_quant_method(quant_methods)
     has_publication = any(_safe_pubmed_id(r.get("pubmedID")) != 0 for r in references)
 
     # ------------------------------------------------------------------
@@ -236,18 +221,7 @@ def compute_audit(
         has_sdrf = False
         has_mztab = False
     else:
-        # Build flat Series from nested CvParam structures: one pass only.
-        file_names = pd.Series(
-            [f.get("fileName") or "" for f in files_data],
-            dtype="object",
-        )
-        file_cats = pd.Series(
-            [(f.get("fileCategory") or {}).get("value") or "" for f in files_data],
-            dtype="object",
-        )
-
-        # Classify each file via FileTypeClassifier (one call per file; not vectorizable).
-        # A set collapses duplicates so all membership tests are O(1).
+        file_names = [f.get("fileName") or "" for f in files_data]
         file_classes: set[FileClass] = {
             _classifier.classify(
                 f.get("fileName") or "",
@@ -256,12 +230,12 @@ def compute_audit(
             for f in files_data
         }
 
-        has_psi_results = FileClass.RESULT in file_classes
+        has_psi_results = any(_is_psi_result(filename) for filename in file_names)
         has_open_spectra = FileClass.PEAK in file_classes
-        has_tabular_quant = bool(file_classes & {FileClass.QUANT_MATRIX, FileClass.ID_LIST})
+        has_tabular_quant = FileClass.QUANT_MATRIX in file_classes
 
         # Submission-type-aware result gate:
-        # PARTIAL submissions may lack PSI-standard result files; a quant table
+        # PARTIAL submissions may lack PSI-standard result files; a processed table
         # (QUANT_MATRIX or ID_LIST) is accepted as evidence of processed results.
         if submission_type.upper() == "PARTIAL":
             result_gate: frozenset[FileClass] = frozenset(
@@ -271,21 +245,10 @@ def compute_audit(
             result_gate = frozenset({FileClass.RESULT, FileClass.SEARCH})
         has_result_files = bool(file_classes & result_gate)
 
-        # Two-stage SDRF detection.
-        # Primary: authoritative EXPERIMENTAL DESIGN category + "sdrf" in filename.
-        experimental_design_mask = file_cats.str.casefold() == _SDRF_CATEGORY
-        primary_sdrf = bool(
-            experimental_design_mask.any()
-            and file_names[experimental_design_mask]
-            .str.contains(r"sdrf", case=False, na=False)
-            .any()
+        has_sdrf = FileClass.SDRF in file_classes
+        has_mztab = any(
+            strip_compression(filename).casefold().endswith(".mztab") for filename in file_names
         )
-        # Fallback: filename pattern only (for pre-category-era submissions).
-        fallback_sdrf = bool(file_names.str.contains(_SDRF_FALLBACK_RE, na=False).any())
-        has_sdrf = primary_sdrf or fallback_sdrf
-
-        stripped_names = file_names.apply(strip_compression)
-        has_mztab = bool(stripped_names.str.casefold().str.endswith(".mztab").any())
 
     # ------------------------------------------------------------------
     # 6.  Tier derivation  (mirrors SQL CASE in the wiki Database Schema page)

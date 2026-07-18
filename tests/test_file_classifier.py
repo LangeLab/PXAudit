@@ -10,9 +10,9 @@ Test organisation
 4.  Compound extensions : .pep.xml, .prot.xml, .wiff.scan, .sky.zip, .mztab-m
 5.  Exact-stem map : MaxQuant QUANT_MATRIX and ID_LIST
 6.  SDRF detection : canonical, compressed, imposters
-7.  PSI basename patterns : mzTab name variants, PRIDE XML
+7.  Processed-result basename patterns : mzTab name variants, PRIDE XML
 8.  Quant-matrix patterns : DIA-NN, FragPipe, Spectronaut
-9.  ID-list patterns : psm.tsv, combined_ion.tsv
+9.  ID-list patterns : PSM tables
 10. PRIDE category fallback : all mapped categories, unmapped
 11. FileClass.OTHER : unknown extension, no fallback
 12. Custom extension / basename overrides
@@ -130,12 +130,12 @@ def test_compression_exts_ordered_longest_first() -> None:
         ("run.apl", FileClass.PEAK),
         ("run.ms1", FileClass.PEAK),
         ("run.cms2", FileClass.PEAK),  # Crux/SEQUEST MS2 variant
-        # PSI RESULT
+        # PSI identification RESULT
         ("res.mzIdentML", FileClass.RESULT),
         ("res.mzid", FileClass.RESULT),
         ("res.mztab", FileClass.RESULT),
-        ("ids.idxml", FileClass.RESULT),  # OpenMS ID format
-        ("qc.mzqc", FileClass.RESULT),  # PSI QC format
+        ("ids.idxml", FileClass.SEARCH),
+        ("qc.mzqc", FileClass.OTHER),
         # SEARCH
         ("mascot.dat", FileClass.SEARCH),
         ("pd.msf", FileClass.SEARCH),
@@ -170,6 +170,16 @@ def test_extension_registry_is_case_insensitive() -> None:
     assert clf.classify("run.MZML") == FileClass.PEAK
     assert clf.classify("RUN.Raw") == FileClass.RAW
     assert clf.classify("RES.MZIdentML") == FileClass.RESULT
+
+
+def test_result_extensions_are_supported_psi_identification_formats() -> None:
+    """Only the three supported PSI proteomics suffixes use the RESULT extension class."""
+    result_extensions = {
+        extension
+        for extension, file_class in _EXTENSION_TO_CLASS.items()
+        if file_class is FileClass.RESULT
+    }
+    assert result_extensions == {".mzid", ".mzidentml", ".mztab"}
 
 
 # ---------------------------------------------------------------------------
@@ -207,7 +217,7 @@ def test_compressed_extensions(filename: str, expected: FileClass) -> None:
         ("results.prot.xml", FileClass.SEARCH),  # TPP protein
         ("sample.wiff.scan", FileClass.RAW),  # Sciex scan index
         ("method.sky.zip", FileClass.SEARCH),  # Skyline : .zip is format, not compression
-        ("res.mztab-m", FileClass.RESULT),  # mzTab-M (metabolomics)
+        ("res.mztab-m", FileClass.OTHER),
     ],
 )
 def test_compound_extensions(filename: str, expected: FileClass) -> None:
@@ -301,16 +311,29 @@ def test_sdrf_imposter_non_tabular(filename: str) -> None:
     assert result != FileClass.SDRF
 
 
-def test_sdrf_substring_tabular_accepted() -> None:
-    """'sdrfile.tsv' contains 'sdrf' and ends with .tsv : accepted by design."""
-    # The current guard is endswith tabular, not a word-boundary check.
-    # This documents the intentional behaviour rather than asserting rejection.
-    result = clf.classify("sdrfile.tsv")
-    assert result == FileClass.SDRF  # substring match + tabular → SDRF by design
+def test_sdrf_requires_token_boundary() -> None:
+    """A longer alphabetic token containing ``sdrf`` is not an SDRF filename."""
+    assert clf.classify("sdrfile.tsv") == FileClass.OTHER
+
+
+@pytest.mark.parametrize(
+    ("filename", "category", "expected"),
+    [
+        ("sdrf_instructions.pdf", "EXPERIMENTAL DESIGN", FileClass.SDRF),
+        ("sdrf_instructions.pdf", "OTHER", FileClass.OTHER),
+        ("sdrfile.tsv", "EXPERIMENTAL DESIGN", FileClass.OTHER),
+        ("isa_metadata.tsv", "EXPERIMENTAL DESIGN", FileClass.OTHER),
+    ],
+)
+def test_sdrf_category_and_token_contract(
+    filename: str, category: str, expected: FileClass
+) -> None:
+    """Categorized and fallback SDRF paths share the same token boundary."""
+    assert clf.classify(filename, category) is expected
 
 
 # ---------------------------------------------------------------------------
-# 7. PSI basename patterns
+# 7. Processed-result basename patterns
 # ---------------------------------------------------------------------------
 
 
@@ -324,14 +347,13 @@ def test_sdrf_substring_tabular_accepted() -> None:
         "pride_exp_partial.xml.gz",  # compressed PRIDE XML
     ],
 )
-def test_psi_basename_patterns_route_to_result(filename: str) -> None:
-    assert clf.classify(filename) == FileClass.RESULT
+def test_processed_result_basename_patterns_route_to_search(filename: str) -> None:
+    assert clf.classify(filename) == FileClass.SEARCH
 
 
-def test_psi_pattern_before_quant_pattern() -> None:
-    """mztab-named files must route to RESULT, not QUANT_MATRIX."""
-    # If PSI check ran after quant patterns, a mztab.tsv might match quant patterns first.
-    assert clf.classify("results-mztab.txt") == FileClass.RESULT
+def test_processed_result_pattern_precedes_quant_patterns() -> None:
+    """An mzTab basename hint is processed-result evidence, not a quant matrix."""
+    assert clf.classify("results-mztab.txt") == FileClass.SEARCH
 
 
 # ---------------------------------------------------------------------------
@@ -349,6 +371,7 @@ def test_psi_pattern_before_quant_pattern() -> None:
         # FragPipe
         ("combined_protein.tsv", FileClass.QUANT_MATRIX),
         ("combined_peptide.tsv", FileClass.QUANT_MATRIX),
+        ("combined_ion.tsv", FileClass.QUANT_MATRIX),
         ("pg_matrix.tsv", FileClass.QUANT_MATRIX),
         ("precursor_matrix.tsv", FileClass.QUANT_MATRIX),
         # Spectronaut
@@ -365,6 +388,15 @@ def test_quant_matrix_compressed(filename: str = "report.tsv.gz") -> None:
     assert clf.classify("report.tsv.gz") == FileClass.QUANT_MATRIX
 
 
+@pytest.mark.parametrize(
+    "filename",
+    ["audit_report.tsv", "uncombined_ion.tsv", "backup_combined_protein.tsv"],
+)
+def test_quant_matrix_fixed_names_reject_prefixed_lookalikes(filename: str) -> None:
+    """Fixed tool outputs do not match unrelated filenames that share a suffix."""
+    assert clf.classify(filename) == FileClass.OTHER
+
+
 # ---------------------------------------------------------------------------
 # 9. ID-list patterns
 # ---------------------------------------------------------------------------
@@ -376,7 +408,6 @@ def test_quant_matrix_compressed(filename: str = "report.tsv.gz") -> None:
         ("psm.tsv", FileClass.ID_LIST),
         ("psm.txt", FileClass.ID_LIST),
         ("psms.txt", FileClass.ID_LIST),
-        ("combined_ion.tsv", FileClass.ID_LIST),
     ],
 )
 def test_id_list_patterns(filename: str, expected: FileClass) -> None:
@@ -395,7 +426,7 @@ def test_id_list_patterns(filename: str, expected: FileClass) -> None:
         ("PEAK", FileClass.PEAK),
         ("RESULT", FileClass.RESULT),
         ("SEARCH", FileClass.SEARCH),
-        ("EXPERIMENTAL DESIGN", FileClass.SDRF),
+        ("EXPERIMENTAL DESIGN", FileClass.OTHER),
     ],
 )
 def test_pride_category_fallback(category: str, expected: FileClass) -> None:
@@ -404,7 +435,7 @@ def test_pride_category_fallback(category: str, expected: FileClass) -> None:
 
 def test_pride_category_fallback_case_insensitive() -> None:
     assert clf.classify("unknown.bin", pride_category="raw") == FileClass.RAW
-    assert clf.classify("unknown.bin", pride_category="Experimental Design") == FileClass.SDRF
+    assert clf.classify("unknown.bin", pride_category="Experimental Design") == FileClass.OTHER
 
 
 def test_pride_category_other_not_mapped() -> None:
@@ -458,6 +489,13 @@ def test_custom_extension_overrides_builtin() -> None:
     assert custom.classify("mascot.dat") == FileClass.OTHER
 
 
+def test_custom_compound_extension_is_matched_before_final_suffix() -> None:
+    """A custom compound extension participates in longest-extension matching."""
+    custom = FileTypeClassifier(extra_extensions={".protein.tsv": FileClass.QUANT_MATRIX})
+    assert custom.classify("sample.protein.tsv") == FileClass.QUANT_MATRIX
+    assert custom.classify("sample.protein.tsv.gz") == FileClass.QUANT_MATRIX
+
+
 def test_custom_basename_override() -> None:
     custom = FileTypeClassifier(extra_basenames={"protein_report": FileClass.QUANT_MATRIX})
     assert custom.classify("protein_report.tsv") == FileClass.QUANT_MATRIX
@@ -487,7 +525,7 @@ def test_default_instance_unaffected_by_custom() -> None:
     ],
 )
 def test_extract_ext(lower_base: str, expected: str) -> None:
-    assert FileTypeClassifier._extract_ext(lower_base) == expected
+    assert clf._extract_ext(lower_base) == expected
 
 
 # ---------------------------------------------------------------------------

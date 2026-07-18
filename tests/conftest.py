@@ -23,10 +23,10 @@ import pytest
 
 
 @pytest.fixture()
-def pride_project_gold() -> dict:
-    """Full project with all required fields → Gold-eligible metadata."""
+def pride_project_complete_metadata() -> dict:
+    """Project payload containing every required baseline metadata field."""
     return {
-        "title": "Gold tier study",
+        "title": "Complete metadata study",
         "submissionDate": "2020-03-15",
         "keywords": ["proteomics", "phospho"],
         "organisms": [
@@ -68,8 +68,8 @@ def pride_project_none_tier() -> dict:
 
 
 @pytest.fixture()
-def pride_files_gold() -> list[dict]:
-    """Result file + SDRF + mzTab → satisfies all three file-level flags."""
+def pride_files_psi_sdrf() -> list[dict]:
+    """File payload containing mzIdentML, SDRF, and mzTab evidence."""
     return [
         {
             "fileName": "results.mzid",

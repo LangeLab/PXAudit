@@ -75,7 +75,7 @@ def _make_audit_row(
         "accession": acc,
         "tier": tier,
         "quant_tier": quant_tier,
-        "tier_logic_version": "v2.0",
+        "tier_logic_version": "v2.1",
         **defaults,
     }
 
@@ -326,7 +326,7 @@ def all_unverifiable_db(tmp_path: Path) -> Path:
             "has_psi_results, has_open_spectra, has_organism_part, has_publication, "
             "has_tabular_quant, has_quant_metadata, has_sdrf, has_mztab, "
             "has_organism_id, files_fetch_failed, tier_logic_version) "
-            "VALUES (?, 'Unverifiable', 'Unverifiable', 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 'v2.0')",
+            "VALUES (?, 'Unverifiable', 'Unverifiable', 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 'v2.1')",
             (f"PXD{i:06d}",),
         )
     conn.close()

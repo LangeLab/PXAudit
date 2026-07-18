@@ -53,12 +53,12 @@ _AUDIT_COLS = (
     "has_organism_id",
     "has_instrument",
     "has_result_files",
-    "has_psi_results",  # FileClass.RESULT found (mzIdentML / mzTab)
+    "has_psi_results",
     "has_open_spectra",  # FileClass.PEAK found
     "has_organism_part",  # len(project["organismParts"]) > 0
     "has_publication",  # pubmedID present, non-null, and != 0
-    "has_tabular_quant",  # FileClass.QUANT_MATRIX or ID_LIST found
-    "has_quant_metadata",  # quantificationMethods[] non-empty
+    "has_tabular_quant",
+    "has_quant_metadata",
     "has_sdrf",
     "has_mztab",
     "files_fetch_failed",

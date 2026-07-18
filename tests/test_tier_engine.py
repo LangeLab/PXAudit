@@ -373,6 +373,8 @@ def test_sdrf_pattern_matching(file_name: str, expected: bool) -> None:
         ("experimental_design.sdrf.tsv", "Experimental Design", True),  # mixed casing
         ("SDRF_data.tsv", "experimental design", True),  # all-lowercase category
         ("isa_metadata.tsv", "EXPERIMENTAL DESIGN", False),  # category OK, no sdrf in name
+        ("sdrfile.tsv", "EXPERIMENTAL DESIGN", False),  # token is part of a longer word
+        ("sdrf_instructions.pdf", "EXPERIMENTAL DESIGN", True),  # categorized primary path
         ("sdrf.tsv", "OTHER", True),  # category mismatch → falls back to filename match
     ],
     ids=[
@@ -380,6 +382,8 @@ def test_sdrf_pattern_matching(file_name: str, expected: bool) -> None:
         "primary-mixed-case-cat",
         "primary-lowercase-cat",
         "primary-no-sdrf-in-name",
+        "primary-rejects-longer-token",
+        "primary-category-allows-nontabular",
         "fallback-other-category",
     ],
 )
@@ -580,8 +584,7 @@ def test_audit_result_accession_preserved() -> None:
 
 def test_audit_result_tier_logic_version() -> None:
     r = compute_audit("PXD000001", _project(), _gold_files())
-    assert r.tier_logic_version == _TIER_LOGIC_VERSION
-    assert r.tier_logic_version.startswith("v")
+    assert r.tier_logic_version == _TIER_LOGIC_VERSION == "v2.1"
 
 
 def test_audit_result_is_dataclass_instance() -> None:
@@ -634,6 +637,41 @@ def test_has_quant_metadata_true_when_quant_methods_non_empty() -> None:
 
 
 @pytest.mark.parametrize(
+    "quantification_methods",
+    [
+        [],
+        [{}],
+        [{"name": ""}],
+        [{"accession": "  "}],
+        [{"value": "label free"}],
+        ["iTRAQ"],
+        [None],
+    ],
+)
+def test_has_quant_metadata_requires_usable_cv_term(
+    quantification_methods: list[object],
+) -> None:
+    """Non-CV or blank quantification entries do not establish quant metadata."""
+    project = {**_project(), "quantificationMethods": quantification_methods}
+    result = compute_audit("PXD000001", project, [])
+    assert result.has_quant_metadata is False
+
+
+def test_has_quant_metadata_accepts_cv_accession() -> None:
+    """A nonblank controlled-vocabulary accession establishes quant metadata."""
+    project = {**_project(), "quantificationMethods": [{"accession": "MS:1001834"}]}
+    result = compute_audit("PXD000001", project, [])
+    assert result.has_quant_metadata is True
+
+
+def test_has_quant_metadata_rejects_non_list_container() -> None:
+    """A mapping in place of the PRIDE method list does not establish CV metadata."""
+    project = {**_project(), "quantificationMethods": {"name": "iTRAQ"}}
+    result = compute_audit("PXD000001", project, [])
+    assert result.has_quant_metadata is False
+
+
+@pytest.mark.parametrize(
     "pubmed_value, expected",
     [
         (12345, True),  # valid integer pubmedID
@@ -672,6 +710,34 @@ def test_has_psi_results_false_for_raw_only() -> None:
     assert r.has_psi_results is False
 
 
+@pytest.mark.parametrize(
+    ("filename", "category", "expected_result", "expected_psi"),
+    [
+        ("results.mzid", "OTHER", True, True),
+        ("results.mzidentml.gz", "OTHER", True, True),
+        ("results.mztab.zip", "OTHER", True, True),
+        ("results.csv", "RESULT", True, False),
+        ("results.idxml", "RESULT", True, False),
+        ("quality.mzqc", "RESULT", False, False),
+        ("metabolomics.mztab-m", "RESULT", False, False),
+        ("pride_exp_complete.xml", "OTHER", True, False),
+        ("results-mztab.txt", "OTHER", True, False),
+        ("results.mztabdata", "OTHER", False, False),
+        ("mascot.dat", "SEARCH", True, False),
+    ],
+)
+def test_processed_and_psi_result_evidence_are_independent(
+    filename: str,
+    category: str,
+    expected_result: bool,
+    expected_psi: bool,
+) -> None:
+    """Only supported PSI suffixes cross the PSI identification gate."""
+    result = compute_audit("PXD000001", _project(), [_file(filename, category)])
+    assert result.has_result_files is expected_result
+    assert result.has_psi_results is expected_psi
+
+
 def test_has_open_spectra_true_for_mzml_file() -> None:
     files = [_file("run1.mzML", "PEAK"), _file("results.mzid", "RESULT")]
     r = compute_audit("PXD000001", _project(), files)
@@ -684,18 +750,19 @@ def test_has_open_spectra_false_for_raw_only() -> None:
     assert r.has_open_spectra is False
 
 
-def test_has_tabular_quant_true_for_quant_matrix() -> None:
-    # proteinGroups.txt : MaxQuant fixed stem → FileClass.QUANT_MATRIX
-    files = [_file("proteinGroups.txt", "OTHER"), _file("results.mzid", "RESULT")]
+@pytest.mark.parametrize("filename", ["proteinGroups.txt", "combined_ion.tsv"])
+def test_has_tabular_quant_true_for_quant_matrix(filename: str) -> None:
+    """Recognized abundance summaries and matrices establish tabular quant evidence."""
+    files = [_file(filename, "OTHER"), _file("results.mzid", "RESULT")]
     r = compute_audit("PXD000001", _project(), files)
     assert r.has_tabular_quant is True
 
 
-def test_has_tabular_quant_true_for_id_list() -> None:
-    # evidence.txt : MaxQuant fixed stem → FileClass.ID_LIST
+def test_has_tabular_quant_false_for_id_list() -> None:
+    """A PSM or evidence list is not an abundance summary or matrix."""
     files = [_file("evidence.txt", "OTHER"), _file("results.mzid", "RESULT")]
     r = compute_audit("PXD000001", _project(), files)
-    assert r.has_tabular_quant is True
+    assert r.has_tabular_quant is False
 
 
 def test_has_tabular_quant_false_for_raw_only() -> None:
@@ -731,6 +798,8 @@ def test_partial_submission_id_list_counts_as_result() -> None:
     files = [_file("evidence.txt", "OTHER")]  # ID_LIST, no RESULT or SEARCH
     r = compute_audit("PXD000001", project, files)
     assert r.has_result_files is True
+    assert r.has_tabular_quant is False
+    assert r.quant_tier == "No Quant"
 
 
 # ---------------------------------------------------------------------------
@@ -790,6 +859,55 @@ def test_quant_tier_quant_complete_all_three_present() -> None:
     assert r.has_tabular_quant is True
     assert r.has_quant_metadata is True
     assert r.quant_tier == "Quant-Complete"
+
+
+@pytest.mark.parametrize(
+    ("files", "quant_methods", "expected_psi", "expected_table", "expected_tier"),
+    [
+        ([_file("results.mztab", "RESULT")], [], True, False, "Partial"),
+        (
+            [_file("results.mztab", "RESULT"), _file("proteinGroups.txt", "OTHER")],
+            [],
+            True,
+            True,
+            "Quant-Ready",
+        ),
+        (
+            [_file("results.mztab", "RESULT"), _file("proteinGroups.txt", "OTHER")],
+            [{"accession": "MS:1001834"}],
+            True,
+            True,
+            "Quant-Complete",
+        ),
+        (
+            [_file("results.mzid", "RESULT"), _file("evidence.txt", "OTHER")],
+            [{"name": "label free"}],
+            True,
+            False,
+            "Partial",
+        ),
+        (
+            [_file("results.mzid", "RESULT"), _file("proteinGroups.txt", "OTHER")],
+            [{"name": " "}],
+            True,
+            True,
+            "Quant-Ready",
+        ),
+    ],
+)
+def test_quant_tier_requires_independent_abundance_and_cv_evidence(
+    files: list[dict],
+    quant_methods: list[dict],
+    expected_psi: bool,
+    expected_table: bool,
+    expected_tier: str,
+) -> None:
+    """mzTab, abundance tables, ID lists, and CV metadata contribute independently."""
+    project = {**_project(), "quantificationMethods": quant_methods}
+    result = compute_audit("PXD000001", project, files)
+    assert result.has_psi_results is expected_psi
+    assert result.has_tabular_quant is expected_table
+    assert result.quant_tier == expected_tier
 
 
 def test_quant_tier_unverifiable_for_non_pxd_accession() -> None:

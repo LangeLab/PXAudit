@@ -48,16 +48,16 @@ def _result_file(name: str = "results.mzid") -> dict:
 @pytest.fixture()
 def _api_mocks(
     monkeypatch: pytest.MonkeyPatch,
-    pride_project_gold: dict,
-    pride_files_gold: list,
+    pride_project_complete_metadata: dict,
+    pride_files_psi_sdrf: list,
 ) -> dict:
     """Patch cache and API; leave get_or_create_db and insert_* untouched."""
     m = {
         "read_cache_response": MagicMock(return_value=None),
         "read_cache_stale_response": MagicMock(return_value=None),
         "write_cache": MagicMock(),
-        "fetch_project": MagicMock(return_value=pride_project_gold),
-        "fetch_files": MagicMock(return_value=pride_files_gold),
+        "fetch_project": MagicMock(return_value=pride_project_complete_metadata),
+        "fetch_files": MagicMock(return_value=pride_files_psi_sdrf),
     }
     for name, mock in m.items():
         monkeypatch.setattr(f"pxaudit.cli.{name}", mock)
@@ -96,14 +96,16 @@ def test_mixed_case_pxd_routes_to_full_audit_not_unverifiable() -> None:
 
 
 def test_lowercase_pxd_cli_routes_correctly(
-    monkeypatch: pytest.MonkeyPatch, pride_project_gold: dict, pride_files_gold: list
+    monkeypatch: pytest.MonkeyPatch,
+    pride_project_complete_metadata: dict,
+    pride_files_psi_sdrf: list,
 ) -> None:
     """CLI must also route lowercase 'pxd...' to the PXD fetch path."""
-    fetch_project = MagicMock(return_value=pride_project_gold)
+    fetch_project = MagicMock(return_value=pride_project_complete_metadata)
     monkeypatch.setattr("pxaudit.cli.read_cache_response", MagicMock(return_value=None))
     monkeypatch.setattr("pxaudit.cli.write_cache", MagicMock())
     monkeypatch.setattr("pxaudit.cli.fetch_project", fetch_project)
-    monkeypatch.setattr("pxaudit.cli.fetch_files", MagicMock(return_value=pride_files_gold))
+    monkeypatch.setattr("pxaudit.cli.fetch_files", MagicMock(return_value=pride_files_psi_sdrf))
     monkeypatch.setattr("pxaudit.cli.get_or_create_db", MagicMock(return_value=MagicMock()))
     monkeypatch.setattr("pxaudit.cli.insert_audit_record", MagicMock())
 
@@ -200,6 +202,7 @@ _AUDIT_COLS = (
     "has_organism_id",
     "has_instrument",
     "has_result_files",
+    "has_psi_results",
     "has_sdrf",
     "has_mztab",
     "files_fetch_failed",
@@ -273,7 +276,7 @@ def test_pipeline_gold_study_row_fields(_api_mocks: dict, tmp_path: Path) -> Non
 
     row = _read_study(db)
     assert row["accession"] == "PXD000001"
-    assert row["title"] == "Gold tier study"
+    assert row["title"] == "Complete metadata study"
     assert row["organism"] == "Homo sapiens"
     assert row["organism_id"] == "NEWT:9606"
     assert row["instrument"] == "Orbitrap Fusion"
@@ -282,24 +285,26 @@ def test_pipeline_gold_study_row_fields(_api_mocks: dict, tmp_path: Path) -> Non
 
 
 def test_pipeline_gold_study_files_row_count(
-    _api_mocks: dict, tmp_path: Path, pride_files_gold: list
+    _api_mocks: dict, tmp_path: Path, pride_files_psi_sdrf: list
 ) -> None:
     """Gold run: study_files must have one row per file returned by the API."""
     db = str(tmp_path / "audit.db")
     CliRunner().invoke(main, ["check", "PXD000001", "--db", db])
-    assert _count_rows(db, "study_files") == len(pride_files_gold)
+    assert _count_rows(db, "study_files") == len(pride_files_psi_sdrf)
 
 
 def test_pipeline_silver_audit_row(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-    pride_project_gold: dict,
+    pride_project_complete_metadata: dict,
     pride_files_silver: list,
 ) -> None:
     """Silver run: audit row must have tier=Silver and has_sdrf=0."""
     monkeypatch.setattr("pxaudit.cli.read_cache_response", MagicMock(return_value=None))
     monkeypatch.setattr("pxaudit.cli.write_cache", MagicMock())
-    monkeypatch.setattr("pxaudit.cli.fetch_project", MagicMock(return_value=pride_project_gold))
+    monkeypatch.setattr(
+        "pxaudit.cli.fetch_project", MagicMock(return_value=pride_project_complete_metadata)
+    )
     monkeypatch.setattr("pxaudit.cli.fetch_files", MagicMock(return_value=pride_files_silver))
 
     db = str(tmp_path / "audit.db")
@@ -311,14 +316,42 @@ def test_pipeline_silver_audit_row(
     assert row["has_result_files"] == 1
 
 
+def test_pipeline_category_only_result_does_not_persist_psi_evidence(
+    _api_mocks: dict, tmp_path: Path
+) -> None:
+    """A generic PRIDE RESULT row persists processed evidence without a PSI claim."""
+    _api_mocks["fetch_files"].return_value = [
+        {
+            "fileName": "results.csv",
+            "fileCategory": {"value": "RESULT"},
+            "fileSizeBytes": 10,
+            "publicFileLocations": [],
+        }
+    ]
+    database = str(tmp_path / "audit.db")
+
+    result = CliRunner().invoke(main, ["check", "PXD000001", "--db", database])
+
+    assert result.exit_code == 0
+    audit = _read_audit(database)
+    assert audit["tier"] == "Bronze"
+    assert audit["has_result_files"] == 1
+    assert audit["has_psi_results"] == 0
+    assert audit["tier_logic_version"] == "v2.1"
+
+
 def test_pipeline_new_accession_files_failure_creates_no_database(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, pride_project_gold: dict
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    pride_project_complete_metadata: dict,
 ) -> None:
     """An incomplete new audit creates no database or misleading tier output."""
     monkeypatch.setattr("pxaudit.cli.read_cache_response", MagicMock(return_value=None))
     monkeypatch.setattr("pxaudit.cli.read_cache_stale_response", MagicMock(return_value=None))
     monkeypatch.setattr("pxaudit.cli.write_cache", MagicMock())
-    monkeypatch.setattr("pxaudit.cli.fetch_project", MagicMock(return_value=pride_project_gold))
+    monkeypatch.setattr(
+        "pxaudit.cli.fetch_project", MagicMock(return_value=pride_project_complete_metadata)
+    )
     monkeypatch.setattr("pxaudit.cli.fetch_files", MagicMock(side_effect=PrideAPIError("down")))
 
     db = str(tmp_path / "audit.db")
@@ -435,7 +468,7 @@ def test_pipeline_upsert_second_run_does_not_duplicate_rows(
 
 
 def test_pipeline_upsert_study_files_replaced_on_second_run(
-    _api_mocks: dict, tmp_path: Path, pride_files_gold: list
+    _api_mocks: dict, tmp_path: Path, pride_files_psi_sdrf: list
 ) -> None:
     """Second run must delete+replace study_files, not append.
     The final count must equal the API file count, not double it."""
@@ -444,7 +477,7 @@ def test_pipeline_upsert_study_files_replaced_on_second_run(
     runner.invoke(main, ["check", "PXD000001", "--db", db])
     runner.invoke(main, ["check", "PXD000001", "--db", db])
 
-    assert _count_rows(db, "study_files") == len(pride_files_gold)
+    assert _count_rows(db, "study_files") == len(pride_files_psi_sdrf)
 
 
 # ---------------------------------------------------------------------------
@@ -454,13 +487,15 @@ def test_pipeline_upsert_study_files_replaced_on_second_run(
 
 def test_silver_output_shows_cross_for_sdrf(
     monkeypatch: pytest.MonkeyPatch,
-    pride_project_gold: dict,
+    pride_project_complete_metadata: dict,
     pride_files_silver: list,
 ) -> None:
     """Silver tier output must show ✘ for SDRF line and ✔ for result files."""
     monkeypatch.setattr("pxaudit.cli.read_cache_response", MagicMock(return_value=None))
     monkeypatch.setattr("pxaudit.cli.write_cache", MagicMock())
-    monkeypatch.setattr("pxaudit.cli.fetch_project", MagicMock(return_value=pride_project_gold))
+    monkeypatch.setattr(
+        "pxaudit.cli.fetch_project", MagicMock(return_value=pride_project_complete_metadata)
+    )
     monkeypatch.setattr("pxaudit.cli.fetch_files", MagicMock(return_value=pride_files_silver))
     monkeypatch.setattr("pxaudit.cli.get_or_create_db", MagicMock(return_value=MagicMock()))
     monkeypatch.setattr("pxaudit.cli.insert_audit_record", MagicMock())
