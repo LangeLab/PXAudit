@@ -15,6 +15,7 @@ import json
 import os
 import sqlite3
 from collections.abc import Iterator
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import cache
@@ -228,7 +229,7 @@ def test_live_bulk_audit_persists_exact_export_and_provenance(tmp_path: Path) ->
         "MSV000079514": ("Unverifiable", "Unverifiable"),
     }
 
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection:
         audit_rows = set(
             connection.execute("SELECT accession, tier, quant_tier, is_unverifiable FROM audit")
         )

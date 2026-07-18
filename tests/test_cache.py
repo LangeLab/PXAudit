@@ -616,9 +616,13 @@ def test_read_close_oserror_is_cache_miss(
     assert "Could not close unreadable cache entry" in caplog.text
 
 
-def test_read_non_regular_cache_path_is_miss(tmp_path: Path) -> None:
-    """A directory named like a cache entry is never opened as cache data."""
-    (tmp_path / "PXD000001_project.json").mkdir()
+def test_read_non_regular_cache_path_is_miss(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A descriptor for a non-regular cache path is rejected on every platform."""
+    write_cache("PXD000001", "project", {}, cache_dir=tmp_path)
+    file_stat = os.stat_result((0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+    monkeypatch.setattr("pxaudit.cache.os.fstat", MagicMock(return_value=file_stat))
 
     assert read_cache("PXD000001", "project", cache_dir=tmp_path) is None
 

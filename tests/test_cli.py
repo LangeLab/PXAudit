@@ -7,6 +7,7 @@ import os
 import sqlite3
 import sys
 from collections.abc import Iterable, Iterator
+from contextlib import closing
 from io import StringIO
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -347,7 +348,7 @@ def test_full_cache_hit_persists_retrieval_time_with_real_cache_and_database(
     assert result.exit_code == 0
     fetch_project_mock.assert_not_called()
     fetch_files_mock.assert_not_called()
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection:
         stored = connection.execute(
             "SELECT fetched_at FROM study WHERE accession = ?", ("PXD000001",)
         ).fetchone()
@@ -1679,6 +1680,7 @@ def test_manifest_body_golden_in_every_output_mode(
         monkeypatch.setenv("NO_COLOR", "1")
     else:
         monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setattr(os, "linesep", "\r\n")
 
     result = CliRunner().invoke(
         main,

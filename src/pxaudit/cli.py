@@ -996,7 +996,7 @@ def manifest(ctx: click.Context, accession: str, db_path: str | None, fmt: str) 
         body = (
             df.to_json(orient="records", indent=2)
             if fmt == "json"
-            else df.to_csv(sep="\t", index=False)
+            else df.to_csv(sep="\t", index=False, lineterminator="\n")
         )
     except (TypeError, ValueError, UnicodeError) as exc:
         _output.error(f"Error: cannot format manifest for {accession!r}: {exc}")
