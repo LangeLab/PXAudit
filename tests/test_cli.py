@@ -30,6 +30,7 @@ from pxaudit.cli import (
     _extract_study,
     _read_accessions,
     _result_to_row,
+    _write_export,
     main,
 )
 from pxaudit.pride_client import PrideAPIError
@@ -897,6 +898,26 @@ def test_export_json(tmp_path: Path) -> None:
     assert len(data) == 1
     assert data[0]["accession"] == "PXD000001"
     assert data[0]["tier"] == "Diamond"
+
+
+def test_write_export_failure_preserves_existing_target(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A failed export leaves the previous target and no temporary artifact."""
+    output = tmp_path / "results.tsv"
+    output.write_text("previous\n", encoding="utf-8")
+
+    def fail_export(results: list[AuditResult], path: str) -> None:
+        Path(path).write_text("partial\n", encoding="utf-8")
+        raise OSError("disk full")
+
+    monkeypatch.setattr("pxaudit.cli._export_tsv", fail_export)
+
+    with pytest.raises(OSError, match="disk full"):
+        _write_export([AuditResult(accession="PXD000001", tier="Gold")], str(output), "tsv")
+
+    assert output.read_text(encoding="utf-8") == "previous\n"
+    assert list(tmp_path.glob(f".{output.name}.*.tmp")) == []
 
 
 @pytest.fixture()

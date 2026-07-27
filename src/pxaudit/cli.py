@@ -16,12 +16,15 @@ from __future__ import annotations
 import importlib.metadata
 import json
 import math
+import os
 import sqlite3
 import stat
 import sys
+import tempfile
 import time
 import typing
 import uuid
+from contextlib import suppress
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -636,13 +639,30 @@ def _export_json(results: list[AuditResult], path: str) -> None:
 
 
 def _write_export(results: list[AuditResult], path: str, fmt: str) -> None:
-    """Write *results* to *path* in the requested format (tsv/csv/json)."""
-    if fmt == "tsv":
-        _export_tsv(results, path)
-    elif fmt == "csv":
-        _export_csv(results, path)
-    else:
-        _export_json(results, path)
+    """Atomically write *results* to *path* in the requested format."""
+    target = Path(path)
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        dir=target.parent,
+        prefix=f".{target.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as temporary:
+        temporary_path = Path(temporary.name)
+
+    try:
+        if fmt == "tsv":
+            _export_tsv(results, str(temporary_path))
+        elif fmt == "csv":
+            _export_csv(results, str(temporary_path))
+        else:
+            _export_json(results, str(temporary_path))
+        os.replace(temporary_path, target)
+    except BaseException:
+        with suppress(OSError):
+            temporary_path.unlink(missing_ok=True)
+        raise
 
 
 def _cache_stats(cache_dir: Path) -> tuple[int, int, int, float | None, float | None]:
