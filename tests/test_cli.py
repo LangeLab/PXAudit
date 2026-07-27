@@ -927,6 +927,52 @@ def test_bulk_audit_happy_path_tsv(bulk_mocks: dict, tmp_path: Path) -> None:
     assert "PXD000002" in content
 
 
+def test_release_smoke_check_bulk_manifest_report(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The documented check-to-report workflow succeeds in a clean temporary directory."""
+    monkeypatch.setattr("pxaudit.cli.fetch_project", MagicMock(return_value=_GOLD_PROJECT))
+    monkeypatch.setattr("pxaudit.cli.fetch_files", MagicMock(return_value=_GOLD_FILES))
+
+    db_path = tmp_path / "results.db"
+    accessions = tmp_path / "accessions.txt"
+    export_path = tmp_path / "bulk.tsv"
+    report_dir = tmp_path / "report"
+    accessions.write_text("PXD000001\n", encoding="utf-8")
+    runner = CliRunner()
+
+    check = runner.invoke(main, ["check", "PXD000001", "--db", str(db_path)])
+    bulk = runner.invoke(
+        main,
+        [
+            "bulk-audit",
+            "--input",
+            str(accessions),
+            "--db",
+            str(db_path),
+            "--format",
+            "tsv",
+            "--output",
+            str(export_path),
+            "--delay",
+            "0",
+        ],
+    )
+    manifest = runner.invoke(main, ["manifest", "PXD000001", "--db", str(db_path)])
+    report = runner.invoke(main, ["report", "--db", str(db_path), "--output", str(report_dir)])
+
+    assert check.exit_code == 0, check.output
+    assert bulk.exit_code == 0, bulk.output
+    assert manifest.exit_code == 0, manifest.output
+    assert report.exit_code == 0, report.output
+    assert db_path.is_file()
+    assert "PXD000001" in export_path.read_text(encoding="utf-8")
+    assert "results.mzid" in manifest.output
+    report_html = report_dir / "report.html"
+    assert report_html.is_file()
+    assert "PXAudit version" in report_html.read_text(encoding="utf-8")
+
+
 def test_bulk_audit_happy_path_json(bulk_mocks: dict, tmp_path: Path) -> None:
     """A JSON bulk export contains the canonical accession and computed tier."""
     acc_file = tmp_path / "ids.txt"
