@@ -2057,6 +2057,32 @@ def test_manifest_no_files_errors(tmp_path: Path) -> None:
     assert "No files found" in result.output
 
 
+@pytest.mark.parametrize("fmt", ["tsv", "json"])
+def test_manifest_empty_study_emits_empty_manifest(tmp_path: Path, fmt: str) -> None:
+    """manifest preserves an audited study with no files as an empty data result."""
+    from pxaudit.db import get_or_create_db
+
+    database = tmp_path / "empty-study.db"
+    connection = get_or_create_db(database)
+    connection.execute("INSERT INTO study (accession) VALUES (?)", ("PXD000001",))
+    connection.commit()
+    connection.close()
+
+    result = CliRunner().invoke(
+        main,
+        ["manifest", "PXD000001", "--db", str(database), "--format", fmt],
+    )
+
+    assert result.exit_code == 0
+    if fmt == "json":
+        assert json.loads(result.stdout) == []
+    else:
+        assert result.stdout == (
+            "file_name\tfile_category\tfile_extension\tftp_location\tfile_size\tchecksum\t"
+            "checksum_type\n"
+        )
+
+
 def test_manifest_invalid_accession_exits_two_before_database_access(tmp_path: Path) -> None:
     """Manifest applies the shared grammar before opening its database."""
     database = tmp_path / "missing.db"

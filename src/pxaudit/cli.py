@@ -1055,13 +1055,17 @@ def manifest(ctx: click.Context, accession: str, db_path: str | None, fmt: str) 
             (accession,),
         )
         rows = cursor.fetchall()
+        study_exists = (
+            conn.execute("SELECT 1 FROM study WHERE accession = ?", (accession,)).fetchone()
+            is not None
+        )
     except sqlite3.DatabaseError as exc:
         _output.error(f"Error: cannot read database {resolved_db}: {exc}")
         sys.exit(1)
     finally:
         conn.close()
 
-    if not rows:
+    if not rows and not study_exists:
         _output.error(f"No files found for {accession!r}. Run 'pxaudit check {accession}' first.")
         sys.exit(1)
 
