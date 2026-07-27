@@ -23,7 +23,7 @@ The ladder stops at the first unmet gate.
 | **Bronze** | Processed results exist, but no supported PSI identification result is present | Deposit mzIdentML or proteomics mzTab |
 | **Silver** | PSI identification results exist, but no SDRF is present | Deposit an SDRF experimental-design table |
 | **Gold** | SDRF exists, but open spectra or organism-part annotation is missing | Provide both open spectra and organism part |
-| **Platinum** | Open spectra and organism part exist, but no non-zero PubMed identifier is linked | Link a publication |
+| **Platinum** | Open spectra and organism part exist, but no positive integer PubMed identifier is linked | Link a publication |
 | **Diamond** | Every FAIR gate is satisfied | Highest qualitative tier |
 
 `has_organism_id` is recorded for analysis but does not gate the ladder. A missing taxonomy accession can coexist with a tier above None when the organism name is present.
@@ -38,7 +38,7 @@ These examples isolate the gate that determines each score. Other evidence may b
 - **Silver:** `results.mzid` and open spectra are present, but SDRF is missing.
 - **Gold:** PSI results and SDRF are present, but organism-part annotation is missing.
 - **Platinum:** PSI results, SDRF, open spectra, and organism part are present, but `pubmedID` is absent or `0`.
-- **Diamond:** PSI results, SDRF, open spectra, organism part, and a non-zero PubMed ID are all present.
+- **Diamond:** PSI results, SDRF, open spectra, organism part, and a positive integer PubMed ID are all present.
 
 The ladder is versioned. PXAudit 0.5.2 writes `tier_logic_version = "v2.1"` into every new audit row. Re-auditing an accession applies current logic to current or cached evidence; it does not silently rewrite older rows in bulk.
 
@@ -66,12 +66,12 @@ Non-PRIDE identifiers receive `Unverifiable` on both axes because PXAudit has no
 
 ### Project metadata
 
-- **`has_title`:** the project title is present and is not the empty string. Current v2 logic does not trim project metadata strings.
-- **`has_organism`:** the first organism entry has a non-empty name. Later entries do not repair an empty first entry.
-- **`has_organism_id`:** the first organism entry has a taxonomy accession. This flag is recorded but does not gate the tier.
-- **`has_instrument`:** the first instrument entry has a non-empty name. This is mandatory for leaving None.
-- **`has_organism_part`:** `organismParts` is non-empty. Current v2 logic measures list presence, not vocabulary quality.
-- **`has_publication`:** at least one reference has a parseable, non-zero `pubmedID`. Missing, malformed, empty, and `0` values are negative.
+- **`has_title`:** the project title contains at least one non-whitespace character.
+- **`has_organism`:** the first organism entry has a nonblank name. Later entries do not repair an empty first entry.
+- **`has_organism_id`:** the first organism entry has a nonblank taxonomy accession. This flag is recorded but does not gate the tier.
+- **`has_instrument`:** the first instrument entry has a nonblank name. This is mandatory for leaving None.
+- **`has_organism_part`:** at least one `organismParts` entry has a nonblank name. An empty mapping does not establish biological context.
+- **`has_publication`:** at least one reference has a positive integer `pubmedID`. Missing, malformed, empty, boolean, zero, and negative values are negative.
 - **`has_quant_metadata`:** at least one quantification method has a nonblank CV name or accession. A non-empty container alone is not enough.
 
 ### File evidence

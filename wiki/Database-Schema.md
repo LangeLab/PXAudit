@@ -73,15 +73,15 @@ One row per scored accession.
 | `accession` | `TEXT NOT NULL PRIMARY KEY` | Canonical audit identifier |
 | `tier` | `TEXT` | FAIR tier from None through Diamond, or Unverifiable |
 | `quant_tier` | `TEXT` | No Quant, Partial, Quant-Ready, Quant-Complete, or Unverifiable |
-| `has_title` | `INTEGER` | Non-empty title present |
-| `has_organism` | `INTEGER` | First organism name present |
-| `has_organism_id` | `INTEGER` | First taxonomy accession present; not tier-gating |
-| `has_instrument` | `INTEGER` | First instrument name present |
+| `has_title` | `INTEGER` | Nonblank title present |
+| `has_organism` | `INTEGER` | First organism name is nonblank |
+| `has_organism_id` | `INTEGER` | First taxonomy accession is nonblank; not tier-gating |
+| `has_instrument` | `INTEGER` | First instrument name is nonblank |
 | `has_result_files` | `INTEGER` | Processed result evidence present |
 | `has_psi_results` | `INTEGER` | Supported PSI proteomics identification result present |
 | `has_open_spectra` | `INTEGER` | Open-format spectra present |
-| `has_organism_part` | `INTEGER` | Organism-part list present |
-| `has_publication` | `INTEGER` | Parseable non-zero PubMed ID linked |
+| `has_organism_part` | `INTEGER` | Named organism-part entry present |
+| `has_publication` | `INTEGER` | Positive integer PubMed ID linked |
 | `has_tabular_quant` | `INTEGER` | Recognized abundance summary or matrix present |
 | `has_quant_metadata` | `INTEGER` | Usable quantification-method CV name or accession present |
 | `has_sdrf` | `INTEGER` | SDRF experimental-design evidence present |

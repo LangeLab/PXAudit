@@ -21,6 +21,10 @@ Scalability and performance improvements for large local bulk audits.
 
 - SQLite WAL setup now falls back to the default journal mode with a warning when WAL is unavailable, while preserving typed errors when both modes fail.
 - Database, API, interruption, and disk-full failures preserve earlier committed batches and report the affected progress clearly.
+- Empty manifests now distinguish a stored study with zero files from an unknown accession.
+- Live and cached PRIDE payloads validate the fields consumed by audit extraction before classification or persistence.
+- Audit evidence rejects whitespace-only metadata, empty organism-part records, and non-positive PubMed identifiers.
+- Network pacing no longer commits an incomplete opt-in transaction batch, and bulk exports replace their destination only after successful serialization.
 
 ## [0.5.1] - 2026-07-18
 

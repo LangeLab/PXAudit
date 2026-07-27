@@ -42,7 +42,7 @@ The FAIR ladder stops at the first failed gate. Check the evidence in order:
 5. Is there a supported PSI identification result (`.mzid`, `.mzidentml`, or proteomics `.mztab`)?
 6. Is there an SDRF?
 7. Are open spectra and organism-part annotation both present?
-8. Is a non-zero PubMed ID linked?
+8. Is a positive integer PubMed ID linked?
 
 A publication cannot raise a dataset past Silver when SDRF is missing. Likewise, an SDRF cannot raise a dataset past Gold when open spectra or organism part is missing.
 
@@ -154,14 +154,14 @@ See [[Database Schema]] for tables, NULL semantics, migrations, and SQL examples
 
 ## Why does `manifest` say no files were found?
 
-The accession must have a completed audit in the selected database. Confirm both the accession and database path:
+The accession must have a stored study in the selected database. Confirm both the accession and database path:
 
 ```bash
 pxaudit check PXD004683 --db cohort.db
 pxaudit manifest PXD004683 --db cohort.db
 ```
 
-An incomplete audit does not create an empty manifest. If the audit failed because file evidence was unavailable, resolve the network or cache problem and run it again.
+A stored study with a verified empty file response produces an empty manifest: TSV contains the header only and JSON contains `[]`. An unknown accession still reports this error. An incomplete audit does not create an empty manifest; if file evidence was unavailable, resolve the network or cache problem and run it again.
 
 ## Why will the report not overwrite `report.html`?
 
