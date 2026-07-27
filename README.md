@@ -46,6 +46,7 @@ PXAudit currently audits PRIDE `PXD` accessions. Safe identifiers from other Pro
 ```bash
 # Audit a list containing one accession per line
 uv run pxaudit bulk-audit --input accessions.txt --format tsv --output results.tsv
+# For large local runs, add --batch-size N to commit after each N accessions.
 
 # Inspect the stored file inventory
 uv run pxaudit manifest PXD000001
@@ -58,6 +59,8 @@ uv run pxaudit cache info
 uv sync --extra report
 uv run pxaudit report --db pxaudit_results.db --output report/
 ```
+
+The default batch size is `1`, preserving per-accession durability. A stop-on-error or interrupted run rolls back its active batch; `--continue-on-error` commits pending successes before skipping the failed accession.
 
 Run `uv run pxaudit --help` or `uv run pxaudit COMMAND --help` for command-line help.
 

@@ -50,7 +50,12 @@ from pxaudit.config import (
     load_file_config,
     merge_config,
 )
-from pxaudit.db import get_or_create_db, insert_audit_record, open_existing_db
+from pxaudit.db import (
+    TransactionBatch,
+    get_or_create_db,
+    insert_audit_record,
+    open_existing_db,
+)
 from pxaudit.pride_client import PrideAPIError, fetch_files, fetch_project
 from pxaudit.tier_engine import AuditResult, compute_audit
 
@@ -358,6 +363,8 @@ def _audit_single(
     cache_dir: str | Path | None = None,
     cache_ttl_seconds: float | None = None,
     request_delay: float = 0.5,
+    db_connection: sqlite3.Connection | None = None,
+    transaction_batch: TransactionBatch | None = None,
 ) -> AuditData:
     """Fetch, compute, persist, and return audit data for one accession.
 
@@ -366,7 +373,9 @@ def _audit_single(
     response retrieval time, not the audit execution time.
 
     Does not write to the terminal. Warnings and verbose details are returned
-    for the CLI layer to emit.
+    for the CLI layer to emit. When ``db_connection`` is provided, the caller owns
+    the connection and it remains open after this accession completes. When
+    ``transaction_batch`` is provided, the caller owns its commit boundary.
     """
     accession = normalize_accession(accession)
     snapshot_id = uuid.uuid4().hex
@@ -501,11 +510,23 @@ def _audit_single(
 
     study = _extract_study(accession, project_data, fetched_at)
     files_df = _extract_files_df(accession, files_data)
-    conn = get_or_create_db(db_path)
-    try:
-        insert_audit_record(conn, study, accession, files_df, asdict(result))
-    finally:
-        conn.close()
+    conn = db_connection if db_connection is not None else get_or_create_db(db_path)
+    if transaction_batch is not None:
+        transaction_batch.begin()
+        insert_audit_record(
+            conn,
+            study,
+            accession,
+            files_df,
+            asdict(result),
+            manage_transaction=False,
+        )
+    else:
+        try:
+            insert_audit_record(conn, study, accession, files_df, asdict(result))
+        finally:
+            if db_connection is None:
+                conn.close()
 
     return AuditData(
         result,
@@ -755,6 +776,13 @@ def check(
     default=False,
     help="Overwrite existing export file.",
 )
+@click.option(
+    "--batch-size",
+    type=click.IntRange(min=1),
+    default=1,
+    show_default=True,
+    help="Commit database progress after this many completed accessions.",
+)
 @click.pass_context
 def bulk_audit(
     ctx: click.Context,
@@ -765,6 +793,7 @@ def bulk_audit(
     delay: float | None,
     continue_on_error: bool,
     overwrite: bool,
+    batch_size: int,
 ) -> None:
     """Audit multiple Proteomics Exchange accessions."""
     cfg = _resolve_effective(ctx, db_path=db_path, bulk_delay=delay, export_format=fmt)
@@ -838,6 +867,26 @@ def bulk_audit(
     iterator = tqdm(accessions, desc="Auditing", unit="accession") if use_tqdm else accessions
 
     try:
+        database_connection = get_or_create_db(resolved_db)
+    except (CacheError, sqlite3.DatabaseError, OSError) as exc:
+        _output.error(f"Error: bulk audit failed: {exc}")
+        sys.exit(1)
+
+    transaction_batch = (
+        TransactionBatch(database_connection, batch_size) if batch_size > 1 else None
+    )
+    rolled_back = 0
+
+    def rollback_active_batch() -> int:
+        """Roll back pending rows and remove their results from partial exports."""
+        if transaction_batch is None:
+            return 0
+        count = transaction_batch.rollback()
+        if count:
+            del results[-count:]
+        return count
+
+    try:
         for accession in iterator:
             try:
                 data = _audit_single(
@@ -846,23 +895,32 @@ def bulk_audit(
                     cache_dir=cfg.cache_dir,
                     cache_ttl_seconds=cfg.cache_ttl_seconds,
                     request_delay=cfg.request_delay,
+                    db_connection=database_connection,
+                    transaction_batch=transaction_batch,
                 )
+                if transaction_batch is not None:
+                    transaction_batch.record()
                 results.append(data.result)
                 for message in data.warnings:
                     _output.warn(message)
                 for message in data.details:
                     _output.detail(message)
                 if data.network_used:
+                    if transaction_batch is not None:
+                        transaction_batch.commit()
                     time.sleep(bulk_delay)
             except (_IncompleteAuditError, PrideAPIError) as exc:
                 if continue_on_error:
                     _output.warn(f"\nWarning: {accession} failed ({exc}). Skipping.")
                     failed.append(accession)
+                    if transaction_batch is not None:
+                        transaction_batch.commit()
                     if ctx.obj["verbose"]:
                         _output.detail(f"skipped: {accession}")
                     # API was attempted; apply bulk_delay before the next accession.
                     time.sleep(bulk_delay)
                 else:
+                    rolled_back = rollback_active_batch()
                     _output.error(f"\nError: {accession} failed ({exc}).")
                     _output.error("Use --continue-on-error to skip failures.")
                     if results and export_path:
@@ -880,9 +938,18 @@ def bulk_audit(
                         )
                     elif results:
                         _output.status(f"Partial results: {len(results)} accessions completed.")
+                    if transaction_batch is not None:
+                        _output.status(
+                            f"Database progress: committed={transaction_batch.committed_count} "
+                            f"rolled_back={rolled_back}."
+                        )
                     sys.exit(1)
 
+        if transaction_batch is not None:
+            transaction_batch.commit()
+
     except KeyboardInterrupt:
+        rolled_back = rollback_active_batch()
         _output.warn("\nInterrupted. Partial results written to database.")
         if results and export_path:
             try:
@@ -891,10 +958,24 @@ def bulk_audit(
                 _output.warn(f"Warning: partial export could not be written: {exc}")
             else:
                 _output.status(f"Partial export written to {export_path}")
+        if transaction_batch is not None:
+            _output.status(
+                f"Database progress: committed={transaction_batch.committed_count} "
+                f"rolled_back={rolled_back}."
+            )
         sys.exit(130)
     except (CacheError, sqlite3.DatabaseError, OSError) as exc:
-        _output.error(f"Error: bulk audit failed: {exc}")
+        rolled_back = rollback_active_batch()
+        if transaction_batch is not None:
+            _output.error(
+                f"Error: bulk audit failed: {exc}. "
+                f"committed={transaction_batch.committed_count} rolled_back={rolled_back}."
+            )
+        else:
+            _output.error(f"Error: bulk audit failed: {exc}")
         sys.exit(1)
+    finally:
+        database_connection.close()
 
     if results and export_path:
         try:

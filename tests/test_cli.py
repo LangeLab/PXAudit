@@ -10,6 +10,7 @@ from collections.abc import Iterable, Iterator
 from contextlib import closing
 from io import StringIO
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
 import pandas as pd
@@ -903,10 +904,107 @@ def bulk_mocks(monkeypatch: pytest.MonkeyPatch) -> dict:
             raise PrideAPIError(f"unknown {accession}")
         return AuditData(r, {}, MagicMock(), [], "2026-01-01T00:00:00+00:00", [], [], True)
 
-    m: dict = {"_audit_single": MagicMock(side_effect=fake_audit)}
+    m: dict = {
+        "_audit_single": MagicMock(side_effect=fake_audit),
+        "get_or_create_db": MagicMock(return_value=MagicMock()),
+    }
     monkeypatch.setattr("pxaudit.cli._audit_single", m["_audit_single"])
+    monkeypatch.setattr("pxaudit.cli.get_or_create_db", m["get_or_create_db"])
     monkeypatch.setattr("pxaudit.cli.time.sleep", lambda _: None)
     return m
+
+
+def _write_bulk_cache(cache_dir: Path, accessions: list[str]) -> None:
+    """Write deterministic project and file responses for real bulk component tests."""
+    for accession in accessions:
+        write_cache(
+            accession,
+            "project",
+            _DIAMOND_PROJECT,
+            cache_dir=cache_dir,
+            retrieved_at="2026-01-01T00:00:00+00:00",
+            snapshot_id=f"snapshot-{accession}",
+        )
+        write_cache(
+            accession,
+            "files",
+            _DIAMOND_FILES,
+            cache_dir=cache_dir,
+            retrieved_at="2026-01-01T00:00:00+00:00",
+            snapshot_id=f"snapshot-{accession}",
+        )
+
+
+def _bulk_database_snapshot(database: Path) -> tuple[list[tuple], dict[str, list[tuple]]]:
+    """Return normalized schema and rows for a bulk semantic comparison."""
+    with closing(sqlite3.connect(database)) as connection:
+        schema = connection.execute(
+            "SELECT type, name, tbl_name, sql FROM sqlite_master "
+            "WHERE type IN ('table', 'index') ORDER BY type, name"
+        ).fetchall()
+        tables = {
+            table: connection.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()
+            for table in ("study", "study_files", "audit")
+        }
+    return schema, tables
+
+
+def test_bulk_batch_success_matches_per_accession_semantics(tmp_path: Path) -> None:
+    """Successful batching preserves schema, rows, and TSV output exactly."""
+    accessions = ["PXD000001", "PXD000002", "PXD000003"]
+    reference_root = tmp_path / "reference"
+    candidate_root = tmp_path / "candidate"
+    for root in (reference_root, candidate_root):
+        _write_bulk_cache(root / "cache", accessions)
+        (root / "accessions.txt").write_text("\n".join(accessions) + "\n")
+
+    runner = CliRunner()
+    reference_export = reference_root / "results.tsv"
+    candidate_export = candidate_root / "results.tsv"
+    reference = runner.invoke(
+        main,
+        [
+            "--cache-dir",
+            str(reference_root / "cache"),
+            "bulk-audit",
+            "--input",
+            str(reference_root / "accessions.txt"),
+            "--db",
+            str(reference_root / "results.db"),
+            "--format",
+            "tsv",
+            "--output",
+            str(reference_export),
+            "--delay",
+            "0",
+        ],
+    )
+    candidate = runner.invoke(
+        main,
+        [
+            "--cache-dir",
+            str(candidate_root / "cache"),
+            "bulk-audit",
+            "--input",
+            str(candidate_root / "accessions.txt"),
+            "--db",
+            str(candidate_root / "results.db"),
+            "--format",
+            "tsv",
+            "--output",
+            str(candidate_export),
+            "--delay",
+            "0",
+            "--batch-size",
+            "2",
+        ],
+    )
+
+    assert reference.exit_code == candidate.exit_code == 0
+    assert _bulk_database_snapshot(reference_root / "results.db") == _bulk_database_snapshot(
+        candidate_root / "results.db"
+    )
+    assert reference_export.read_bytes() == candidate_export.read_bytes()
 
 
 def test_bulk_audit_happy_path_tsv(bulk_mocks: dict, tmp_path: Path) -> None:
@@ -925,6 +1023,271 @@ def test_bulk_audit_happy_path_tsv(bulk_mocks: dict, tmp_path: Path) -> None:
     content = out_path.read_text()
     assert "PXD000001" in content
     assert "PXD000002" in content
+
+
+def test_bulk_audit_reuses_one_database_connection(bulk_mocks: dict, tmp_path: Path) -> None:
+    """Bulk persistence shares setup while each accession remains independently audited."""
+    acc_file = tmp_path / "ids.txt"
+    acc_file.write_text("PXD000001\nPXD000002\n")
+
+    result = CliRunner().invoke(main, ["bulk-audit", "--input", str(acc_file)])
+
+    assert result.exit_code == 0
+    bulk_mocks["get_or_create_db"].assert_called_once()
+    connection = bulk_mocks["get_or_create_db"].return_value
+    connection.close.assert_called_once()
+    calls = bulk_mocks["_audit_single"].call_args_list
+    assert len(calls) == 2
+    assert all(call.kwargs["db_connection"] is connection for call in calls)
+
+
+def test_bulk_batch_persists_real_cached_rows_and_commits_before_network_delay(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An explicit batch size persists real rows and closes a batch before network delay."""
+    from pxaudit.cli import _audit_single as real_audit
+
+    accessions = ["PXD000001", "PXD000002"]
+    cache_dir = tmp_path / "cache"
+    _write_bulk_cache(cache_dir, accessions)
+    input_path = tmp_path / "accessions.txt"
+    input_path.write_text("\n".join(accessions) + "\n")
+    database = tmp_path / "results.db"
+    sleeps: list[float] = []
+
+    def audit_with_network_marker(accession: str, db_path: str, **kwargs: Any) -> AuditData:
+        data = real_audit(accession, db_path, **kwargs)
+        return data._replace(network_used=accession == "PXD000001")
+
+    monkeypatch.setattr("pxaudit.cli._audit_single", audit_with_network_marker)
+    monkeypatch.setattr("pxaudit.cli.time.sleep", lambda seconds: sleeps.append(seconds))
+    result = CliRunner().invoke(
+        main,
+        [
+            "--cache-dir",
+            str(cache_dir),
+            "bulk-audit",
+            "--input",
+            str(input_path),
+            "--db",
+            str(database),
+            "--batch-size",
+            "2",
+            "--delay",
+            "1.5",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert sleeps == [1.5]
+    with closing(sqlite3.connect(database)) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM study").fetchone() == (2,)
+        assert connection.execute("SELECT COUNT(*) FROM audit").fetchone() == (2,)
+
+
+def test_bulk_batch_continue_commits_pending_accessions_after_api_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Continue-on-error commits pending successes before skipping a failed accession."""
+    from pxaudit.cli import _audit_single as real_audit
+
+    accessions = ["PXD000001", "PXD000002"]
+    cache_dir = tmp_path / "cache"
+    _write_bulk_cache(cache_dir, accessions)
+    input_path = tmp_path / "accessions.txt"
+    input_path.write_text("\n".join(accessions) + "\n")
+    database = tmp_path / "results.db"
+
+    def fail_second(accession: str, db_path: str, **kwargs: Any) -> AuditData:
+        if accession == "PXD000002":
+            raise PrideAPIError("second accession unavailable")
+        return real_audit(accession, db_path, **kwargs)
+
+    monkeypatch.setattr("pxaudit.cli._audit_single", fail_second)
+    result = CliRunner().invoke(
+        main,
+        [
+            "--cache-dir",
+            str(cache_dir),
+            "bulk-audit",
+            "--input",
+            str(input_path),
+            "--db",
+            str(database),
+            "--batch-size",
+            "2",
+            "--continue-on-error",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Completed : 1" in result.output
+    assert "Failed    : 1" in result.output
+    with closing(sqlite3.connect(database)) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM audit").fetchone() == (1,)
+
+
+def test_bulk_batch_stop_rolls_back_pending_accessions(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Stopping on an API failure rolls back the active batch and preserves no pending rows."""
+    from pxaudit.cli import _audit_single as real_audit
+
+    accessions = ["PXD000001", "PXD000002"]
+    cache_dir = tmp_path / "cache"
+    _write_bulk_cache(cache_dir, accessions)
+    input_path = tmp_path / "accessions.txt"
+    input_path.write_text("\n".join(accessions) + "\n")
+    database = tmp_path / "results.db"
+    export = tmp_path / "partial.tsv"
+
+    def fail_second(accession: str, db_path: str, **kwargs: Any) -> AuditData:
+        if accession == "PXD000002":
+            raise PrideAPIError("second accession unavailable")
+        return real_audit(accession, db_path, **kwargs)
+
+    monkeypatch.setattr("pxaudit.cli._audit_single", fail_second)
+    result = CliRunner().invoke(
+        main,
+        [
+            "--cache-dir",
+            str(cache_dir),
+            "bulk-audit",
+            "--input",
+            str(input_path),
+            "--db",
+            str(database),
+            "--batch-size",
+            "2",
+            "--format",
+            "tsv",
+            "--output",
+            str(export),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "rolled_back=1" in result.output
+    assert not export.exists()
+    with closing(sqlite3.connect(database)) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM audit").fetchone() == (0,)
+
+
+def test_bulk_batch_stop_reports_zero_rollback_without_pending_rows(
+    bulk_mocks: dict, tmp_path: Path
+) -> None:
+    """A failure before the first write reports an empty active batch cleanly."""
+    bulk_mocks["_audit_single"].side_effect = PrideAPIError("first accession unavailable")
+    input_path = tmp_path / "accessions.txt"
+    input_path.write_text("PXD000001\n")
+
+    result = CliRunner().invoke(
+        main,
+        ["bulk-audit", "--input", str(input_path), "--batch-size", "2"],
+    )
+
+    assert result.exit_code == 1
+    assert "committed=0 rolled_back=0" in result.output
+
+
+def test_bulk_batch_interrupt_rolls_back_pending_accessions(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Interrupting a batch rolls back pending rows while retaining earlier committed batches."""
+    from pxaudit.cli import _audit_single as real_audit
+
+    accessions = ["PXD000001", "PXD000002", "PXD000003"]
+    cache_dir = tmp_path / "cache"
+    _write_bulk_cache(cache_dir, accessions)
+    input_path = tmp_path / "accessions.txt"
+    input_path.write_text("\n".join(accessions) + "\n")
+    database = tmp_path / "results.db"
+
+    def interrupt_second(accession: str, db_path: str, **kwargs: Any) -> AuditData:
+        if accession == "PXD000002":
+            raise KeyboardInterrupt
+        return real_audit(accession, db_path, **kwargs)
+
+    monkeypatch.setattr("pxaudit.cli._audit_single", interrupt_second)
+    result = CliRunner().invoke(
+        main,
+        [
+            "--cache-dir",
+            str(cache_dir),
+            "bulk-audit",
+            "--input",
+            str(input_path),
+            "--db",
+            str(database),
+            "--batch-size",
+            "2",
+        ],
+    )
+
+    assert result.exit_code == 130
+    assert "rolled_back=1" in result.output
+    with closing(sqlite3.connect(database)) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM audit").fetchone() == (0,)
+
+
+def test_bulk_batch_database_error_reports_and_rolls_back(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A persistence error rolls back the active batch and reports its progress."""
+    from pxaudit.cli import _audit_single as real_audit
+    from pxaudit.cli import insert_audit_record as real_insert
+
+    accessions = ["PXD000001", "PXD000002"]
+    cache_dir = tmp_path / "cache"
+    _write_bulk_cache(cache_dir, accessions)
+    input_path = tmp_path / "accessions.txt"
+    input_path.write_text("\n".join(accessions) + "\n")
+    database = tmp_path / "results.db"
+    insert_calls = 0
+
+    def fail_second_insert(*args: Any, **kwargs: Any) -> None:
+        nonlocal insert_calls
+        insert_calls += 1
+        if insert_calls == 2:
+            raise sqlite3.IntegrityError("synthetic write failure")
+        real_insert(*args, **kwargs)
+
+    monkeypatch.setattr("pxaudit.cli._audit_single", real_audit)
+    monkeypatch.setattr("pxaudit.cli.insert_audit_record", fail_second_insert)
+    result = CliRunner().invoke(
+        main,
+        [
+            "--cache-dir",
+            str(cache_dir),
+            "bulk-audit",
+            "--input",
+            str(input_path),
+            "--db",
+            str(database),
+            "--batch-size",
+            "2",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "committed=0 rolled_back=1" in result.output
+    with closing(sqlite3.connect(database)) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM audit").fetchone() == (0,)
+
+
+def test_bulk_audit_database_open_failure_closes_no_connection(
+    bulk_mocks: dict, tmp_path: Path
+) -> None:
+    """A database setup failure is reported without entering the accession loop."""
+    bulk_mocks["get_or_create_db"].side_effect = sqlite3.DatabaseError("database unavailable")
+    acc_file = tmp_path / "ids.txt"
+    acc_file.write_text("PXD000001\n")
+
+    result = CliRunner().invoke(main, ["bulk-audit", "--input", str(acc_file)])
+
+    assert result.exit_code == 1
+    assert "bulk audit failed" in result.stderr
+    bulk_mocks["_audit_single"].assert_not_called()
 
 
 def test_release_smoke_check_bulk_manifest_report(

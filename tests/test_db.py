@@ -11,6 +11,7 @@ import pandas as pd
 import pytest
 
 from pxaudit.db import (
+    TransactionBatch,
     create_tables,
     get_or_create_db,
     insert_audit,
@@ -105,6 +106,102 @@ def test_create_tables_builds_complete_idempotent_schema(
     indexes = {name for kind, name in schema if kind == "index"}
     assert tables == {"study", "study_files", "audit"}
     assert "idx_study_files_accession" in indexes
+
+
+def test_transaction_batch_commits_at_boundary_and_tracks_progress(
+    conn: sqlite3.Connection,
+) -> None:
+    """A full transaction batch commits its rows and reports durable progress."""
+    batch = TransactionBatch(conn, 2)
+    conn.execute("CREATE TABLE values_table (value INTEGER)")
+
+    batch.begin()
+    conn.execute("INSERT INTO values_table VALUES (1)")
+    batch.record()
+    assert batch.pending_count == 1
+    assert batch.committed_count == 0
+
+    batch.begin()
+    conn.execute("INSERT INTO values_table VALUES (2)")
+    batch.record()
+
+    assert batch.pending_count == 0
+    assert batch.committed_count == 2
+    assert conn.execute("SELECT value FROM values_table ORDER BY value").fetchall() == [(1,), (2,)]
+    batch.commit()
+
+
+def test_transaction_batch_rolls_back_pending_progress(conn: sqlite3.Connection) -> None:
+    """Rolling back a partial batch removes pending rows but preserves committed progress."""
+    batch = TransactionBatch(conn, 3)
+    conn.execute("CREATE TABLE values_table (value INTEGER)")
+
+    batch.begin()
+    conn.execute("INSERT INTO values_table VALUES (1)")
+    batch.record()
+    assert batch.rollback() == 1
+    assert batch.committed_count == 0
+    assert conn.execute("SELECT * FROM values_table").fetchall() == []
+    assert batch.rollback() == 0
+
+
+def test_transaction_batch_rejects_non_positive_size(conn: sqlite3.Connection) -> None:
+    """A transaction batch rejects a zero or negative commit limit."""
+    with pytest.raises(ValueError, match="batch_size"):
+        TransactionBatch(conn, 0)
+
+
+def test_insert_audit_record_can_join_active_transaction(conn: sqlite3.Connection) -> None:
+    """A caller-managed transaction persists an audit record without committing it."""
+    conn.execute("BEGIN")
+    insert_audit_record(
+        conn,
+        _STUDY_DATA,
+        "PXD000001",
+        _make_files_df("PXD000001"),
+        _AUDIT_DATA,
+        manage_transaction=False,
+    )
+    assert conn.in_transaction
+    conn.commit()
+    assert _database_snapshot(conn)[0]
+
+
+def test_insert_audit_record_requires_transaction_when_not_managed(
+    conn: sqlite3.Connection,
+) -> None:
+    """A caller-managed insert rejects an inactive connection."""
+    with pytest.raises(sqlite3.ProgrammingError, match="active transaction"):
+        insert_audit_record(
+            conn,
+            _STUDY_DATA,
+            "PXD000001",
+            _make_files_df("PXD000001"),
+            _AUDIT_DATA,
+            manage_transaction=False,
+        )
+
+
+def test_insert_audit_record_leaves_caller_transaction_open_on_failure(
+    conn: sqlite3.Connection,
+) -> None:
+    """A caller-managed insert leaves rollback ownership with the batch controller."""
+    conn.execute("BEGIN")
+    bad_files = _make_files_df("PXD000001")
+    bad_files.loc[0, "file_name"] = None
+
+    with pytest.raises(sqlite3.IntegrityError):
+        insert_audit_record(
+            conn,
+            _STUDY_DATA,
+            "PXD000001",
+            bad_files,
+            _AUDIT_DATA,
+            manage_transaction=False,
+        )
+
+    assert conn.in_transaction
+    conn.rollback()
 
 
 def test_insert_study_roundtrip(conn: sqlite3.Connection) -> None:

@@ -6,7 +6,8 @@ study        One row per accession: title, organism, instrument, submission meta
 study_files  One row per file: name, category, extension, FTP URL, size, checksum.
 audit        One row per accession: computed tier, quant tier, and Boolean flags.
 
-Each insert function manages its own transaction (BEGIN/COMMIT/ROLLBACK).
+Insert functions manage their own transaction by default (BEGIN/COMMIT/ROLLBACK);
+``insert_audit_record()`` can join a caller-managed transaction for bounded bulk batches.
 Migration functions (``migrate_audit_v2``, ``migrate_study_v2``,
 ``migrate_study_files_v2``) are idempotent and safe to run on already-
 migrated databases.
@@ -155,6 +156,47 @@ _INSERT_AUDIT = (
     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
 
+
+class TransactionBatch:
+    """Track a bounded SQLite transaction batch and its committed progress."""
+
+    def __init__(self, conn: sqlite3.Connection, batch_size: int) -> None:
+        """Create a batch controller for *conn* with a positive accession limit."""
+        if batch_size < 1:
+            raise ValueError("batch_size must be at least 1")
+        self.conn = conn
+        self.batch_size = batch_size
+        self.pending_count = 0
+        self.committed_count = 0
+
+    def begin(self) -> None:
+        """Start a transaction when the connection is not already in one."""
+        if not self.conn.in_transaction:
+            self.conn.execute("BEGIN")
+
+    def record(self) -> None:
+        """Record one completed accession and commit when the batch is full."""
+        self.pending_count += 1
+        if self.pending_count >= self.batch_size:
+            self.commit()
+
+    def commit(self) -> None:
+        """Commit pending accessions and add them to the durable progress count."""
+        if self.pending_count == 0:
+            return
+        self.conn.execute("COMMIT")
+        self.committed_count += self.pending_count
+        self.pending_count = 0
+
+    def rollback(self) -> int:
+        """Roll back pending accessions and return the number discarded."""
+        rolled_back = self.pending_count
+        if self.conn.in_transaction:
+            self.conn.rollback()
+        self.pending_count = 0
+        return rolled_back
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -284,6 +326,8 @@ def insert_audit_record(
     accession: str,
     files_df: pd.DataFrame,
     audit_data: dict,
+    *,
+    manage_transaction: bool = True,
 ) -> None:
     """Insert study, study_files, and audit in a single transaction.
 
@@ -302,6 +346,10 @@ def insert_audit_record(
         DataFrame with columns matching ``_STUDY_FILES_COLS``.
     audit_data:
         Audit row dict matching ``_AUDIT_COLS``.
+    manage_transaction:
+        When true, begin and commit one transaction, rolling it back on failure. When false,
+        require the caller to have an active transaction and leave its commit or rollback to
+        the caller.
 
     Raises
     ------
@@ -310,20 +358,26 @@ def insert_audit_record(
     ValueError
         If the study, file, and audit accessions do not all match ``accession``.
     sqlite3.Error
-        If persistence fails; the transaction is rolled back before the error escapes.
+        If persistence fails. A managed transaction is rolled back before the error escapes;
+        a caller-managed transaction remains open for the caller to roll back.
     """
     if study.get("accession") != accession or audit_data.get("accession") != accession:
         raise ValueError("study, files, and audit accessions must match")
     rows = _study_file_rows(accession, files_df)
 
-    conn.execute("BEGIN")
+    if not manage_transaction and not conn.in_transaction:
+        raise sqlite3.ProgrammingError("an active transaction is required")
+    if manage_transaction:
+        conn.execute("BEGIN")
     try:
         _insert_study_row(conn, study)
         _insert_study_files_rows(conn, accession, rows)
         _insert_audit_row(conn, audit_data)
-        conn.execute("COMMIT")
+        if manage_transaction:
+            conn.execute("COMMIT")
     except BaseException:
-        conn.rollback()
+        if manage_transaction:
+            conn.rollback()
         raise
 
 
@@ -411,6 +465,7 @@ __all__ = [
     "open_existing_db",
     "insert_audit",
     "insert_audit_record",
+    "TransactionBatch",
     "insert_study",
     "insert_study_files",
     "migrate_audit_v2",
