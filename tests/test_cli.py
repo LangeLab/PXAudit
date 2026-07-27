@@ -1150,7 +1150,7 @@ def test_bulk_audit_releases_per_accession_audit_payloads(
 def test_bulk_batch_persists_real_cached_rows_and_commits_before_network_delay(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """An explicit batch size persists real rows and closes a batch before network delay."""
+    """An explicit batch size persists real rows while applying network delay."""
     from pxaudit.cli import _audit_single as real_audit
 
     accessions = ["PXD000001", "PXD000002"]
@@ -1189,6 +1189,46 @@ def test_bulk_batch_persists_real_cached_rows_and_commits_before_network_delay(
     with closing(sqlite3.connect(database)) as connection:
         assert connection.execute("SELECT COUNT(*) FROM study").fetchone() == (2,)
         assert connection.execute("SELECT COUNT(*) FROM audit").fetchone() == (2,)
+
+
+def test_bulk_batch_network_delay_preserves_active_batch_rollback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Network politeness delay does not commit an incomplete active batch."""
+    from pxaudit.cli import _audit_single as real_audit
+
+    accessions = ["PXD000001", "PXD000002", "PXD000003"]
+    cache_dir = tmp_path / "cache"
+    _write_bulk_cache(cache_dir, accessions)
+    input_path = tmp_path / "accessions.txt"
+    input_path.write_text("\n".join(accessions) + "\n")
+    database = tmp_path / "results.db"
+
+    def fail_third(accession: str, db_path: str, **kwargs: Any) -> AuditData:
+        if accession == "PXD000003":
+            raise PrideAPIError("third accession unavailable")
+        return real_audit(accession, db_path, **kwargs)._replace(network_used=True)
+
+    monkeypatch.setattr("pxaudit.cli._audit_single", fail_third)
+    result = CliRunner().invoke(
+        main,
+        [
+            "--cache-dir",
+            str(cache_dir),
+            "bulk-audit",
+            "--input",
+            str(input_path),
+            "--db",
+            str(database),
+            "--batch-size",
+            "3",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "committed=0 rolled_back=2" in result.output
+    with closing(sqlite3.connect(database)) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM audit").fetchone() == (0,)
 
 
 def test_bulk_batch_continue_commits_pending_accessions_after_api_failure(

@@ -915,8 +915,6 @@ def bulk_audit(
                 for message in data.details:
                     _output.detail(message)
                 if data.network_used:
-                    if transaction_batch is not None:
-                        transaction_batch.commit()
                     time.sleep(bulk_delay)
             except (_IncompleteAuditError, PrideAPIError) as exc:
                 if continue_on_error:
