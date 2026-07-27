@@ -56,7 +56,13 @@ from pxaudit.db import (
     insert_audit_record,
     open_existing_db,
 )
-from pxaudit.pride_client import PrideAPIError, fetch_files, fetch_project
+from pxaudit.pride_client import (
+    PrideAPIError,
+    _validate_files_payload,
+    _validate_project_payload,
+    fetch_files,
+    fetch_project,
+)
 from pxaudit.tier_engine import AuditResult, compute_audit
 
 __all__ = [
@@ -489,6 +495,8 @@ def _audit_single(
                     ) from exc
 
     if project_response is not None and files_response is not None:
+        _validate_project_payload(project_response.data)
+        _validate_files_payload(files_response.data)
         snapshots_match = (
             project_response.snapshot_id is not None
             and bool(project_response.snapshot_id.strip())

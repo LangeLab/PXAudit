@@ -346,6 +346,51 @@ def test_success_status_still_requires_endpoint_shape(
     transport.session.close.assert_called_once_with()
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"organisms": ["Homo sapiens"]},
+        {"organisms": "Homo sapiens"},
+        {"keywords": [123]},
+        {"submissionDate": 2024},
+    ],
+    ids=("organism-item", "organism-list", "keyword-item", "submission-date"),
+)
+def test_project_success_requires_consumed_nested_fields_to_be_well_formed(
+    transport: _Transport, body: dict
+) -> None:
+    """Malformed project fields fail at the API boundary as typed errors."""
+    _outcomes(transport, _response(body))
+
+    with pytest.raises(PrideAPIError, match="invalid"):
+        fetch_project("PXD000001", delay=0)
+
+    transport.session.close.assert_called_once_with()
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        [{"fileName": 1}],
+        [{"fileCategory": "RESULT"}],
+        [{"publicFileLocations": ["ftp"]}],
+        [{"fileCategory": {"value": 1}}],
+        [{"publicFileLocations": [{"name": 1}]}],
+    ],
+    ids=("file-name", "file-category", "locations-item", "category-value", "location-name"),
+)
+def test_files_success_requires_consumed_nested_fields_to_be_well_formed(
+    transport: _Transport, body: list[dict]
+) -> None:
+    """Malformed file fields fail before classification or persistence can crash."""
+    _outcomes(transport, _response(body))
+
+    with pytest.raises(PrideAPIError, match="invalid"):
+        fetch_files("PXD000001", delay=0)
+
+    transport.session.close.assert_called_once_with()
+
+
 def _pagination_responses(
     sizes: Sequence[int],
     total: int | None,

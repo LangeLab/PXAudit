@@ -169,6 +169,71 @@ def _pride_accession(accession: str) -> str:
     return canonical
 
 
+def _validate_optional_field(mapping: dict, field: str, expected: type, endpoint: str) -> object:
+    """Validate one optional JSON field and return its value."""
+    value = mapping.get(field)
+    if value is not None and not isinstance(value, expected):
+        raise PrideAPIError(f"PRIDE {endpoint} response has invalid {field} data")
+    return value
+
+
+def _validate_list_field(mapping: dict, field: str, item_type: type, endpoint: str) -> None:
+    """Validate an optional list field and all of its item types."""
+    value = mapping.get(field)
+    if value is None:
+        return
+    if not isinstance(value, list):
+        raise PrideAPIError(f"PRIDE {endpoint} response has invalid {field} data")
+    if not all(isinstance(item, item_type) for item in value):
+        raise PrideAPIError(f"PRIDE {endpoint} response has invalid {field} data")
+
+
+def _validate_project_payload(data: object) -> dict:
+    """Validate project fields consumed by audit extraction."""
+    if not isinstance(data, dict):
+        raise PrideAPIError("PRIDE project response must be a JSON object")
+
+    for field in ("title", "submissionDate", "submissionType"):
+        _validate_optional_field(data, field, str, "project")
+    for field in (
+        "organisms",
+        "instruments",
+        "organismParts",
+        "references",
+        "quantificationMethods",
+    ):
+        _validate_list_field(data, field, dict, "project")
+    _validate_list_field(data, "keywords", str, "project")
+    return data
+
+
+def _validate_files_payload(data: object) -> list[dict]:
+    """Validate file fields consumed by classification and database extraction."""
+    if not isinstance(data, list) or not all(isinstance(item, dict) for item in data):
+        raise PrideAPIError("PRIDE files response must be a JSON list of objects")
+
+    for file_data in data:
+        _validate_optional_field(file_data, "fileName", str, "files")
+        _validate_optional_field(file_data, "fileSizeBytes", int, "files")
+        _validate_optional_field(file_data, "checksum", str, "files")
+        _validate_optional_field(file_data, "fileChecksum", str, "files")
+        locations = file_data.get("publicFileLocations")
+        if locations is not None:
+            if not isinstance(locations, list) or not all(
+                isinstance(item, dict) for item in locations
+            ):
+                raise PrideAPIError("PRIDE files response has invalid publicFileLocations data")
+            for location in locations:
+                _validate_optional_field(location, "name", str, "files")
+                _validate_optional_field(location, "value", str, "files")
+        category = file_data.get("fileCategory")
+        if category is not None:
+            if not isinstance(category, dict):
+                raise PrideAPIError("PRIDE files response has invalid fileCategory data")
+            _validate_optional_field(category, "value", str, "files")
+    return data
+
+
 def fetch_project(accession: str, *, delay: float = 0.5) -> dict:
     """Fetch and validate one PRIDE project response.
 
@@ -196,9 +261,7 @@ def fetch_project(accession: str, *, delay: float = 0.5) -> dict:
     try:
         session.headers["User-Agent"] = _USER_AGENT
         response = _request(f"{_BASE_URL}/projects/{canonical}", delay=delay, session=session)
-        if not isinstance(response.data, dict):
-            raise PrideAPIError("PRIDE project response must be a JSON object")
-        return response.data
+        return _validate_project_payload(response.data)
     finally:
         session.close()
 
@@ -249,11 +312,7 @@ def fetch_files(accession: str, *, delay: float = 0.5) -> list[dict]:
                 f"?page={page}&pageSize={_PAGE_SIZE}&sortDirection=DESC&sortCondition=id"
             )
             response = _request(url, delay=delay, session=session)
-            if not isinstance(response.data, list) or not all(
-                isinstance(item, dict) for item in response.data
-            ):
-                raise PrideAPIError("PRIDE files response must be a JSON list of objects")
-            batch = response.data
+            batch = _validate_files_payload(response.data)
 
             if response.total_records is not None:
                 if expected_total is None:

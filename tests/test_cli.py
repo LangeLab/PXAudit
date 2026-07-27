@@ -281,6 +281,29 @@ def test_check_both_cached_no_api_calls(mocks: dict, monkeypatch: pytest.MonkeyP
     mocks["fetch_files"].assert_not_called()
 
 
+def test_check_rejects_malformed_cached_payload_without_traceback(
+    mocks: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Malformed cached project data becomes a clean audit error."""
+    malformed_project = {**_GOLD_PROJECT, "organisms": ["not-a-CV-param"]}
+    monkeypatch.setattr(
+        "pxaudit.cli.read_cache_response",
+        MagicMock(
+            side_effect=lambda acc, endpoint, **kw: _cached(
+                malformed_project if endpoint == "project" else _GOLD_FILES
+            )
+        ),
+    )
+
+    result = CliRunner().invoke(main, ["check", "PXD000001"])
+
+    assert result.exit_code == 1
+    assert "invalid organisms data" in result.stderr
+    assert isinstance(result.exception, SystemExit)
+    mocks["fetch_project"].assert_not_called()
+    mocks["fetch_files"].assert_not_called()
+
+
 def test_check_full_cache_hit_preserves_project_retrieval_time(
     mocks: dict, monkeypatch: pytest.MonkeyPatch
 ) -> None:
