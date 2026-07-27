@@ -4,6 +4,24 @@
 
 All notable changes to PXAudit are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project follows [Semantic Versioning](https://semver.org/).
 
+## [0.5.2] - 2026-07-27
+
+Scalability and performance improvements for large local bulk audits.
+
+### Added
+
+- Opt-in `--batch-size N` commits completed accessions in bounded transaction batches; the default remains per-accession durability.
+
+### Changed
+
+- `bulk-audit` reuses one configured SQLite connection and releases completed per-accession audit payloads, including file-list DataFrames.
+- Batch progress reports committed and rolled-back accessions while preserving the active batch rollback boundary.
+
+### Fixed
+
+- SQLite WAL setup now falls back to the default journal mode with a warning when WAL is unavailable, while preserving typed errors when both modes fail.
+- Database, API, interruption, and disk-full failures preserve earlier committed batches and report the affected progress clearly.
+
 ## [0.5.1] - 2026-07-18
 
 Safety, scientific-contract, resilience, test-architecture, and documentation corrections for the v0.5 line.
@@ -192,8 +210,9 @@ First tagged release. Single-study auditing with a 7-tier FAIR ladder and quanti
 - Cache dir resolved relative to CWD; now uses absolute `~/.pxaudit_cache/` (#2).
 - `fetch_files` fetched only the first 100 files; added pagination loop (#4).
 
-[0.5.0]: https://github.com/LangeLab/PXAudit/releases/tag/v0.5.0
+[0.5.2]: https://github.com/LangeLab/PXAudit/compare/v0.5.1...HEAD
 [0.5.1]: https://github.com/LangeLab/PXAudit/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/LangeLab/PXAudit/releases/tag/v0.5.0
 [0.4.0]: https://github.com/LangeLab/PXAudit/commit/747f9dab371ffd3291382824ebb4224ed3ae327a
 [0.3.0]: https://github.com/LangeLab/PXAudit/releases/tag/v0.3.0
 [0.2.0]: https://github.com/LangeLab/PXAudit/releases/tag/v0.2.0

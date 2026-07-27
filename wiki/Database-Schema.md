@@ -86,7 +86,7 @@ One row per scored accession.
 | `has_quant_metadata` | `INTEGER` | Usable quantification-method CV name or accession present |
 | `has_sdrf` | `INTEGER` | SDRF experimental-design evidence present |
 | `has_mztab` | `INTEGER` | Proteomics mzTab filename present |
-| `files_fetch_failed` | `INTEGER` | Historical incomplete-fetch marker; 0.5.1 does not create new failed rows |
+| `files_fetch_failed` | `INTEGER` | Historical incomplete-fetch marker; 0.5.2 does not create new failed rows |
 | `is_unverifiable` | `INTEGER` | Identifier belongs outside the currently queried PRIDE scope |
 | `tier_logic_version` | `TEXT` | Scoring contract version; current value is `v2.1` |
 

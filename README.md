@@ -9,7 +9,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.12--3.14-2D7D46?style=flat-square&logo=python&logoColor=white" alt="Python 3.12-3.14">
-  <img src="https://img.shields.io/badge/version-0.5.1-8B5CF6?style=flat-square" alt="v0.5.1">
+  <img src="https://img.shields.io/badge/version-0.5.2-8B5CF6?style=flat-square" alt="v0.5.2">
   <img src="https://img.shields.io/badge/status-beta-C17D10?style=flat-square" alt="Beta">
   <img src="https://img.shields.io/github/actions/workflow/status/LangeLab/PXAudit/ci.yml?branch=main&style=flat-square&logo=github&label=CI" alt="CI">
   <img src="https://img.shields.io/badge/coverage-100%25-22C55E?style=flat-square" alt="100% branch coverage">
@@ -88,7 +88,7 @@ If you use PXAudit in your research, please cite it as:
   author   = {Ergin, Enes Kemal},
   title    = {{PXAudit}: A command-line tool for auditing {Proteomics Exchange} study metadata},
   year     = {2026},
-  version  = {0.5.1},
+  version  = {0.5.2},
   url      = {https://github.com/LangeLab/PXAudit},
   license  = {MIT},
 }
