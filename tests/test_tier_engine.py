@@ -143,6 +143,7 @@ def test_qualitative_ladder_obeys_every_representative_evidence_combination() ->
         (_project(), (True, True, True, True), "Silver"),
         ({}, (False, False, False, False), "None"),
         (_project(title=""), (False, True, True, True), "None"),
+        (_project(title="   "), (False, True, True, True), "None"),
         (_project(organisms=[]), (True, False, False, True), "None"),
         (
             _project(organisms=[{"accession": "NEWT:9606"}]),
@@ -166,16 +167,26 @@ def test_qualitative_ladder_obeys_every_representative_evidence_combination() ->
             (True, False, False, False),
             "None",
         ),
+        (
+            _project(
+                organisms=[{"name": " \t", "accession": " \t"}],
+                instruments=[{"name": " \t"}],
+            ),
+            (True, False, False, False),
+            "None",
+        ),
     ],
     ids=(
         "complete",
         "empty-project",
         "empty-title",
+        "whitespace-title",
         "empty-organisms",
         "organism-id-only",
         "organism-name-only",
         "empty-instruments",
         "first-entry-contract",
+        "whitespace-metadata",
     ),
 )
 def test_mandatory_metadata_flags_and_none_tier(
@@ -222,14 +233,14 @@ def test_none_project_and_files_are_treated_as_empty_inputs() -> None:
 
 @pytest.mark.parametrize(
     ("organism_parts", "expected"),
-    [(None, False), ([], False), ([{}], True), ([{"name": "brain"}], True)],
+    [(None, False), ([], False), ([{}], False), ([{"name": "brain"}], True)],
     ids=("absent", "empty", "empty-entry", "named-entry"),
 )
 def test_organism_part_flag_represents_list_presence(
     organism_parts: object,
     expected: bool,
 ) -> None:
-    """Any nonempty project organism-parts list establishes coarse biological context."""
+    """Only a named organism-part entry establishes coarse biological context."""
     project = _project()
     if organism_parts is not None:
         project["organismParts"] = organism_parts
@@ -274,6 +285,10 @@ def test_quant_metadata_requires_a_nonblank_cv_name_or_accession(
         (None, False),
         ([], False),
         ([{"pubmedID": 0}], False),
+        ([{"pubmedID": -1}], False),
+        ([{"pubmedID": "-1"}], False),
+        ([{"pubmedID": True}], False),
+        ([{"pubmedID": 1.5}], False),
         ([{"pubmedID": None}], False),
         ([{"pubmedID": ""}], False),
         ([{"pubmedID": "not-an-id"}], False),

@@ -44,16 +44,26 @@ _classifier: FileTypeClassifier = FileTypeClassifier()
 
 
 def _safe_pubmed_id(value: object) -> int:
-    """Convert a PRIDE ``pubmedID`` field to int, returning 0 on any parse failure.
+    """Convert a positive PRIDE ``pubmedID`` field to int, returning 0 otherwise.
 
     PRIDE returns ``pubmedID`` as an integer or ``0`` for unpublished entries.
     Older API responses occasionally carry ``None`` or an empty string; this
-    guard prevents ``ValueError`` / ``TypeError`` from propagating to the caller.
+    guard prevents malformed or non-positive values from becoming publication evidence.
     """
-    try:
-        return int(value)  # type: ignore[call-overload]
-    except (TypeError, ValueError):
+    if isinstance(value, bool):
         return 0
+    if isinstance(value, int):
+        parsed = value
+    elif isinstance(value, str) and value.strip().isascii() and value.strip().isdecimal():
+        parsed = int(value.strip())
+    else:
+        return 0
+    return parsed if parsed > 0 else 0
+
+
+def _nonblank_text(value: object) -> bool:
+    """Return whether a value is text containing non-whitespace characters."""
+    return isinstance(value, str) and bool(value.strip())
 
 
 def _has_cv_quant_method(methods: object) -> bool:
@@ -105,7 +115,7 @@ class AuditResult:
     # File-level flags
     has_psi_results: bool = False
     has_open_spectra: bool = False  # FileClass.PEAK found
-    has_organism_part: bool = False  # len(project["organismParts"]) > 0
+    has_organism_part: bool = False  # meaningful organism-part name present
     has_publication: bool = False  # pubmedID present, non-null, != 0
     has_tabular_quant: bool = False
     has_quant_metadata: bool = False
@@ -188,14 +198,14 @@ def compute_audit(
     # ------------------------------------------------------------------
     # 4.  Project-level flags
     # ------------------------------------------------------------------
-    has_title = bool(project_data.get("title"))
+    has_title = _nonblank_text(project_data.get("title"))
 
     organisms: list[dict] = project_data.get("organisms") or []
-    has_organism = bool(organisms and organisms[0].get("name"))
-    has_organism_id = bool(organisms and organisms[0].get("accession"))
+    has_organism = bool(organisms and _nonblank_text(organisms[0].get("name")))
+    has_organism_id = bool(organisms and _nonblank_text(organisms[0].get("accession")))
 
     instruments: list[dict] = project_data.get("instruments") or []
-    has_instrument = bool(instruments and instruments[0].get("name"))
+    has_instrument = bool(instruments and _nonblank_text(instruments[0].get("name")))
 
     submission_type: str = project_data.get("submissionType") or ""
 
@@ -203,7 +213,9 @@ def compute_audit(
     references: list = project_data.get("references") or []
     quant_methods: object = project_data.get("quantificationMethods") or []
 
-    has_organism_part = bool(organism_parts)
+    has_organism_part = any(
+        isinstance(part, dict) and _nonblank_text(part.get("name")) for part in organism_parts
+    )
     has_quant_metadata = _has_cv_quant_method(quant_methods)
     has_publication = any(_safe_pubmed_id(r.get("pubmedID")) != 0 for r in references)
 
