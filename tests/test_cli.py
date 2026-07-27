@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import gc
 import json
 import os
 import sqlite3
 import sys
+import weakref
 from collections.abc import Iterable, Iterator
 from contextlib import closing
 from io import StringIO
@@ -1039,6 +1041,31 @@ def test_bulk_audit_reuses_one_database_connection(bulk_mocks: dict, tmp_path: P
     calls = bulk_mocks["_audit_single"].call_args_list
     assert len(calls) == 2
     assert all(call.kwargs["db_connection"] is connection for call in calls)
+
+
+def test_bulk_audit_releases_per_accession_audit_payloads(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Bulk orchestration does not retain DataFrames from completed accessions."""
+    accessions = ["PXD000001", "PXD000002", "PXD000003"]
+    input_path = tmp_path / "accessions.txt"
+    input_path.write_text("\n".join(accessions) + "\n")
+    payload_refs: list[weakref.ReferenceType[pd.DataFrame]] = []
+
+    def fake_audit(accession: str, db_path: str, **_kwargs: Any) -> AuditData:
+        payload = pd.DataFrame({"accession": [accession], "file_name": ["result.mzid"]})
+        payload_refs.append(weakref.ref(payload))
+        result = AuditResult(accession=accession, tier="Gold")
+        return AuditData(result, {}, payload, [], "2026-01-01T00:00:00+00:00", [], [], False)
+
+    monkeypatch.setattr("pxaudit.cli._audit_single", fake_audit)
+    monkeypatch.setattr("pxaudit.cli.get_or_create_db", MagicMock(return_value=MagicMock()))
+    result = CliRunner().invoke(main, ["bulk-audit", "--input", str(input_path)])
+    gc.collect()
+
+    assert result.exit_code == 0
+    assert len(payload_refs) == len(accessions)
+    assert all(reference() is None for reference in payload_refs)
 
 
 def test_bulk_batch_persists_real_cached_rows_and_commits_before_network_delay(

@@ -888,6 +888,7 @@ def bulk_audit(
 
     try:
         for accession in iterator:
+            data: AuditData | None = None
             try:
                 data = _audit_single(
                     accession,
@@ -944,6 +945,8 @@ def bulk_audit(
                             f"rolled_back={rolled_back}."
                         )
                     sys.exit(1)
+            finally:
+                data = None
 
         if transaction_batch is not None:
             transaction_batch.commit()
