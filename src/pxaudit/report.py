@@ -603,7 +603,7 @@ def _query_tier_distribution(conn: sqlite3.Connection) -> pd.DataFrame:
             }
         )
     df["tier"] = df["tier"].where(df["tier"].isin(_TIER_ORDER), "Unknown")
-    df = df.groupby("tier", as_index=False, dropna=False)["count"].sum()
+    df = df.groupby("tier", as_index=False, dropna=False).agg(count=("count", "sum"))
     total = _series_int_sum(df["count"])
     full = pd.DataFrame({"tier": _TIER_ORDER})
     df = full.merge(df, on="tier", how="left").fillna(0)
@@ -619,7 +619,7 @@ def _query_quant_tier_distribution(conn: sqlite3.Connection) -> pd.DataFrame:
         conn,
     )
     df["quant_tier"] = df["quant_tier"].where(df["quant_tier"].isin(_QUANT_TIER_ORDER), "Unknown")
-    df = df.groupby("quant_tier", as_index=False, dropna=False)["count"].sum()
+    df = df.groupby("quant_tier", as_index=False, dropna=False).agg(count=("count", "sum"))
     total = _series_int_sum(df["count"]) if not df.empty else 0
     full = pd.DataFrame({"quant_tier": _QUANT_TIER_ORDER})
     df = full.merge(df, on="quant_tier", how="left").fillna(0)
@@ -755,10 +755,10 @@ def _limit_cohorts(df: pd.DataFrame, group_col: str) -> pd.DataFrame:
     if df.empty:
         return df
     df["tier"] = df["tier"].where(df["tier"].isin(_TIER_ORDER), "Unknown")
-    df = df.groupby([group_col, "tier"], as_index=False, dropna=False)["count"].sum()
+    df = df.groupby([group_col, "tier"], as_index=False, dropna=False).agg(count=("count", "sum"))
     totals = (
-        df.groupby(group_col, as_index=False)["count"]
-        .sum()
+        df.groupby(group_col, as_index=False)
+        .agg(count=("count", "sum"))
         .sort_values(["count", group_col], ascending=[False, True])
         .head(10)
     )
