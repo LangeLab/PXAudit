@@ -2,6 +2,7 @@
 tmp/
 temp/
 plan/
+bench/
 
 # uv / virtualenv
 .venv/

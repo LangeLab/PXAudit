@@ -1009,6 +1009,62 @@ def test_bulk_batch_success_matches_per_accession_semantics(tmp_path: Path) -> N
     assert reference_export.read_bytes() == candidate_export.read_bytes()
 
 
+def test_bulk_batch_failure_contract_compares_partial_side_effects(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A batch rollback differs from per-accession progress only at its documented boundary."""
+    from pxaudit.cli import _audit_single as real_audit
+
+    accessions = ["PXD000001", "PXD000002"]
+    roots = {batch_size: tmp_path / f"batch-{batch_size}" for batch_size in (1, 2)}
+    for root in roots.values():
+        _write_bulk_cache(root / "cache", accessions)
+        (root / "accessions.txt").write_text("\n".join(accessions) + "\n")
+
+    def fail_second(accession: str, db_path: str, **kwargs: Any) -> AuditData:
+        if accession == "PXD000002":
+            raise PrideAPIError("second accession unavailable")
+        return real_audit(accession, db_path, **kwargs)
+
+    monkeypatch.setattr("pxaudit.cli._audit_single", fail_second)
+    runner = CliRunner()
+    results: dict[int, Any] = {}
+    exports: dict[int, Path] = {}
+    for batch_size, root in roots.items():
+        export = root / "results.tsv"
+        exports[batch_size] = export
+        results[batch_size] = runner.invoke(
+            main,
+            [
+                "--cache-dir",
+                str(root / "cache"),
+                "bulk-audit",
+                "--input",
+                str(root / "accessions.txt"),
+                "--db",
+                str(root / "results.db"),
+                "--format",
+                "tsv",
+                "--output",
+                str(export),
+                "--batch-size",
+                str(batch_size),
+            ],
+        )
+
+    reference = results[1]
+    candidate = results[2]
+    assert reference.exit_code == candidate.exit_code == 1
+    assert exports[1].exists()
+    assert not exports[2].exists()
+    reference_schema, reference_tables = _bulk_database_snapshot(roots[1] / "results.db")
+    candidate_schema, candidate_tables = _bulk_database_snapshot(roots[2] / "results.db")
+    assert reference_schema == candidate_schema
+    assert len(reference_tables["audit"]) == 1
+    assert candidate_tables["audit"] == []
+    assert "rolled_back=1" in candidate.output
+
+
 def test_bulk_audit_happy_path_tsv(bulk_mocks: dict, tmp_path: Path) -> None:
     """A two-accession TSV audit succeeds and writes both rows."""
     acc_file = tmp_path / "ids.txt"
@@ -1300,6 +1356,53 @@ def test_bulk_batch_database_error_reports_and_rolls_back(
     assert "committed=0 rolled_back=1" in result.output
     with closing(sqlite3.connect(database)) as connection:
         assert connection.execute("SELECT COUNT(*) FROM audit").fetchone() == (0,)
+
+
+def test_bulk_batch_disk_full_preserves_committed_batches(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A failed batch commit reports progress and preserves earlier committed rows."""
+    from pxaudit.cli import _audit_single as real_audit
+    from pxaudit.db import TransactionBatch
+
+    accessions = ["PXD000001", "PXD000002", "PXD000003"]
+    cache_dir = tmp_path / "cache"
+    _write_bulk_cache(cache_dir, accessions)
+    input_path = tmp_path / "accessions.txt"
+    input_path.write_text("\n".join(accessions) + "\n")
+    database = tmp_path / "results.db"
+    commit_calls = 0
+    real_commit = TransactionBatch.commit
+
+    def fail_final_commit(batch: TransactionBatch) -> None:
+        nonlocal commit_calls
+        commit_calls += 1
+        if commit_calls == 2:
+            raise sqlite3.OperationalError("database or disk is full")
+        real_commit(batch)
+
+    monkeypatch.setattr("pxaudit.cli._audit_single", real_audit)
+    monkeypatch.setattr(TransactionBatch, "commit", fail_final_commit)
+    result = CliRunner().invoke(
+        main,
+        [
+            "--cache-dir",
+            str(cache_dir),
+            "bulk-audit",
+            "--input",
+            str(input_path),
+            "--db",
+            str(database),
+            "--batch-size",
+            "2",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "database or disk is full" in result.output
+    assert "committed=2 rolled_back=1" in result.output
+    with closing(sqlite3.connect(database)) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM audit").fetchone() == (2,)
 
 
 def test_bulk_audit_database_open_failure_closes_no_connection(

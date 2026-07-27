@@ -12,6 +12,7 @@ import pytest
 
 from pxaudit.db import (
     TransactionBatch,
+    _configure_journal_mode,
     create_tables,
     get_or_create_db,
     insert_audit,
@@ -426,6 +427,61 @@ def test_get_or_create_db_creates_file(tmp_path: Path) -> None:
         }
     assert db_path.exists()
     assert {"study", "study_files", "audit"} == tables
+    with closing(get_or_create_db(db_path)) as connection:
+        assert connection.execute("PRAGMA journal_mode").fetchone() == ("wal",)
+
+
+def test_wal_setup_falls_back_to_default_journal_mode_with_warning() -> None:
+    """Unavailable WAL setup selects DELETE mode and emits a warning."""
+
+    class FakeResult:
+        def __init__(self, row: tuple[str]) -> None:
+            self.row = row
+
+        def fetchone(self) -> tuple[str]:
+            return self.row
+
+    class FakeConnection:
+        def __init__(self, fail_wal: bool = True) -> None:
+            self.statements: list[str] = []
+            self.fail_wal = fail_wal
+
+        def execute(self, statement: str) -> FakeResult:
+            self.statements.append(statement)
+            if "WAL" in statement and self.fail_wal:
+                raise sqlite3.OperationalError("unsupported journal mode")
+            return FakeResult(("delete",))
+
+    connection = FakeConnection()
+    with pytest.warns(RuntimeWarning, match="WAL mode could not be enabled"):
+        mode = _configure_journal_mode(connection)  # type: ignore[arg-type]
+
+    assert mode == "delete"
+    assert connection.statements == [
+        "PRAGMA journal_mode = WAL",
+        "PRAGMA journal_mode = DELETE",
+    ]
+
+    reported_connection = FakeConnection(fail_wal=False)
+    with pytest.warns(RuntimeWarning, match="WAL mode is unavailable"):
+        reported_mode = _configure_journal_mode(reported_connection)  # type: ignore[arg-type]
+
+    assert reported_mode == "delete"
+    assert reported_connection.statements == [
+        "PRAGMA journal_mode = WAL",
+        "PRAGMA journal_mode = DELETE",
+    ]
+
+
+def test_wal_fallback_failure_is_reported() -> None:
+    """A database that rejects both journal modes raises a typed SQLite error."""
+
+    class FailingConnection:
+        def execute(self, _statement: str) -> None:
+            raise sqlite3.OperationalError("journal mode denied")
+
+    with pytest.raises(sqlite3.OperationalError, match="Default journal mode could not be enabled"):
+        _configure_journal_mode(FailingConnection())  # type: ignore[arg-type]
 
 
 def test_get_or_create_db_idempotent(tmp_path: Path) -> None:

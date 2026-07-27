@@ -16,6 +16,7 @@ migrated databases.
 from __future__ import annotations
 
 import sqlite3
+import warnings
 from pathlib import Path
 
 import pandas as pd
@@ -214,19 +215,54 @@ def get_or_create_db(path: str | Path) -> sqlite3.Connection:
     """Open (or create) a SQLite database file, apply the schema, and return the connection.
 
     The connection is opened with ``isolation_level=None`` (autocommit) so that
-    every insert function manages its own ``BEGIN`` / ``COMMIT`` explicitly.
+    standard insert functions manage their own ``BEGIN`` / ``COMMIT`` explicitly;
+    bulk transaction batches can hold a bounded caller-managed transaction.
 
     Migrations are called after schema creation so that databases from an
     earlier schema version are transparently upgraded on first use.
     """
     conn = sqlite3.connect(str(Path(path)), isolation_level=None)
     conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA journal_mode = WAL")
+    _configure_journal_mode(conn)
     create_tables(conn)
     migrate_audit_v2(conn)
     migrate_study_v2(conn)
     migrate_study_files_v2(conn)
     return conn
+
+
+def _configure_journal_mode(conn: sqlite3.Connection) -> str:
+    """Enable SQLite WAL or fall back to the default journal mode with a warning."""
+    try:
+        result = conn.execute("PRAGMA journal_mode = WAL").fetchone()
+    except sqlite3.DatabaseError as exc:
+        return _fallback_journal_mode(conn, f"WAL mode could not be enabled: {exc}")
+
+    mode = str(result[0]).casefold() if result else ""
+    if mode == "wal":
+        return mode
+    return _fallback_journal_mode(
+        conn,
+        f"WAL mode is unavailable for this database (SQLite reported {mode or 'no mode'}).",
+    )
+
+
+def _fallback_journal_mode(conn: sqlite3.Connection, reason: str) -> str:
+    """Select SQLite's default journal mode after WAL setup is unavailable."""
+    try:
+        result = conn.execute("PRAGMA journal_mode = DELETE").fetchone()
+    except sqlite3.DatabaseError as exc:
+        raise sqlite3.OperationalError(
+            f"{reason} Default journal mode could not be enabled: {exc}"
+        ) from exc
+
+    mode = str(result[0]).casefold() if result else "delete"
+    warnings.warn(
+        f"Warning: {reason} Using SQLite journal mode {mode}.",
+        RuntimeWarning,
+        stacklevel=3,
+    )
+    return mode
 
 
 def open_existing_db(path: str | Path) -> sqlite3.Connection:
