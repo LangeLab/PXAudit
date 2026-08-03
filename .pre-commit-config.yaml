@@ -1,6 +1,6 @@
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.16.0
+    rev: v0.16.1
     hooks:
       - id: ruff
         args: [--fix]
@@ -11,7 +11,7 @@ repos:
       - id: mypy
         args: [--config-file=pyproject.toml]
         additional_dependencies:
-          - pandas-stubs>=3.0.3.260530
+          - pandas-stubs>=3.0.5.260730
           - types-requests>=2.33.0.20260712
           - click>=8.4.2
           - pytest>=9.1.1
