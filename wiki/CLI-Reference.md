@@ -142,6 +142,7 @@ pxaudit bulk-audit --input PATH [OPTIONS]
 | `--delay SECONDS` | Config or `1.0` | Delay after an accession used the network |
 | `--continue-on-error` | Off | Count and skip malformed or failed accessions |
 | `--overwrite` | Off | Replace an existing regular export file |
+| `--batch-size N` | `1` | Commit completed accessions after each batch of `N` |
 
 Input format:
 

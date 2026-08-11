@@ -57,7 +57,7 @@ src/pxaudit/          package source
 tests/                offline, recorded, and live test modules
 tests/fixtures/pride/ reviewed sanitized PRIDE projections
 wiki/                 GitHub Wiki source pages
-.github/workflows/    CI and manual live verification
+.github/              CI, live verification, and Wiki synchronization
 assets/               banner and report preview
 ```
 
@@ -155,7 +155,7 @@ The main CI workflow runs:
 - a hash-verified dependency audit from the lockfile; and
 - a secret scan with the full Git history available.
 
-Workflow actions are pinned to commit SHAs, repository permissions are read-only, redundant runs on the same ref are cancelled, and jobs have explicit timeouts.
+Workflow actions are pinned to commit SHAs, permissions are scoped per job, redundant runs on the same ref are cancelled, and jobs have explicit timeouts.
 
 The live PRIDE workflow is manual, separate from default CI, and uploads its verification record even when the live assertions detect drift.
 
