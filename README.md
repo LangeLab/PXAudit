@@ -11,8 +11,8 @@
   <img src="https://img.shields.io/badge/python-3.12--3.14-2D7D46?style=flat-square&logo=python&logoColor=white" alt="Python 3.12-3.14">
   <img src="https://img.shields.io/badge/version-0.5.2-8B5CF6?style=flat-square" alt="v0.5.2">
   <img src="https://img.shields.io/badge/status-beta-C17D10?style=flat-square" alt="Beta">
-  <img src="https://img.shields.io/github/actions/workflow/status/LangeLab/PXAudit/ci.yml?branch=main&style=flat-square&logo=github&label=CI" alt="CI">
-  <img src="https://img.shields.io/badge/coverage-100%25-22C55E?style=flat-square" alt="100% branch coverage">
+  <a href="https://github.com/LangeLab/PXAudit/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/LangeLab/PXAudit/ci.yml?branch=main&style=flat-square&logo=github&label=CI" alt="CI"></a>
+  <a href="https://codecov.io/gh/LangeLab/PXAudit"><img src="https://img.shields.io/codecov/c/github/LangeLab/PXAudit?branch=main&style=flat-square&logo=codecov&logoColor=white" alt="Coverage"></a>
   <img src="https://img.shields.io/badge/license-MIT-4B9D6E?style=flat-square" alt="MIT">
 </p>
 

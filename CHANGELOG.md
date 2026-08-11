@@ -4,7 +4,7 @@
 
 All notable changes to PXAudit are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project follows [Semantic Versioning](https://semver.org/).
 
-## [0.5.2] - 2026-07-27
+## 0.5.2 - 2026-07-27
 
 Scalability and performance improvements for large local bulk audits.
 
@@ -26,7 +26,7 @@ Scalability and performance improvements for large local bulk audits.
 - Audit evidence rejects whitespace-only metadata, empty organism-part records, and non-positive PubMed identifiers.
 - Network pacing no longer commits an incomplete opt-in transaction batch, and bulk exports replace their destination only after successful serialization.
 
-## [0.5.1] - 2026-07-18
+## 0.5.1 - 2026-07-18
 
 Safety, scientific-contract, resilience, test-architecture, and documentation corrections for the v0.5 line.
 
@@ -79,7 +79,7 @@ CLI polish, user configuration, and cache management.
 - Nested TOML tables in the config file warn that only flat keys are supported.
 - Connection/proxy failures from `requests` are wrapped as `PrideAPIError` so the CLI exits cleanly.
 
-## [0.4.0] - 2026-06-22
+## 0.4.0 - 2026-06-22
 
 ### Added
 
