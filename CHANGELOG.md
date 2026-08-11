@@ -214,11 +214,7 @@ First tagged release. Single-study auditing with a 7-tier FAIR ladder and quanti
 - Cache dir resolved relative to CWD; now uses absolute `~/.pxaudit_cache/` (#2).
 - `fetch_files` fetched only the first 100 files; added pagination loop (#4).
 
-[0.5.2]: https://github.com/LangeLab/PXAudit/compare/v0.5.1...HEAD
-[0.5.1]: https://github.com/LangeLab/PXAudit/compare/v0.5.0...HEAD
 [0.5.0]: https://github.com/LangeLab/PXAudit/releases/tag/v0.5.0
-[0.4.0]: https://github.com/LangeLab/PXAudit/commit/747f9dab371ffd3291382824ebb4224ed3ae327a
 [0.3.0]: https://github.com/LangeLab/PXAudit/releases/tag/v0.3.0
 [0.2.0]: https://github.com/LangeLab/PXAudit/releases/tag/v0.2.0
-[0.1.1]: https://github.com/LangeLab/PXAudit/commit/41ba2896acd9cec3b783af91c6fa827c9d5f5772
 [0.1.0]: https://github.com/LangeLab/PXAudit/releases/tag/v0.1.0
