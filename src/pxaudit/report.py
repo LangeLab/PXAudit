@@ -309,6 +309,22 @@ Percentage of verifiable studies missing each metadata field.
 <span style="color: #16a34a; font-weight: 600;">Green</span> = acceptable (minor gap).
 </p>
 {{ gap_chart | safe }}
+<div class="table-wrap">
+<table class="gap-table">
+<thead><tr><th>Field</th><th>Failed</th><th>Unknown</th><th>Passed</th><th>Missing %</th></tr></thead>
+<tbody>
+{% for item in gap_items %}
+<tr>
+  <td>{{ item.field }}</td>
+  <td>{{ item.missing }}</td>
+  <td>{{ item.unknown }}</td>
+  <td>{{ item.present }}</td>
+  <td>{{ item.pct_missing }}%</td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+</div>
 
 <h2>Cohort Analysis</h2>
 <p style="font-size: 0.78em; color: #6b7280; margin: 0.2em 0 0.4em 0;">
@@ -436,6 +452,22 @@ class ReportData:
 def _series_int_sum(series: pd.Series) -> int:
     """Return the integer sum of a numeric pandas Series."""
     return int(series.sum())
+
+
+def _normalize_flag(value: object) -> str:
+    """Normalize v2 integer and v3 text evidence values for read-only reports."""
+    raw = getattr(value, "value", value)
+    if isinstance(raw, bool):
+        return "passed" if raw else "failed"
+    if isinstance(raw, int) and raw in (0, 1):
+        return "passed" if raw else "failed"
+    if isinstance(raw, str):
+        normalized = raw.casefold()
+        if normalized in {"passed", "failed", "unknown"}:
+            return normalized
+        if normalized in {"0", "1"}:
+            return "passed" if normalized == "1" else "failed"
+    return "unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -656,12 +688,13 @@ def _query_all_accessions(conn: sqlite3.Connection) -> list[dict]:
         }
         raw_flags = list(db_row[4:])
         for (_label, _col), val in zip(_FLAG_COLUMNS, raw_flags, strict=False):
-            if val is None or (isinstance(val, float) and pd.isna(val)):
-                cls, text = "badge badge-unknown", "?"
-            elif int(val) == 0:
+            outcome = _normalize_flag(val)
+            if outcome == "failed":
                 cls, text = "badge badge-missing", "-"
-            else:
+            elif outcome == "passed":
                 cls, text = "badge badge-ok", "+"
+            else:
+                cls, text = "badge badge-unknown", "?"
             row["flags"].append(f'<span class="{cls}">{text}</span>')
         rows.append(row)
     return rows
@@ -687,27 +720,27 @@ _GAP_SEVERITY: dict[str, str] = {
 
 def _query_metadata_gaps(conn: sqlite3.Connection) -> list[dict]:
     """Return present, missing, and unknown flag counts for verifiable studies."""
+    columns = [col for _, col in _FLAG_COLUMNS]
+    rows = conn.execute(
+        "SELECT " + ", ".join(columns) + " FROM audit WHERE is_unverifiable = 0"
+    ).fetchall()
+    counts = {column: {"passed": 0, "failed": 0, "unknown": 0} for column in columns}
+    for row in rows:
+        for column, value in zip(columns, row, strict=True):
+            counts[column][_normalize_flag(value)] += 1
+
     results: list[dict[str, typing.Any]] = []
     for label, col in _FLAG_COLUMNS:
-        row = conn.execute(
-            f"SELECT "
-            f"SUM(CASE WHEN {col} = 0 THEN 1 ELSE 0 END), "
-            f"SUM(CASE WHEN {col} IS NULL THEN 1 ELSE 0 END), "
-            f"SUM(CASE WHEN {col} != 0 THEN 1 ELSE 0 END) "
-            "FROM audit WHERE is_unverifiable = 0"
-        ).fetchone()
-        missing, unknown, present = (int(value or 0) for value in row)
         results.append(
             {
                 "field": label,
-                "missing": missing,
-                "unknown": unknown,
-                "present": present,
+                "missing": counts[col]["failed"],
+                "unknown": counts[col]["unknown"],
+                "present": counts[col]["passed"],
                 "severity": _GAP_SEVERITY.get(label, "moderate"),
             }
         )
-    ver_row = conn.execute("SELECT COUNT(*) FROM audit WHERE is_unverifiable = 0").fetchone()
-    verifiable = int(ver_row[0]) if ver_row else 0
+    verifiable = len(rows)
     for item in results:
         item["pct_missing"] = round(100.0 * item["missing"] / verifiable, 1) if verifiable else 0.0
     results.sort(key=lambda x: x["missing"], reverse=True)

@@ -4,13 +4,13 @@ Tables
 ------
 study        One row per accession: title, organism, instrument, submission metadata.
 study_files  One row per file: name, category, extension, FTP URL, size, checksum.
-audit        One row per accession: computed tier, quant tier, and Boolean flags.
+audit        One row per accession: computed tier, quant tier, and evidence outcomes.
 
 Insert functions manage their own transaction by default (BEGIN/COMMIT/ROLLBACK);
 ``insert_audit_record()`` can join a caller-managed transaction for bounded bulk batches.
-Migration functions (``migrate_audit_v2``, ``migrate_study_v2``,
-``migrate_study_files_v2``) are idempotent and safe to run on already-
-migrated databases.
+Migration functions (``migrate_audit_v2``, ``migrate_audit_v3``,
+``migrate_study_v2``, ``migrate_study_files_v2``) are idempotent and safe to
+run on already-migrated databases.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from __future__ import annotations
 import sqlite3
 import warnings
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
@@ -47,6 +48,25 @@ _STUDY_FILES_COLS = (
     "checksum_type",
 )
 
+_FLAG_COLS = (
+    "has_title",
+    "has_organism",
+    "has_organism_id",
+    "has_instrument",
+    "has_result_files",
+    "has_psi_results",
+    "has_open_spectra",
+    "has_organism_part",
+    "has_publication",
+    "has_tabular_quant",
+    "has_quant_metadata",
+    "has_sdrf",
+    "has_mztab",
+)
+
+_FLAG_VALUES = frozenset({"passed", "failed", "unknown"})
+_TIER_LOGIC_VERSION = "v3.0"
+
 _AUDIT_COLS = (
     "accession",
     "tier",
@@ -65,6 +85,7 @@ _AUDIT_COLS = (
     "has_mztab",
     "files_fetch_failed",
     "is_unverifiable",
+    "ambiguity_count",
     "tier_logic_version",
     "quant_tier",
 )
@@ -110,21 +131,22 @@ _CREATE_AUDIT = """
 CREATE TABLE IF NOT EXISTS audit (
     accession           TEXT NOT NULL PRIMARY KEY,
     tier                TEXT,
-    has_title           INTEGER,
-    has_organism        INTEGER,
-    has_organism_id     INTEGER,  -- tracked for analysis; not used in tier gating
-    has_instrument      INTEGER,
-    has_result_files    INTEGER,
-    has_psi_results     INTEGER,
-    has_open_spectra    INTEGER,
-    has_organism_part   INTEGER,
-    has_publication     INTEGER,
-    has_tabular_quant   INTEGER,
-    has_quant_metadata  INTEGER,
-    has_sdrf            INTEGER,
-    has_mztab           INTEGER,
+    has_title           TEXT,
+    has_organism        TEXT,
+    has_organism_id     TEXT,  -- tracked for analysis; not used in tier gating
+    has_instrument      TEXT,
+    has_result_files    TEXT,
+    has_psi_results     TEXT,
+    has_open_spectra    TEXT,
+    has_organism_part   TEXT,
+    has_publication     TEXT,
+    has_tabular_quant   TEXT,
+    has_quant_metadata  TEXT,
+    has_sdrf            TEXT,
+    has_mztab           TEXT,
     files_fetch_failed  INTEGER,
     is_unverifiable     INTEGER,
+    ambiguity_count     INTEGER,
     tier_logic_version  TEXT,
     quant_tier          TEXT
 );
@@ -153,9 +175,35 @@ _INSERT_AUDIT = (
     "(accession, tier, has_title, has_organism, has_organism_id, has_instrument, "
     "has_result_files, has_psi_results, has_open_spectra, has_organism_part, "
     "has_publication, has_tabular_quant, has_quant_metadata, "
-    "has_sdrf, has_mztab, files_fetch_failed, is_unverifiable, tier_logic_version, quant_tier) "
-    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    "has_sdrf, has_mztab, files_fetch_failed, is_unverifiable, ambiguity_count, "
+    "tier_logic_version, quant_tier) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
+
+
+def _flag_text(value: Any) -> str:
+    """Normalize legacy booleans and enum-like values to the v3 vocabulary."""
+    raw = getattr(value, "value", value)
+    if isinstance(raw, bool):
+        return "passed" if raw else "failed"
+    if isinstance(raw, int) and raw in (0, 1):
+        return "passed" if raw else "failed"
+    if isinstance(raw, str):
+        normalized = raw.casefold()
+        if normalized in _FLAG_VALUES:
+            return normalized
+        if normalized in {"0", "1"}:
+            return "passed" if normalized == "1" else "failed"
+    return "unknown"
+
+
+def _audit_row(data: dict) -> tuple[Any, ...]:
+    """Build a v3 audit row and derive its ambiguity count from evidence."""
+    values = {column: data.get(column) for column in _AUDIT_COLS}
+    for column in _FLAG_COLS:
+        values[column] = _flag_text(values[column])
+    values["ambiguity_count"] = sum(values[column] == "unknown" for column in _FLAG_COLS)
+    return tuple(values[column] for column in _AUDIT_COLS)
 
 
 class TransactionBatch:
@@ -228,6 +276,7 @@ def get_or_create_db(path: str | Path) -> sqlite3.Connection:
     migrate_audit_v2(conn)
     migrate_study_v2(conn)
     migrate_study_files_v2(conn)
+    migrate_audit_v3(conn)
     return conn
 
 
@@ -344,9 +393,9 @@ def insert_study_files(conn: sqlite3.Connection, accession: str, files_df: pd.Da
 def insert_audit(conn: sqlite3.Connection, data: dict) -> None:
     """Upsert one row into the ``audit`` table.
 
-    Missing keys in *data* are treated as NULL.
+    Missing evidence keys are stored as ``unknown``.
     """
-    row = tuple(data.get(c) for c in _AUDIT_COLS)
+    row = _audit_row(data)
     conn.execute("BEGIN")
     try:
         conn.execute(_INSERT_AUDIT, row)
@@ -441,7 +490,7 @@ def _insert_study_files_rows(
 
 def _insert_audit_row(conn: sqlite3.Connection, data: dict) -> None:
     """Insert a single audit row without managing a transaction."""
-    row = tuple(data.get(c) for c in _AUDIT_COLS)
+    row = _audit_row(data)
     conn.execute(_INSERT_AUDIT, row)
 
 
@@ -470,6 +519,70 @@ def migrate_audit_v2(conn: sqlite3.Connection) -> None:
     existing_study = {row[1] for row in conn.execute("PRAGMA table_info(study)")}
     if "submission_type" not in existing_study:
         conn.execute("ALTER TABLE study ADD COLUMN submission_type TEXT")
+
+
+def migrate_audit_v3(conn: sqlite3.Connection) -> None:
+    """Upgrade audit evidence columns from v2 integers to v3 outcomes.
+
+    The migration rebuilds ``audit`` when any evidence column still has an
+    integer declaration, preserving tier and quant-tier values while mapping
+    ``0`` to ``failed``, ``1`` to ``passed``, and every other value to
+    ``unknown``. It is idempotent and recomputes ``ambiguity_count`` from the
+    durable evidence columns on every invocation.
+    """
+    table_info = {row[1]: str(row[2]).upper() for row in conn.execute("PRAGMA table_info(audit)")}
+    if not table_info:
+        return
+
+    needs_rebuild = "ambiguity_count" not in table_info or any(
+        table_info.get(column) != "TEXT" for column in _FLAG_COLS
+    )
+    selected_columns = [
+        column if column in table_info else f"NULL AS {column}" for column in _AUDIT_COLS
+    ]
+    rows = conn.execute(f"SELECT {', '.join(selected_columns)} FROM audit").fetchall()  # noqa: S608
+
+    def v3_row(row: tuple[Any, ...]) -> tuple[Any, ...]:
+        data = dict(zip(_AUDIT_COLS, row, strict=True))
+        for column in _FLAG_COLS:
+            data[column] = _flag_text(data[column])
+        data["ambiguity_count"] = sum(data[column] == "unknown" for column in _FLAG_COLS)
+        data["tier_logic_version"] = _TIER_LOGIC_VERSION
+        return tuple(data[column] for column in _AUDIT_COLS)
+
+    manage_transaction = not conn.in_transaction
+    if manage_transaction:
+        conn.execute("BEGIN")
+    try:
+        if needs_rebuild:
+            backup_name = "audit__v2_migration"
+            if conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+                (backup_name,),
+            ).fetchone():
+                raise sqlite3.OperationalError(
+                    f"cannot migrate audit: temporary table {backup_name!r} already exists"
+                )
+            conn.execute(f"ALTER TABLE audit RENAME TO {backup_name}")  # noqa: S608
+            conn.execute(_CREATE_AUDIT)
+            conn.executemany(_INSERT_AUDIT, [v3_row(row) for row in rows])
+            conn.execute(f"DROP TABLE {backup_name}")  # noqa: S608
+        else:
+            update_columns = [column for column in _AUDIT_COLS if column != "accession"]
+            update_sql = ", ".join(f"{column} = ?" for column in update_columns)
+            for row in rows:
+                migrated = v3_row(row)
+                data = dict(zip(_AUDIT_COLS, migrated, strict=True))
+                conn.execute(
+                    f"UPDATE audit SET {update_sql} WHERE accession = ?",  # noqa: S608
+                    tuple(data[column] for column in update_columns) + (data["accession"],),
+                )
+        if manage_transaction:
+            conn.execute("COMMIT")
+    except BaseException:
+        if manage_transaction:
+            conn.rollback()
+        raise
 
 
 def migrate_study_v2(conn: sqlite3.Connection) -> None:
@@ -505,6 +618,7 @@ __all__ = [
     "insert_study",
     "insert_study_files",
     "migrate_audit_v2",
+    "migrate_audit_v3",
     "migrate_study_files_v2",
     "migrate_study_v2",
 ]

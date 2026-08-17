@@ -1,4 +1,4 @@
-"""Boolean flag tier evaluator for pxaudit.
+"""Three-valued flag tier evaluator for pxaudit.
 
 Public API
 ----------
@@ -9,6 +9,12 @@ Flag computation uses two strategies:
 - Project-level flags are derived directly from the ``project_data`` dict.
 - File-level classes come from ``FileTypeClassifier``. Narrow PSI-identification
   and mzTab flags use exact supported filename suffixes after compression removal.
+
+Each evidence flag is :class:`FlagOutcome.PASSED`,
+:class:`FlagOutcome.FAILED`, or :class:`FlagOutcome.UNKNOWN`. Missing API fields
+and structurally unusable values are unknown; present empty values are failed.
+Unknown outcomes do not stop either tier ladder, but are counted in
+``ambiguity_count``.
 
 The tier derivation mirrors the SQL CASE expression in
 the project wiki Database Schema page exactly.
@@ -22,6 +28,7 @@ trigger in practice, though it is exercised by synthetic test payloads.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 
 from pxaudit import _PRIDE_PREFIX
 from pxaudit.accession import normalize_accession
@@ -31,8 +38,23 @@ from pxaudit.file_classifier import FileClass, FileTypeClassifier, strip_compres
 # Module-level constants
 # ---------------------------------------------------------------------------
 
-_TIER_LOGIC_VERSION: str = "v2.1"
+_TIER_LOGIC_VERSION: str = "v3.0"
 _PSI_RESULT_EXTENSIONS: tuple[str, ...] = (".mzid", ".mzidentml", ".mztab")
+_FLAG_FIELDS: tuple[str, ...] = (
+    "has_title",
+    "has_organism",
+    "has_organism_id",
+    "has_instrument",
+    "has_result_files",
+    "has_psi_results",
+    "has_open_spectra",
+    "has_organism_part",
+    "has_publication",
+    "has_tabular_quant",
+    "has_quant_metadata",
+    "has_sdrf",
+    "has_mztab",
+)
 
 # Module-level classifier instance: stateless after construction, safe to share.
 _classifier: FileTypeClassifier = FileTypeClassifier()
@@ -43,41 +65,138 @@ _classifier: FileTypeClassifier = FileTypeClassifier()
 # ---------------------------------------------------------------------------
 
 
-def _safe_pubmed_id(value: object) -> int:
-    """Convert a positive PRIDE ``pubmedID`` field to int, returning 0 otherwise.
+class FlagOutcome(StrEnum):
+    """Outcome vocabulary for one derived audit evidence flag."""
 
-    PRIDE returns ``pubmedID`` as an integer or ``0`` for unpublished entries.
-    Older API responses occasionally carry ``None`` or an empty string; this
-    guard prevents malformed or non-positive values from becoming publication evidence.
-    """
-    if isinstance(value, bool):
-        return 0
-    if isinstance(value, int):
-        parsed = value
-    elif isinstance(value, str) and value.strip().isascii() and value.strip().isdecimal():
-        parsed = int(value.strip())
-    else:
-        return 0
-    return parsed if parsed > 0 else 0
+    PASSED = "passed"
+    FAILED = "failed"
+    UNKNOWN = "unknown"
 
 
-def _nonblank_text(value: object) -> bool:
-    """Return whether a value is text containing non-whitespace characters."""
-    return isinstance(value, str) and bool(value.strip())
+def _outcome_for_value(value: object, *, present: bool) -> FlagOutcome:
+    """Classify one scalar API value while preserving absence as unknown."""
+    if not present:
+        return FlagOutcome.UNKNOWN
+    if isinstance(value, str):
+        return FlagOutcome.PASSED if value.strip() else FlagOutcome.FAILED
+    if value is None:
+        return FlagOutcome.FAILED
+    return FlagOutcome.UNKNOWN
 
 
-def _has_cv_quant_method(methods: object) -> bool:
-    """Return whether quantification methods contain a usable CV name or accession."""
+def _first_entry_outcome(project_data: dict, collection_name: str, field_name: str) -> FlagOutcome:
+    """Classify a field on the first entry of an optional project collection."""
+    if collection_name not in project_data:
+        return FlagOutcome.UNKNOWN
+    entries = project_data.get(collection_name)
+    if entries is None or entries == []:
+        return FlagOutcome.FAILED
+    if not isinstance(entries, list) or not isinstance(entries[0], dict):
+        return FlagOutcome.UNKNOWN
+    entry = entries[0]
+    return _outcome_for_value(entry.get(field_name), present=field_name in entry)
+
+
+def _named_collection_outcome(
+    project_data: dict, collection_name: str, field_name: str
+) -> FlagOutcome:
+    """Classify whether an optional collection contains a usable named entry."""
+    if collection_name not in project_data:
+        return FlagOutcome.UNKNOWN
+    entries = project_data.get(collection_name)
+    if entries is None or entries == []:
+        return FlagOutcome.FAILED
+    if not isinstance(entries, list):
+        return FlagOutcome.UNKNOWN
+
+    has_unknown = False
+    for entry in entries:
+        if not isinstance(entry, dict):
+            has_unknown = True
+            continue
+        if (
+            _outcome_for_value(entry.get(field_name), present=field_name in entry)
+            is FlagOutcome.PASSED
+        ):
+            return FlagOutcome.PASSED
+        if field_name not in entry or not isinstance(entry.get(field_name), str):
+            has_unknown = True
+    return FlagOutcome.UNKNOWN if has_unknown else FlagOutcome.FAILED
+
+
+def _publication_outcome(project_data: dict) -> FlagOutcome:
+    """Classify publication evidence while distinguishing malformed references."""
+    if "references" not in project_data:
+        return FlagOutcome.UNKNOWN
+    references = project_data.get("references")
+    if references is None or references == []:
+        return FlagOutcome.FAILED
+    if not isinstance(references, list):
+        return FlagOutcome.UNKNOWN
+
+    has_unknown = False
+    for reference in references:
+        if not isinstance(reference, dict) or "pubmedID" not in reference:
+            has_unknown = True
+            continue
+        value = reference["pubmedID"]
+        if isinstance(value, bool):
+            has_unknown = True
+            continue
+        if isinstance(value, int):
+            if value > 0:
+                return FlagOutcome.PASSED
+            continue
+        if isinstance(value, str) and value.strip().isascii() and value.strip().isdecimal():
+            if int(value.strip()) > 0:
+                return FlagOutcome.PASSED
+            continue
+        has_unknown = True
+    return FlagOutcome.UNKNOWN if has_unknown else FlagOutcome.FAILED
+
+
+def _quant_metadata_outcome(project_data: dict) -> FlagOutcome:
+    """Classify quantification-method metadata with an explicit unknown state."""
+    if "quantificationMethods" not in project_data:
+        return FlagOutcome.UNKNOWN
+    methods = project_data.get("quantificationMethods")
+    if methods is None or methods == []:
+        return FlagOutcome.FAILED
     if not isinstance(methods, list):
-        return False
-    return any(
-        isinstance(method, dict)
-        and any(
-            isinstance(value := method.get(field), str) and bool(value.strip())
+        return FlagOutcome.UNKNOWN
+
+    has_unknown = False
+    for method in methods:
+        if not isinstance(method, dict):
+            has_unknown = True
+            continue
+        if any(
+            isinstance(method.get(field), str) and bool(method[field].strip())
             for field in ("name", "accession")
-        )
-        for method in methods
-    )
+        ):
+            return FlagOutcome.PASSED
+        if not all(
+            field in method and isinstance(method[field], str) for field in ("name", "accession")
+        ):
+            has_unknown = True
+    return FlagOutcome.UNKNOWN if has_unknown else FlagOutcome.FAILED
+
+
+def _outcome_from_presence(passed: bool, uncertain: bool = False) -> FlagOutcome:
+    """Return a flag outcome from positive and indeterminate evidence checks."""
+    if passed:
+        return FlagOutcome.PASSED
+    return FlagOutcome.UNKNOWN if uncertain else FlagOutcome.FAILED
+
+
+def _failed(value: FlagOutcome) -> bool:
+    """Return whether an outcome is a confirmed failed gate."""
+    return value is FlagOutcome.FAILED
+
+
+def _unknown_count(values: dict[str, FlagOutcome]) -> int:
+    """Count unknown evidence outcomes in the complete flag mapping."""
+    return sum(values[name] is FlagOutcome.UNKNOWN for name in _FLAG_FIELDS)
 
 
 def _is_psi_result(filename: str) -> bool:
@@ -95,9 +214,8 @@ def _is_psi_result(filename: str) -> bool:
 class AuditResult:
     """One audit row, ready for :func:`pxaudit.db.insert_audit` via ``asdict()``.
 
-    Boolean flags map directly to the ``audit`` table columns.  The DB layer
-    stores them as SQLite integers (0/1); Python ``bool`` is a subclass of
-    ``int`` so no explicit conversion is needed.
+    Evidence flags map directly to the ``audit`` table columns. The DB layer
+    stores their :class:`FlagOutcome` values as SQLite text.
 
     Field names mirror ``pxaudit.db._AUDIT_COLS`` so the result can be passed
     through ``asdict()`` to the database layer.
@@ -107,23 +225,24 @@ class AuditResult:
     accession: str
     tier: str
     # Metadata flags
-    has_title: bool = False
-    has_organism: bool = False
-    has_organism_id: bool = False
-    has_instrument: bool = False
-    has_result_files: bool = False
+    has_title: FlagOutcome = FlagOutcome.UNKNOWN
+    has_organism: FlagOutcome = FlagOutcome.UNKNOWN
+    has_organism_id: FlagOutcome = FlagOutcome.UNKNOWN
+    has_instrument: FlagOutcome = FlagOutcome.UNKNOWN
+    has_result_files: FlagOutcome = FlagOutcome.UNKNOWN
     # File-level flags
-    has_psi_results: bool = False
-    has_open_spectra: bool = False  # FileClass.PEAK found
-    has_organism_part: bool = False  # meaningful organism-part name present
-    has_publication: bool = False  # pubmedID present, non-null, != 0
-    has_tabular_quant: bool = False
-    has_quant_metadata: bool = False
+    has_psi_results: FlagOutcome = FlagOutcome.UNKNOWN
+    has_open_spectra: FlagOutcome = FlagOutcome.UNKNOWN  # FileClass.PEAK found
+    has_organism_part: FlagOutcome = FlagOutcome.UNKNOWN  # meaningful organism-part name present
+    has_publication: FlagOutcome = FlagOutcome.UNKNOWN  # positive PubMed ID linked
+    has_tabular_quant: FlagOutcome = FlagOutcome.UNKNOWN
+    has_quant_metadata: FlagOutcome = FlagOutcome.UNKNOWN
     # Legacy flags
-    has_sdrf: bool = False
-    has_mztab: bool = False
+    has_sdrf: FlagOutcome = FlagOutcome.UNKNOWN
+    has_mztab: FlagOutcome = FlagOutcome.UNKNOWN
     files_fetch_failed: bool = False
     is_unverifiable: bool = False
+    ambiguity_count: int = 0
     tier_logic_version: str = _TIER_LOGIC_VERSION
     quant_tier: str = "No Quant"
 
@@ -140,7 +259,7 @@ def compute_audit(
     *,
     files_fetch_failed: bool = False,
 ) -> AuditResult:
-    """Compute tier and Boolean audit flags for a single PRIDE accession.
+    """Compute tier and three-valued audit flags for a single PRIDE accession.
 
     Parameters
     ----------
@@ -152,11 +271,9 @@ def compute_audit(
         Raw JSON list from ``GET /projects/{accession}/files``.
         Pass ``[]`` when the endpoint returned no files.
     files_fetch_failed:
-        ``True`` to interpret the input as a historical failed files fetch.
-        All file-based flags are set to ``False``, so the tier cannot exceed
-        ``Raw`` and remains ``None`` when mandatory metadata is absent.
-        Current CLI audits do not compute or persist an audit when the files
-        response is unavailable and no stale response can be used.
+        ``True`` to interpret the input as an unavailable files fetch. File-based
+        flags become ``unknown``. Current CLI audits do not compute or persist an
+        audit when the files response is unavailable and no stale response can be used.
 
     Returns
     -------
@@ -174,90 +291,127 @@ def compute_audit(
     # 2.  Non-PRIDE short-circuit
     # ------------------------------------------------------------------
     if not accession.upper().startswith(_PRIDE_PREFIX):
+        unknown_flags = {name: FlagOutcome.UNKNOWN for name in _FLAG_FIELDS}
         return AuditResult(
             accession=accession,
             tier="Unverifiable",
-            has_title=False,
-            has_organism=False,
-            has_organism_id=False,
-            has_instrument=False,
-            has_result_files=False,
-            has_sdrf=False,
-            has_mztab=False,
+            **unknown_flags,
             files_fetch_failed=files_fetch_failed,
             is_unverifiable=True,
+            ambiguity_count=len(_FLAG_FIELDS),
             quant_tier="Unverifiable",
         )
 
     # ------------------------------------------------------------------
     # 3.  Normalise inputs
     # ------------------------------------------------------------------
-    project_data = project_data or {}
-    files_data = files_data or []
+    project_data = project_data if isinstance(project_data, dict) else {}
 
     # ------------------------------------------------------------------
     # 4.  Project-level flags
     # ------------------------------------------------------------------
-    has_title = _nonblank_text(project_data.get("title"))
+    has_title = _outcome_for_value(project_data.get("title"), present="title" in project_data)
+    has_organism = _first_entry_outcome(project_data, "organisms", "name")
+    has_organism_id = _first_entry_outcome(project_data, "organisms", "accession")
+    has_instrument = _first_entry_outcome(project_data, "instruments", "name")
+    has_organism_part = _named_collection_outcome(project_data, "organismParts", "name")
+    has_quant_metadata = _quant_metadata_outcome(project_data)
+    has_publication = _publication_outcome(project_data)
 
-    organisms: list[dict] = project_data.get("organisms") or []
-    has_organism = bool(organisms and _nonblank_text(organisms[0].get("name")))
-    has_organism_id = bool(organisms and _nonblank_text(organisms[0].get("accession")))
-
-    instruments: list[dict] = project_data.get("instruments") or []
-    has_instrument = bool(instruments and _nonblank_text(instruments[0].get("name")))
-
-    submission_type: str = project_data.get("submissionType") or ""
-
-    organism_parts: list = project_data.get("organismParts") or []
-    references: list = project_data.get("references") or []
-    quant_methods: object = project_data.get("quantificationMethods") or []
-
-    has_organism_part = any(
-        isinstance(part, dict) and _nonblank_text(part.get("name")) for part in organism_parts
+    submission_type_value = project_data.get("submissionType")
+    submission_type = (
+        submission_type_value.strip().upper() if isinstance(submission_type_value, str) else None
     )
-    has_quant_metadata = _has_cv_quant_method(quant_methods)
-    has_publication = any(_safe_pubmed_id(r.get("pubmedID")) != 0 for r in references)
 
     # ------------------------------------------------------------------
     # 5.  File-level flags
     # ------------------------------------------------------------------
-    has_psi_results = False
-    has_open_spectra = False
-    has_tabular_quant = False
+    has_psi_results = FlagOutcome.UNKNOWN
+    has_open_spectra = FlagOutcome.UNKNOWN
+    has_tabular_quant = FlagOutcome.UNKNOWN
 
-    if files_fetch_failed or not files_data:
-        has_result_files = False
-        has_sdrf = False
-        has_mztab = False
+    if files_fetch_failed:
+        has_result_files = FlagOutcome.UNKNOWN
+        has_sdrf = FlagOutcome.UNKNOWN
+        has_mztab = FlagOutcome.UNKNOWN
+    elif files_data is None or not isinstance(files_data, list):
+        has_result_files = FlagOutcome.UNKNOWN
+        has_psi_results = FlagOutcome.UNKNOWN
+        has_open_spectra = FlagOutcome.UNKNOWN
+        has_tabular_quant = FlagOutcome.UNKNOWN
+        has_sdrf = FlagOutcome.UNKNOWN
+        has_mztab = FlagOutcome.UNKNOWN
+    elif not files_data:
+        has_result_files = FlagOutcome.FAILED
+        has_psi_results = FlagOutcome.FAILED
+        has_open_spectra = FlagOutcome.FAILED
+        has_tabular_quant = FlagOutcome.FAILED
+        has_sdrf = FlagOutcome.FAILED
+        has_mztab = FlagOutcome.FAILED
     else:
-        file_names = [f.get("fileName") or "" for f in files_data]
-        file_classes: set[FileClass] = {
-            _classifier.classify(
-                f.get("fileName") or "",
-                (f.get("fileCategory") or {}).get("value"),
-            )
-            for f in files_data
-        }
+        file_names: list[str] = []
+        uncertain_filename = False
+        uncertain_file = False
+        file_classes: set[FileClass] = set()
+        for file_data in files_data:
+            if not isinstance(file_data, dict):
+                uncertain_file = True
+                uncertain_filename = True
+                continue
+            raw_filename = file_data.get("fileName")
+            if isinstance(raw_filename, str):
+                filename = raw_filename
+                if not filename.strip():
+                    uncertain_filename = True
+            else:
+                filename = ""
+                uncertain_filename = True
+            file_names.append(filename)
+            raw_category = file_data.get("fileCategory")
+            if raw_category is None:
+                category = None
+            elif isinstance(raw_category, dict) and (
+                raw_category.get("value") is None or isinstance(raw_category.get("value"), str)
+            ):
+                category = raw_category.get("value")
+            else:
+                category = None
+                uncertain_file = True
+            file_classes.add(_classifier.classify(filename, category))
 
-        has_psi_results = any(_is_psi_result(filename) for filename in file_names)
-        has_open_spectra = FileClass.PEAK in file_classes
-        has_tabular_quant = FileClass.QUANT_MATRIX in file_classes
+        uncertain_file = uncertain_file or uncertain_filename
+        has_psi_results = _outcome_from_presence(
+            any(_is_psi_result(filename) for filename in file_names), uncertain_filename
+        )
+        has_open_spectra = _outcome_from_presence(FileClass.PEAK in file_classes, uncertain_file)
+        has_tabular_quant = _outcome_from_presence(
+            FileClass.QUANT_MATRIX in file_classes, uncertain_filename
+        )
 
-        # Submission-type-aware result gate:
-        # PARTIAL submissions may lack PSI-standard result files; a processed table
-        # (QUANT_MATRIX or ID_LIST) is accepted as evidence of processed results.
-        if submission_type.upper() == "PARTIAL":
+        # PARTIAL submissions may use tool-native tables as processed evidence.
+        if submission_type == "PARTIAL":
             result_gate: frozenset[FileClass] = frozenset(
                 {FileClass.RESULT, FileClass.SEARCH, FileClass.QUANT_MATRIX, FileClass.ID_LIST}
             )
+            result_uncertain = uncertain_file
+        elif submission_type == "COMPLETE":
+            result_gate = frozenset({FileClass.RESULT, FileClass.SEARCH})
+            result_uncertain = uncertain_file
         else:
             result_gate = frozenset({FileClass.RESULT, FileClass.SEARCH})
-        has_result_files = bool(file_classes & result_gate)
+            result_uncertain = uncertain_file or bool(
+                file_classes & frozenset({FileClass.QUANT_MATRIX, FileClass.ID_LIST})
+            )
+        has_result_files = _outcome_from_presence(
+            bool(file_classes & result_gate), result_uncertain
+        )
 
-        has_sdrf = FileClass.SDRF in file_classes
-        has_mztab = any(
-            strip_compression(filename).casefold().endswith(".mztab") for filename in file_names
+        has_sdrf = _outcome_from_presence(FileClass.SDRF in file_classes, uncertain_filename)
+        has_mztab = _outcome_from_presence(
+            any(
+                strip_compression(filename).casefold().endswith(".mztab") for filename in file_names
+            ),
+            uncertain_filename,
         )
 
     # ------------------------------------------------------------------
@@ -271,17 +425,33 @@ def compute_audit(
     #   Gold     : SDRF present but missing open spectra OR organism part annotation
     #   Platinum : open spectra + organism part present but no linked publication
     #   Diamond  : all FAIR criteria met
-    if not has_title or not has_organism or not has_instrument:
+    flag_values: dict[str, FlagOutcome] = {
+        "has_title": has_title,
+        "has_organism": has_organism,
+        "has_organism_id": has_organism_id,
+        "has_instrument": has_instrument,
+        "has_result_files": has_result_files,
+        "has_psi_results": has_psi_results,
+        "has_open_spectra": has_open_spectra,
+        "has_organism_part": has_organism_part,
+        "has_publication": has_publication,
+        "has_tabular_quant": has_tabular_quant,
+        "has_quant_metadata": has_quant_metadata,
+        "has_sdrf": has_sdrf,
+        "has_mztab": has_mztab,
+    }
+
+    if any(_failed(flag_values[name]) for name in ("has_title", "has_organism", "has_instrument")):
         tier = "None"
-    elif not has_result_files:
+    elif _failed(has_result_files):
         tier = "Raw"
-    elif not has_psi_results:
+    elif _failed(has_psi_results):
         tier = "Bronze"
-    elif not has_sdrf:
+    elif _failed(has_sdrf):
         tier = "Silver"
-    elif not has_open_spectra or not has_organism_part:
+    elif _failed(has_open_spectra) or _failed(has_organism_part):
         tier = "Gold"
-    elif not has_publication:
+    elif _failed(has_publication):
         tier = "Platinum"
     else:
         tier = "Diamond"
@@ -289,13 +459,11 @@ def compute_audit(
     # ------------------------------------------------------------------
     # 7.  Quant-tier derivation (secondary scoring axis)
     # ------------------------------------------------------------------
-    if not has_psi_results and not has_tabular_quant:
+    if _failed(has_psi_results) and _failed(has_tabular_quant):
         quant_tier = "No Quant"
-    elif not has_psi_results and has_tabular_quant:
-        quant_tier = "Partial"  # tool-native tables only, no PSI standard
-    elif has_psi_results and not has_tabular_quant:
-        quant_tier = "Partial"  # PSI IDs present but no quant table
-    elif not has_quant_metadata:
+    elif _failed(has_psi_results) or _failed(has_tabular_quant):
+        quant_tier = "Partial"
+    elif _failed(has_quant_metadata):
         quant_tier = "Quant-Ready"  # PSI + quant table but metadata missing
     else:
         quant_tier = "Quant-Complete"  # PSI + quant table + metadata
@@ -318,11 +486,13 @@ def compute_audit(
         has_mztab=has_mztab,
         files_fetch_failed=files_fetch_failed,
         is_unverifiable=False,
+        ambiguity_count=_unknown_count(flag_values),
         quant_tier=quant_tier,
     )
 
 
 __all__ = [
     "AuditResult",
+    "FlagOutcome",
     "compute_audit",
 ]

@@ -66,7 +66,7 @@ from pxaudit.pride_client import (
     fetch_files,
     fetch_project,
 )
-from pxaudit.tier_engine import AuditResult, compute_audit
+from pxaudit.tier_engine import AuditResult, FlagOutcome, compute_audit
 
 __all__ = [
     "main",
@@ -329,8 +329,14 @@ def _print_result(result: AuditResult, study: dict, file_count: int) -> None:
     tick = "\u2714"
     cross = "\u2718"
 
-    def flag(val: bool) -> str:
-        return tick if val else cross
+    def flag(value: FlagOutcome | object) -> str:
+        """Render passed, failed, and unknown evidence without color."""
+        raw = getattr(value, "value", value)
+        if raw in (FlagOutcome.PASSED.value, True, 1):
+            return tick
+        if raw in (FlagOutcome.FAILED.value, False, 0):
+            return cross
+        return "?"
 
     click.echo(f"Accession : {result.accession}")
     click.echo(f"Tier      : {result.tier}")
@@ -607,6 +613,7 @@ _EXPORT_COLS = (
     "has_mztab",
     "files_fetch_failed",
     "is_unverifiable",
+    "ambiguity_count",
     "tier_logic_version",
 )
 
@@ -614,6 +621,15 @@ _EXPORT_COLS = (
 def _result_to_row(result: AuditResult) -> dict:
     """Convert an ``AuditResult`` to a flat dict for export."""
     d = asdict(result)
+    for column in _EXPORT_COLS:
+        if column.startswith("has_"):
+            value = d[column]
+            if isinstance(value, FlagOutcome):
+                d[column] = value.value
+            elif isinstance(value, bool) or isinstance(value, int) and value in (0, 1):
+                d[column] = "passed" if value else "failed"
+            else:
+                d[column] = "unknown"
     return {c: d[c] for c in _EXPORT_COLS}
 
 
