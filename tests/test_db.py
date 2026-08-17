@@ -656,6 +656,11 @@ def test_migrate_audit_v3_preserves_tiers_and_maps_all_legacy_states() -> None:
             f"INSERT INTO audit ({columns}) VALUES "
             "('PXD000002', 'Raw', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 'v2.1', 'No Quant')"
         )
+        legacy.execute(
+            f"INSERT INTO audit ({columns}) VALUES "
+            "('PXD000003', 'Bronze', 'unexpected', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, "
+            "0, 0, 0, 0, 'v2.1', 'No Quant')"
+        )
 
         migrate_audit_v3(legacy)
         first_snapshot = legacy.execute("SELECT * FROM audit ORDER BY accession").fetchall()
@@ -683,6 +688,11 @@ def test_migrate_audit_v3_preserves_tiers_and_maps_all_legacy_states() -> None:
     assert first_snapshot[0][17:20] == (2, "v3.0", "Quant-Complete")
     assert first_snapshot[1][1] == "Raw"
     assert first_snapshot[1][17:20] == (0, "v3.0", "No Quant")
+    assert first_snapshot[0][15:17] == (0, 0)
+    assert first_snapshot[1][15:17] == (1, 0)
+    assert first_snapshot[2][1] == "Bronze"
+    assert first_snapshot[2][2] == "unknown"
+    assert first_snapshot[2][17:20] == (1, "v3.0", "No Quant")
     assert all(schema[column] == "TEXT" for column in _FLAG_COLUMNS())
 
 
@@ -697,6 +707,27 @@ def test_migrate_audit_v3_is_safe_for_empty_and_caller_owned_transactions() -> N
         conn.commit()
 
 
+def test_migrate_audit_v3_rebuild_stays_in_caller_transaction() -> None:
+    """A caller-owned v2 rebuild remains visible until commit and rolls back cleanly."""
+    with closing(sqlite3.connect(":memory:", isolation_level=None)) as conn:
+        conn.execute(
+            "CREATE TABLE audit (accession TEXT PRIMARY KEY, tier TEXT, has_title INTEGER)"
+        )
+        conn.execute("INSERT INTO audit VALUES ('PXD000001', 'Gold', 1)")
+        conn.execute("BEGIN")
+
+        migrate_audit_v3(conn)
+
+        assert conn.in_transaction
+        assert conn.execute(
+            "SELECT accession, tier, has_title, ambiguity_count, tier_logic_version FROM audit"
+        ).fetchone() == ("PXD000001", "Gold", "passed", 12, "v3.0")
+        conn.rollback()
+        assert conn.execute("SELECT * FROM audit").fetchone() == ("PXD000001", "Gold", 1)
+        columns = {row[1]: row[2] for row in conn.execute("PRAGMA table_info(audit)")}
+        assert columns["has_title"] == "INTEGER"
+
+
 def test_migrate_audit_v3_rolls_back_when_backup_name_is_occupied() -> None:
     """A pre-existing migration backup name aborts without changing the legacy table."""
     with closing(sqlite3.connect(":memory:", isolation_level=None)) as conn:
@@ -704,10 +735,15 @@ def test_migrate_audit_v3_rolls_back_when_backup_name_is_occupied() -> None:
             "CREATE TABLE audit (accession TEXT PRIMARY KEY, tier TEXT, has_title INTEGER)"
         )
         conn.execute("CREATE TABLE audit__v2_migration (marker INTEGER)")
+        before_columns = conn.execute("PRAGMA table_info(audit)").fetchall()
         with pytest.raises(sqlite3.OperationalError, match="temporary table"):
             migrate_audit_v3(conn)
         assert conn.in_transaction is False
+        assert conn.execute("PRAGMA table_info(audit)").fetchall() == before_columns
         assert conn.execute("SELECT name FROM sqlite_master WHERE name = 'audit'").fetchone()
+        assert conn.execute(
+            "SELECT name FROM sqlite_master WHERE name = 'audit__v2_migration'"
+        ).fetchone()
         conn.execute("BEGIN")
         with pytest.raises(sqlite3.OperationalError, match="temporary table"):
             migrate_audit_v3(conn)

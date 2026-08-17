@@ -728,7 +728,7 @@ class TestEdgeCases:
             )
             conn.execute(
                 "CREATE TABLE audit (accession TEXT PRIMARY KEY, tier TEXT, quant_tier TEXT, "
-                + ", ".join(f"{column} TEXT" for column in columns)
+                + ", ".join(f"{column} INTEGER" for column in columns)
                 + ", files_fetch_failed INTEGER, is_unverifiable INTEGER, ambiguity_count INTEGER, tier_logic_version TEXT)"
             )
             conn.executemany(
@@ -751,6 +751,7 @@ class TestEdgeCases:
                 f"INSERT INTO audit ({prefix}{suffix}) VALUES ({placeholders})",
                 ("PXD000002", "Diamond", "Partial", *current_flags, 0, 0, 1, "v3.0"),
             )
+            conn.commit()
 
         conn = report_mod._open_db(database)
         try:
@@ -762,6 +763,10 @@ class TestEdgeCases:
         assert title_gap["present"] == 1
         assert title_gap["unknown"] == 1
         assert title_gap["missing"] == 0
+        publication_gap = next(item for item in gaps if item["field"] == "publication")
+        assert publication_gap["present"] == 1
+        assert publication_gap["missing"] == 1
+        assert publication_gap["unknown"] == 0
         assert any(
             'badge badge-unknown">?</span>' in flag for flag in rows[0]["flags"] + rows[1]["flags"]
         )

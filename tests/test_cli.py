@@ -867,7 +867,9 @@ def test_unknown_flags_render_as_question_marks_and_export_as_strings(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Unknown evidence remains visible in terminal output and machine exports."""
-    result = AuditResult(accession="PXD000001", tier="Diamond", has_title=FlagOutcome.UNKNOWN)
+    result = AuditResult(
+        accession="PXD000001", tier="Diamond", has_title=FlagOutcome.UNKNOWN, ambiguity_count=13
+    )
 
     _print_result(result, {"title": "Ambiguous study"}, 0)
     assert "? Title" in capsys.readouterr().out
@@ -875,7 +877,7 @@ def test_unknown_flags_render_as_question_marks_and_export_as_strings(
     row = _result_to_row(result)
     assert row["has_title"] == "unknown"
     assert all(row[column] == "unknown" for column in row if column.startswith("has_"))
-    assert "ambiguity_count" in row
+    assert row["ambiguity_count"] == 13
 
     legacy = AuditResult(
         accession="PXD000002",
