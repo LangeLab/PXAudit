@@ -8,6 +8,7 @@ import sqlite3
 import sys
 import threading
 from collections.abc import Callable, Mapping
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -721,7 +722,7 @@ class TestEdgeCases:
         """Read-only reports normalize legacy integers beside current text outcomes."""
         database = tmp_path / "mixed.db"
         columns = [column for _, column in report_mod._FLAG_COLUMNS]
-        with sqlite3.connect(database) as conn:
+        with closing(sqlite3.connect(database)) as conn:
             conn.execute(
                 "CREATE TABLE study (accession TEXT PRIMARY KEY, title TEXT, organism TEXT, instrument TEXT)"
             )
@@ -750,7 +751,6 @@ class TestEdgeCases:
                 f"INSERT INTO audit ({prefix}{suffix}) VALUES ({placeholders})",
                 ("PXD000002", "Diamond", "Partial", *current_flags, 0, 0, 1, "v3.0"),
             )
-            conn.close()
 
         conn = report_mod._open_db(database)
         try:
