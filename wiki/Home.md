@@ -94,7 +94,7 @@ Default and `--refresh` runs may use compatible stale cache entries after a live
 
 ## Current scope
 
-PXAudit 0.5.2 queries PRIDE for canonical `PXD` accessions. Safe identifiers from MassIVE, jPOST, iProX, and other repositories are accepted for storage but score `Unverifiable`; PXAudit does not pretend that PRIDE supplied evidence for them.
+PXAudit 0.5.3 queries PRIDE for canonical `PXD` accessions. Safe identifiers from MassIVE, jPOST, iProX, and other repositories are accepted for storage but score `Unverifiable`; PXAudit does not pretend that PRIDE supplied evidence for them.
 
 ## Find the detail you need
 

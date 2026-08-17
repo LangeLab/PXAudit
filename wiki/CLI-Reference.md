@@ -1,6 +1,6 @@
 # CLI Reference
 
-This page documents the PXAudit 0.5.2 command line. Examples use `pxaudit` for readability. From a source checkout, run the same commands with `uv run`, for example `uv run pxaudit check PXD000001`.
+This page documents the PXAudit 0.5.3 command line. Examples use `pxaudit` for readability. From a source checkout, run the same commands with `uv run`, for example `uv run pxaudit check PXD000001`.
 
 ## Command map
 
@@ -110,7 +110,7 @@ pxaudit check PXD000001 --db ~/audits/pride.db
 
 Input is trimmed and canonicalized to uppercase. A PRIDE accession must be `PXD` followed by at least six digits. Other identifiers may contain 3 to 64 ASCII letters, digits, dots, underscores, or hyphens, must begin and end with an alphanumeric character, and may not contain `..`. Safe non-PRIDE identifiers are stored as `Unverifiable` because PXAudit does not query their repositories.
 
-On success, `check` prints the two tiers and their evidence, then replaces the study, file inventory, and audit rows in one transaction. `study.fetched_at` records the project-response retrieval time. A cache hit preserves the original time instead of replacing it with the audit time.
+On success, `check` prints the two tiers and their evidence, then replaces the study, file inventory, and audit rows in one transaction. Evidence uses `✔` for `passed`, `✘` for `failed`, and `?` for `unknown`. `study.fetched_at` records the project-response retrieval time. A cache hit preserves the original time instead of replacing it with the audit time.
 
 ### Cache modes
 
@@ -172,6 +172,8 @@ printf 'PXD000001\nPXD004683\n' | \
 ```
 
 The inter-accession delay runs only after network use. Fresh two-endpoint cache hits do not incur it. On a TTY, the command displays a progress bar unless quiet mode is active. Interruption exits with code 130 after preserving completed database rows and attempting any requested partial export.
+
+TSV, CSV, and JSON exports serialize every `has_*` outcome as the string `passed`, `failed`, or `unknown`. They also include `ambiguity_count` and `tier_logic_version`; consumers must not parse evidence columns as integer booleans.
 
 Export paths are not silently replaced. Without `--overwrite`, an existing file is an input error. Symbolic links and non-file targets are refused.
 
@@ -235,7 +237,7 @@ pxaudit report --db cohort.db --output report/ --overwrite
 
 The input database is opened read-only. A missing path is not created and migrations do not run. The output directory may already exist; without `--overwrite`, only an existing `report.html` causes refusal. Symbolic-link and non-file report targets are refused.
 
-The report contains summary counts, qualitative and quantitative distributions, confirmed metadata gaps, the ten largest organism and instrument cohorts, tier definitions, and a quality-sorted accession table. NULL evidence is shown as unknown rather than present or absent. The accession table is static, not searchable or interactively sortable.
+The report contains summary counts, qualitative and quantitative distributions, confirmed metadata gaps, separate unknown counts, the ten largest organism and instrument cohorts, tier definitions, and a quality-sorted accession table. It normalizes both v2 integer flags and v3 text outcomes in read-only mode. Unknown evidence is shown as `?`, not present or absent. The accession table is static, not searchable or interactively sortable.
 
 ## Cache maintenance
 

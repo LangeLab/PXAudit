@@ -21,7 +21,7 @@ Canonical PRIDE identifiers must be `PXD` followed by at least six digits. Input
 pxaudit check pxd000001  # audited as PXD000001
 ```
 
-Safe 3 to 64 character identifiers from other repositories are accepted, including MassIVE (`MSV`), jPOST (`JPST`), and iProX (`IPX`) identifiers. They score `Unverifiable` because PXAudit 0.5.2 only queries PRIDE.
+Safe 3 to 64 character identifiers from other repositories are accepted, including MassIVE (`MSV`), jPOST (`JPST`), and iProX (`IPX`) identifiers. They score `Unverifiable` because PXAudit 0.5.3 only queries PRIDE.
 
 Embedded whitespace, path separators, query or fragment markers, control characters, `..`, unsafe endpoints, and malformed PXD-like values are rejected.
 
@@ -150,7 +150,11 @@ pxaudit check PXD000001 --db ~/audits/pride.db
 pxaudit manifest PXD000001 --db ~/audits/pride.db
 ```
 
-See [[Database Schema]] for tables, NULL semantics, migrations, and SQL examples.
+See [[Database Schema]] for tables, three-valued evidence semantics, migrations, and SQL examples.
+
+## What does `unknown` mean in an audit?
+
+An evidence flag is `unknown` when the API omits the field, returns a malformed or unusable structure, or the evidence endpoint is unavailable. An explicit empty value or verified empty file list is `failed`; usable evidence is `passed`. Unknown outcomes do not lower a tier, but they increase `ambiguity_count` and appear as `?` in terminal output and reports.
 
 ## Why does `manifest` say no files were found?
 
@@ -187,7 +191,7 @@ Find rows written by an older scoring contract:
 SELECT accession
 FROM audit
 WHERE tier_logic_version IS NULL
-   OR tier_logic_version != 'v2.1';
+   OR tier_logic_version != 'v3.0';
 ```
 
 Re-run each accession. Add `--refresh` when current live responses are required:
@@ -205,7 +209,7 @@ The repository includes `CITATION.cff`, which GitHub and reference managers can 
   author   = {Ergin, Enes Kemal},
   title    = {{PXAudit}: A command-line tool for auditing {Proteomics Exchange} study metadata},
   year     = {2026},
-  version  = {0.5.2},
+  version  = {0.5.3},
   url      = {https://github.com/LangeLab/PXAudit},
   license  = {MIT},
 }

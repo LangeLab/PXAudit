@@ -11,20 +11,20 @@ Both scores come from stored evidence flags. They are deterministic for the same
 
 ## FAIR ladder
 
-The ladder stops at the first unmet gate.
+The ladder stops at the first confirmed failed gate.
 
 > [!IMPORTANT]
-> Later evidence cannot skip an earlier requirement. A linked publication cannot move a dataset past Silver when SDRF is missing.
+> Later evidence cannot skip an earlier failed requirement. An `unknown` outcome does not block progression, but it increments `ambiguity_count` so an apparently high tier is visibly uncertain.
 
-| Tier | Gate that stops the ladder | What would move it higher |
-| --- | --- | --- |
-| **None** | Title, organism name, or instrument name is missing | Complete all three mandatory metadata fields |
-| **Raw** | No processed result evidence is present | Deposit a recognized result or search output |
-| **Bronze** | Processed results exist, but no supported PSI identification result is present | Deposit mzIdentML or proteomics mzTab |
-| **Silver** | PSI identification results exist, but no SDRF is present | Deposit an SDRF experimental-design table |
-| **Gold** | SDRF exists, but open spectra or organism-part annotation is missing | Provide both open spectra and organism part |
-| **Platinum** | Open spectra and organism part exist, but no positive integer PubMed identifier is linked | Link a publication |
-| **Diamond** | Every FAIR gate is satisfied | Highest qualitative tier |
+| Tier         | Gate that stops the ladder                                                                | What would move it higher                    |
+| ------------ | ----------------------------------------------------------------------------------------- | -------------------------------------------- |
+| **None**     | Title, organism name, or instrument name is missing                                       | Complete all three mandatory metadata fields |
+| **Raw**      | No processed result evidence is present                                                   | Deposit a recognized result or search output |
+| **Bronze**   | Processed results exist, but no supported PSI identification result is present            | Deposit mzIdentML or proteomics mzTab        |
+| **Silver**   | PSI identification results exist, but no SDRF is present                                  | Deposit an SDRF experimental-design table    |
+| **Gold**     | SDRF exists, but open spectra or organism-part annotation is missing                      | Provide both open spectra and organism part  |
+| **Platinum** | Open spectra and organism part exist, but no positive integer PubMed identifier is linked | Link a publication                           |
+| **Diamond**  | Every FAIR gate is satisfied                                                              | Highest qualitative tier                     |
 
 `has_organism_id` is recorded for analysis but does not gate the ladder. A missing taxonomy accession can coexist with a tier above None when the organism name is present.
 
@@ -40,7 +40,17 @@ These examples isolate the gate that determines each score. Other evidence may b
 - **Platinum:** PSI results, SDRF, open spectra, and organism part are present, but `pubmedID` is absent or `0`.
 - **Diamond:** PSI results, SDRF, open spectra, organism part, and a positive integer PubMed ID are all present.
 
-The ladder is versioned. PXAudit 0.5.2 writes `tier_logic_version = "v2.1"` into every new audit row. Re-auditing an accession applies current logic to current or cached evidence; it does not silently rewrite older rows in bulk.
+The ladder is versioned. PXAudit 0.5.3 writes `tier_logic_version = "v3.0"` into every new audit row. Re-auditing an accession applies current logic to current or cached evidence; it does not silently rewrite older rows in bulk.
+
+## Three-valued outcomes
+
+Every `has_*` evidence flag is `passed`, `failed`, or `unknown`:
+
+- `passed`: usable evidence is present;
+- `failed`: an explicit empty value or verified empty file response confirms absence; and
+- `unknown`: the field is absent, malformed, structurally unusable, or unavailable.
+
+Only `failed` outcomes block the qualitative or quant tier ladder. Unknown outcomes are optimistic by design and are counted in `audit.ambiguity_count`. The outcome itself does not retain a reason code, so users should inspect the source payload or provenance when an ambiguity matters.
 
 ## Quantification-readiness tier
 
@@ -50,15 +60,17 @@ The quant tier is independent of the FAIR ladder. It uses three flags:
 - `has_tabular_quant`: a recognized abundance summary or matrix is present; and
 - `has_quant_metadata`: at least one quantification-method CV entry has a nonblank name or accession.
 
-| PSI results | Quant table | Usable method metadata | Quant Tier |
-| --- | --- | --- | --- |
-| No | No | Either | **No Quant** |
-| Yes | No | Either | **Partial** |
-| No | Yes | Either | **Partial** |
-| Yes | Yes | No | **Quant-Ready** |
-| Yes | Yes | Yes | **Quant-Complete** |
+| PSI results | Quant table | Usable method metadata | Quant Tier         |
+| ----------- | ----------- | ---------------------- | ------------------ |
+| No          | No          | Either                 | **No Quant**       |
+| Yes         | No          | Either                 | **Partial**        |
+| No          | Yes         | Either                 | **Partial**        |
+| Yes         | Yes         | No                     | **Quant-Ready**    |
+| Yes         | Yes         | Yes                    | **Quant-Complete** |
 
 Method metadata alone does not raise the score. It matters only when both PSI identification evidence and a recognized abundance table are present.
+
+The quant tier uses the same confirmed-failure rule. For example, if PSI evidence is `unknown` and the quant table is `failed`, the result is `Partial`; if both are `unknown`, neither `No Quant` nor `Partial` is asserted. An unavailable files response produces unknown file outcomes in the pure tier engine, while the CLI refuses to persist a newly incomplete audit.
 
 Non-PRIDE identifiers receive `Unverifiable` on both axes because PXAudit has not queried the repository that owns them.
 
@@ -71,7 +83,7 @@ Non-PRIDE identifiers receive `Unverifiable` on both axes because PXAudit has no
 - **`has_organism_id`:** the first organism entry has a nonblank taxonomy accession. This flag is recorded but does not gate the tier.
 - **`has_instrument`:** the first instrument entry has a nonblank name. This is mandatory for leaving None.
 - **`has_organism_part`:** at least one `organismParts` entry has a nonblank name. An empty mapping does not establish biological context.
-- **`has_publication`:** at least one reference has a positive integer `pubmedID`. Missing, malformed, empty, boolean, zero, and negative values are negative.
+- **`has_publication`:** `passed` when at least one reference has a positive integer `pubmedID`; `failed` for an explicit empty or zero-only reference set; `unknown` for malformed or unusable references.
 - **`has_quant_metadata`:** at least one quantification method has a nonblank CV name or accession. A non-empty container alone is not enough.
 
 ### File evidence
@@ -100,18 +112,18 @@ Compression wrappers such as `.gz`, `.zip`, `.bz2`, `.7z`, and `.xz` are removed
 
 ### Classification examples
 
-| Filename and PRIDE category | File class | Audit meaning |
-| --- | --- | --- |
-| `run.raw`, `RAW` | RAW | Vendor raw spectra only |
-| `run.mzML.gz`, `OTHER` | PEAK | Open spectra present |
-| `results.mzid`, `OTHER` | RESULT | Processed and PSI identification evidence |
-| `results.csv`, `RESULT` | RESULT | Processed evidence, but not PSI identification evidence |
-| `mascot.dat`, `SEARCH` | SEARCH | Processed proprietary search output |
-| `proteinGroups.txt`, `OTHER` | QUANT_MATRIX | Recognized abundance summary |
-| `evidence.txt`, `OTHER` | ID_LIST | Identification list, not a quant summary |
-| `study.sdrf.tsv.gz`, `OTHER` | SDRF | Experimental-design evidence |
-| `quality.mzQC`, `RESULT` | OTHER | Quality-control file, not identification evidence |
-| `metabolomics.mztab-m`, `RESULT` | OTHER | mzTab-M is outside the proteomics PSI gate |
+| Filename and PRIDE category      | File class   | Audit meaning                                           |
+| -------------------------------- | ------------ | ------------------------------------------------------- |
+| `run.raw`, `RAW`                 | RAW          | Vendor raw spectra only                                 |
+| `run.mzML.gz`, `OTHER`           | PEAK         | Open spectra present                                    |
+| `results.mzid`, `OTHER`          | RESULT       | Processed and PSI identification evidence               |
+| `results.csv`, `RESULT`          | RESULT       | Processed evidence, but not PSI identification evidence |
+| `mascot.dat`, `SEARCH`           | SEARCH       | Processed proprietary search output                     |
+| `proteinGroups.txt`, `OTHER`     | QUANT_MATRIX | Recognized abundance summary                            |
+| `evidence.txt`, `OTHER`          | ID_LIST      | Identification list, not a quant summary                |
+| `study.sdrf.tsv.gz`, `OTHER`     | SDRF         | Experimental-design evidence                            |
+| `quality.mzQC`, `RESULT`         | OTHER        | Quality-control file, not identification evidence       |
+| `metabolomics.mztab-m`, `RESULT` | OTHER        | mzTab-M is outside the proteomics PSI gate              |
 
 > [!NOTE]
 > The broad RESULT class and the narrow `has_psi_results` flag deliberately answer different questions. The first asks whether processed output exists. The second asks whether a supported PSI proteomics identification format exists.
@@ -133,24 +145,24 @@ This relaxation does not change the meaning of the other flags:
 
 The explicit live integration suite checked these PRIDE profiles on 2026-07-18 UTC. They are examples of observed live behavior on that date, not permanent promises about mutable remote records.
 
-| Accession | FAIR Tier | Quant Tier | Determining evidence |
-| --- | --- | --- | --- |
-| `PXD057701` | Raw | No Quant | No processed result evidence |
-| `PXD002244` | Bronze | No Quant | Processed evidence without supported PSI results |
-| `PXD000001` | Silver | Partial | PSI results present, SDRF absent |
-| `PXD073444` | Platinum | Partial | All gates through organism part, publication absent |
-| `PXD075811` | Platinum | Partial | All gates through organism part, publication absent |
-| `PXD004683` | Diamond | Partial | Every FAIR gate present; no recognized quant matrix |
+| Accession   | FAIR Tier | Quant Tier | Determining evidence                                |
+| ----------- | --------- | ---------- | --------------------------------------------------- |
+| `PXD057701` | Raw       | No Quant   | No processed result evidence                        |
+| `PXD002244` | Bronze    | No Quant   | Processed evidence without supported PSI results    |
+| `PXD000001` | Silver    | Partial    | PSI results present, SDRF absent                    |
+| `PXD073444` | Platinum  | Partial    | All gates through organism part, publication absent |
+| `PXD075811` | Platinum  | Partial    | All gates through organism part, publication absent |
+| `PXD004683` | Diamond   | Partial    | Every FAIR gate present; no recognized quant matrix |
 
 ## Re-score older rows
 
 Find rows produced by another tier-logic version:
 
 ```sql
-SELECT accession, tier, tier_logic_version
+SELECT accession, tier, tier_logic_version, ambiguity_count
 FROM audit
 WHERE tier_logic_version IS NULL
-   OR tier_logic_version != 'v2.1';
+   OR tier_logic_version != 'v3.0';
 ```
 
 Then audit those accessions again. Use `--refresh` when the re-score should use current PRIDE responses rather than fresh cached responses:
