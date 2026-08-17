@@ -180,15 +180,6 @@ _EXTENSION_TO_CLASS: dict[str, FileClass] = {
     ".sdrf": FileClass.SDRF,
 }
 
-
-# Built-in compound extensions: derived dynamically from _EXTENSION_TO_CLASS.
-# Keys containing a dot after the first character (e.g. ".pep.xml", ".sky.zip")
-# must be checked before single-part extensions to avoid premature matching.
-_COMPOUND_EXTS: tuple[str, ...] = tuple(
-    sorted((key for key in _EXTENSION_TO_CLASS if "." in key[1:]), key=len, reverse=True)
-)
-
-
 # ---------------------------------------------------------------------------
 # Exact-stem registry (MaxQuant fixed-output filenames)
 # ---------------------------------------------------------------------------

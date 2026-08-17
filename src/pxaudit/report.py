@@ -909,23 +909,20 @@ def _render_tier_chart(df: pd.DataFrame) -> str:
         df_plot = df[df["count"] > 0].copy()
         total = _series_int_sum(df["count"])
 
-        if not df_plot.empty:
-            colors = [_TIER_COLORS.get(t, "#999999") for t in df_plot["tier"]]
-            wedges, texts, autotexts = ax_pie.pie(
-                df_plot["count"],
-                labels=None,
-                colors=colors,
-                autopct=lambda pct: f"{pct:.1f}%" if pct > 3 else "",
-                pctdistance=0.75,
-                startangle=90,
-                wedgeprops=dict(width=0.4, edgecolor="white", linewidth=2),
-            )
-            for autotext in autotexts:
-                autotext.set_fontsize(9)
-                autotext.set_fontweight("bold")
-                autotext.set_color("white")
-        else:
-            pass  # pragma: no cover: outer empty check prevents this branch
+        colors = [_TIER_COLORS.get(t, "#999999") for t in df_plot["tier"]]
+        wedges, texts, autotexts = ax_pie.pie(
+            df_plot["count"],
+            labels=None,
+            colors=colors,
+            autopct=lambda pct: f"{pct:.1f}%" if pct > 3 else "",
+            pctdistance=0.75,
+            startangle=90,
+            wedgeprops=dict(width=0.4, edgecolor="white", linewidth=2),
+        )
+        for autotext in autotexts:
+            autotext.set_fontsize(9)
+            autotext.set_fontweight("bold")
+            autotext.set_color("white")
 
         # Center text.
         ax_pie.text(
@@ -997,23 +994,20 @@ def _render_quant_tier_chart(df: pd.DataFrame) -> str:
         df_plot = df[df["count"] > 0].copy()
         total = _series_int_sum(df["count"])
 
-        if not df_plot.empty:
-            colors = [_QUANT_TIER_COLORS.get(t, "#999999") for t in df_plot["quant_tier"]]
-            wedges, texts, autotexts = ax_pie.pie(
-                df_plot["count"],
-                labels=None,
-                colors=colors,
-                autopct=lambda pct: f"{pct:.1f}%" if pct > 3 else "",
-                pctdistance=0.75,
-                startangle=90,
-                wedgeprops=dict(width=0.4, edgecolor="white", linewidth=2),
-            )
-            for autotext in autotexts:
-                autotext.set_fontsize(9)
-                autotext.set_fontweight("bold")
-                autotext.set_color("white")
-        else:
-            pass  # pragma: no cover: outer empty check prevents this branch
+        colors = [_QUANT_TIER_COLORS.get(t, "#999999") for t in df_plot["quant_tier"]]
+        wedges, texts, autotexts = ax_pie.pie(
+            df_plot["count"],
+            labels=None,
+            colors=colors,
+            autopct=lambda pct: f"{pct:.1f}%" if pct > 3 else "",
+            pctdistance=0.75,
+            startangle=90,
+            wedgeprops=dict(width=0.4, edgecolor="white", linewidth=2),
+        )
+        for autotext in autotexts:
+            autotext.set_fontsize(9)
+            autotext.set_fontweight("bold")
+            autotext.set_color("white")
 
         # Center text.
         ax_pie.text(
@@ -1072,7 +1066,7 @@ def _render_quant_tier_chart(df: pd.DataFrame) -> str:
 def _render_gap_chart(gap_items: list[dict]) -> str:
     """Render the metadata gaps horizontal bar chart."""
     if not gap_items:
-        return '<p class="placeholder">No data available.</p>'  # pragma: no cover
+        return '<p class="placeholder">No data available.</p>'
 
     def _build() -> typing.Any:
         import matplotlib.pyplot as plt

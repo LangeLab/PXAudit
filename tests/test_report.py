@@ -620,6 +620,12 @@ class TestEmptyDataFrames:
 
         assert html == '<p class="placeholder">No data available.</p>'
 
+    def test_empty_gap_chart_renders_placeholder(self) -> None:
+        """An empty metadata-gap collection renders an explicit no-data placeholder."""
+        html = report_mod._render_gap_chart([])
+
+        assert html == '<p class="placeholder">No data available.</p>'
+
 
 class TestEdgeCases:
     """Security, resource, and malformed-input report contracts."""

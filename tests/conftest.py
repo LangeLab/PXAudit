@@ -105,16 +105,3 @@ def pride_files_psi_sdrf() -> list[dict[str, object]]:
             "fileChecksum": "789ghi012jkl",
         },
     ]
-
-
-@pytest.fixture()
-def pride_files_silver() -> list[dict[str, object]]:
-    """A result file without SDRF produces Silver when metadata is complete."""
-    return [
-        {
-            "fileName": "results.mzid",
-            "fileCategory": {"@type": "CvParam", "value": "RESULT"},
-            "fileSizeBytes": 1024,
-            "publicFileLocations": [],
-        }
-    ]
