@@ -26,7 +26,7 @@ from click.testing import CliRunner
 
 from pxaudit.cli import _extract_files_df, main
 from pxaudit.pride_client import fetch_files, fetch_project
-from pxaudit.tier_engine import AuditResult, compute_audit
+from pxaudit.tier_engine import AuditResult, FlagOutcome, compute_audit
 
 pytestmark = pytest.mark.integration
 
@@ -172,7 +172,8 @@ def test_live_audit_profiles_match_reviewed_baseline(case: _LiveCase) -> None:
     observed_evidence = {field: getattr(result, field) for field in expected_evidence}
     tier_changed = (result.tier, result.quant_tier) != (case.tier, case.quant_tier)
     evidence_changed = any(
-        observed_evidence[field] is not expected for field, expected in case.evidence
+        observed_evidence[field].value != ("passed" if expected else "failed")
+        for field, expected in case.evidence
     )
     _LIVE_OBSERVATIONS.append(
         {
@@ -189,7 +190,7 @@ def test_live_audit_profiles_match_reviewed_baseline(case: _LiveCase) -> None:
     )
 
     assert (result.tier, result.quant_tier) == (case.tier, case.quant_tier)
-    assert all(type(value) is bool for value in observed_evidence.values())
+    assert all(isinstance(value, FlagOutcome) for value in observed_evidence.values())
     assert not evidence_changed
 
 

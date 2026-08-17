@@ -13,6 +13,7 @@ import pytest
 from pxaudit.db import (
     TransactionBatch,
     _configure_journal_mode,
+    _flag_text,
     create_tables,
     get_or_create_db,
     insert_audit,
@@ -20,6 +21,7 @@ from pxaudit.db import (
     insert_study,
     insert_study_files,
     migrate_audit_v2,
+    migrate_audit_v3,
     migrate_study_files_v2,
     migrate_study_v2,
     open_existing_db,
@@ -41,22 +43,23 @@ _STUDY_DATA: dict = {
 _AUDIT_DATA: dict = {
     "accession": "PXD000001",
     "tier": "Gold",
-    "has_title": 1,
-    "has_organism": 1,
-    "has_organism_id": 1,
-    "has_instrument": 1,
-    "has_result_files": 1,
-    "has_psi_results": 1,
-    "has_open_spectra": 1,
-    "has_organism_part": 1,
-    "has_publication": 0,
-    "has_tabular_quant": 0,
-    "has_quant_metadata": 0,
-    "has_sdrf": 1,
-    "has_mztab": 0,
+    "has_title": "passed",
+    "has_organism": "passed",
+    "has_organism_id": "passed",
+    "has_instrument": "passed",
+    "has_result_files": "passed",
+    "has_psi_results": "passed",
+    "has_open_spectra": "passed",
+    "has_organism_part": "passed",
+    "has_publication": "failed",
+    "has_tabular_quant": "failed",
+    "has_quant_metadata": "failed",
+    "has_sdrf": "passed",
+    "has_mztab": "failed",
     "files_fetch_failed": 0,
     "is_unverifiable": 0,
-    "tier_logic_version": "v2.1",
+    "ambiguity_count": 0,
+    "tier_logic_version": "v3.0",
     "quant_tier": "No Quant",
 }
 
@@ -377,6 +380,23 @@ def test_insert_audit_roundtrip(conn: sqlite3.Connection) -> None:
     assert row == tuple(_AUDIT_DATA.values())
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (True, "passed"),
+        (False, "failed"),
+        (1, "passed"),
+        (0, "failed"),
+        ("1", "passed"),
+        ("0", "failed"),
+        ("other", "unknown"),
+    ],
+)
+def test_flag_text_normalizes_legacy_and_invalid_values(value: object, expected: str) -> None:
+    """Persistence normalization accepts v2 forms and rejects unknown values safely."""
+    assert _flag_text(value) == expected
+
+
 def test_insert_audit_upsert_overwrites(conn: sqlite3.Connection) -> None:
     """A repeated audit replaces the row instead of duplicating it."""
     insert_study(conn, _STUDY_DATA)
@@ -602,6 +622,116 @@ def test_migrate_audit_v2_is_complete_and_idempotent() -> None:
     assert expected_audit <= audit_columns
     assert "submission_type" in study_columns
     assert stored == ("PXD000001", "Legacy", "Gold")
+
+
+def test_migrate_audit_v3_preserves_tiers_and_maps_all_legacy_states() -> None:
+    """v2 integer evidence becomes text outcomes without changing tier assignments."""
+    with closing(sqlite3.connect(":memory:", isolation_level=None)) as legacy:
+        legacy.execute("""
+            CREATE TABLE audit (
+                accession TEXT NOT NULL PRIMARY KEY,
+                tier TEXT,
+                has_title INTEGER, has_organism INTEGER, has_organism_id INTEGER,
+                has_instrument INTEGER, has_result_files INTEGER,
+                has_psi_results INTEGER, has_open_spectra INTEGER,
+                has_organism_part INTEGER, has_publication INTEGER,
+                has_tabular_quant INTEGER, has_quant_metadata INTEGER,
+                has_sdrf INTEGER, has_mztab INTEGER,
+                files_fetch_failed INTEGER, is_unverifiable INTEGER,
+                tier_logic_version TEXT, quant_tier TEXT
+            )
+        """)
+        columns = (
+            "accession, tier, has_title, has_organism, has_organism_id, has_instrument, "
+            "has_result_files, has_psi_results, has_open_spectra, has_organism_part, "
+            "has_publication, has_tabular_quant, has_quant_metadata, has_sdrf, has_mztab, "
+            "files_fetch_failed, is_unverifiable, tier_logic_version, quant_tier"
+        )
+        legacy.execute(
+            f"INSERT INTO audit ({columns}) VALUES "
+            "('PXD000001', 'Diamond', 1, 1, NULL, 1, 1, 1, 1, 1, 1, 0, NULL, "
+            "1, 1, 0, 0, 'v2.1', 'Quant-Complete')"
+        )
+        legacy.execute(
+            f"INSERT INTO audit ({columns}) VALUES "
+            "('PXD000002', 'Raw', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 'v2.1', 'No Quant')"
+        )
+
+        migrate_audit_v3(legacy)
+        first_snapshot = legacy.execute("SELECT * FROM audit ORDER BY accession").fetchall()
+        migrate_audit_v3(legacy)
+        second_snapshot = legacy.execute("SELECT * FROM audit ORDER BY accession").fetchall()
+        schema = {row[1]: row[2].upper() for row in legacy.execute("PRAGMA table_info(audit)")}
+
+    assert first_snapshot == second_snapshot
+    assert first_snapshot[0][1] == "Diamond"
+    assert first_snapshot[0][2:15] == (
+        "passed",
+        "passed",
+        "unknown",
+        "passed",
+        "passed",
+        "passed",
+        "passed",
+        "passed",
+        "passed",
+        "failed",
+        "unknown",
+        "passed",
+        "passed",
+    )
+    assert first_snapshot[0][17:20] == (2, "v3.0", "Quant-Complete")
+    assert first_snapshot[1][1] == "Raw"
+    assert first_snapshot[1][17:20] == (0, "v3.0", "No Quant")
+    assert all(schema[column] == "TEXT" for column in _FLAG_COLUMNS())
+
+
+def test_migrate_audit_v3_is_safe_for_empty_and_caller_owned_transactions() -> None:
+    """The v3 migration is a no-op without an audit table and joins active transactions."""
+    with closing(sqlite3.connect(":memory:", isolation_level=None)) as conn:
+        migrate_audit_v3(conn)
+        create_tables(conn)
+        conn.execute("BEGIN")
+        migrate_audit_v3(conn)
+        assert conn.in_transaction
+        conn.commit()
+
+
+def test_migrate_audit_v3_rolls_back_when_backup_name_is_occupied() -> None:
+    """A pre-existing migration backup name aborts without changing the legacy table."""
+    with closing(sqlite3.connect(":memory:", isolation_level=None)) as conn:
+        conn.execute(
+            "CREATE TABLE audit (accession TEXT PRIMARY KEY, tier TEXT, has_title INTEGER)"
+        )
+        conn.execute("CREATE TABLE audit__v2_migration (marker INTEGER)")
+        with pytest.raises(sqlite3.OperationalError, match="temporary table"):
+            migrate_audit_v3(conn)
+        assert conn.in_transaction is False
+        assert conn.execute("SELECT name FROM sqlite_master WHERE name = 'audit'").fetchone()
+        conn.execute("BEGIN")
+        with pytest.raises(sqlite3.OperationalError, match="temporary table"):
+            migrate_audit_v3(conn)
+        assert conn.in_transaction
+        conn.rollback()
+
+
+def _FLAG_COLUMNS() -> tuple[str, ...]:
+    """Return the evidence columns asserted by the v3 migration test."""
+    return (
+        "has_title",
+        "has_organism",
+        "has_organism_id",
+        "has_instrument",
+        "has_result_files",
+        "has_psi_results",
+        "has_open_spectra",
+        "has_organism_part",
+        "has_publication",
+        "has_tabular_quant",
+        "has_quant_metadata",
+        "has_sdrf",
+        "has_mztab",
+    )
 
 
 def test_migrate_study_v2_is_complete_and_idempotent() -> None:

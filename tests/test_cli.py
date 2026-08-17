@@ -28,13 +28,14 @@ from pxaudit.cli import (
     _export_tsv,
     _extract_files_df,
     _extract_study,
+    _print_result,
     _read_accessions,
     _result_to_row,
     _write_export,
     main,
 )
 from pxaudit.pride_client import PrideAPIError
-from pxaudit.tier_engine import AuditResult
+from pxaudit.tier_engine import AuditResult, FlagOutcome
 
 _GOLD_PROJECT: dict = {
     "title": "TMT spikes study",
@@ -860,6 +861,31 @@ def test_result_to_row_keys_match_export_cols() -> None:
     assert list(row.keys()) == list(_EXPORT_COLS)
     assert row["accession"] == "PXD000001"
     assert row["tier"] == "Diamond"
+
+
+def test_unknown_flags_render_as_question_marks_and_export_as_strings(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Unknown evidence remains visible in terminal output and machine exports."""
+    result = AuditResult(accession="PXD000001", tier="Diamond", has_title=FlagOutcome.UNKNOWN)
+
+    _print_result(result, {"title": "Ambiguous study"}, 0)
+    assert "? Title" in capsys.readouterr().out
+
+    row = _result_to_row(result)
+    assert row["has_title"] == "unknown"
+    assert all(row[column] == "unknown" for column in row if column.startswith("has_"))
+    assert "ambiguity_count" in row
+
+    legacy = AuditResult(
+        accession="PXD000002",
+        tier="Gold",
+        has_title=True,  # type: ignore[arg-type]
+    )
+    legacy.has_organism = 2  # type: ignore[assignment]
+    legacy_row = _result_to_row(legacy)
+    assert legacy_row["has_title"] == "passed"
+    assert legacy_row["has_organism"] == "unknown"
 
 
 def test_export_tsv(tmp_path: Path) -> None:

@@ -11,7 +11,7 @@ import pytest
 
 from pxaudit.cli import _extract_files_df, _extract_study
 from pxaudit.file_classifier import FileClass, FileTypeClassifier
-from pxaudit.tier_engine import compute_audit
+from pxaudit.tier_engine import FlagOutcome, compute_audit
 
 pytestmark = pytest.mark.recorded
 
@@ -96,22 +96,23 @@ def test_recorded_payload_preserves_exact_audit_result(
     assert asdict(result) == {
         "accession": "PXD000001",
         "tier": "Silver",
-        "has_title": True,
-        "has_organism": True,
-        "has_organism_id": True,
-        "has_instrument": True,
-        "has_result_files": True,
-        "has_psi_results": True,
-        "has_open_spectra": True,
-        "has_organism_part": False,
-        "has_publication": True,
-        "has_tabular_quant": False,
-        "has_quant_metadata": False,
-        "has_sdrf": False,
-        "has_mztab": True,
+        "has_title": FlagOutcome.PASSED,
+        "has_organism": FlagOutcome.PASSED,
+        "has_organism_id": FlagOutcome.PASSED,
+        "has_instrument": FlagOutcome.PASSED,
+        "has_result_files": FlagOutcome.PASSED,
+        "has_psi_results": FlagOutcome.PASSED,
+        "has_open_spectra": FlagOutcome.PASSED,
+        "has_organism_part": FlagOutcome.FAILED,
+        "has_publication": FlagOutcome.PASSED,
+        "has_tabular_quant": FlagOutcome.FAILED,
+        "has_quant_metadata": FlagOutcome.FAILED,
+        "has_sdrf": FlagOutcome.FAILED,
+        "has_mztab": FlagOutcome.PASSED,
         "files_fetch_failed": False,
         "is_unverifiable": False,
-        "tier_logic_version": "v2.1",
+        "ambiguity_count": 0,
+        "tier_logic_version": "v3.0",
         "quant_tier": "Partial",
     }
 

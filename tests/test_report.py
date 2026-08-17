@@ -623,6 +623,24 @@ class TestEmptyDataFrames:
 class TestEdgeCases:
     """Security, resource, and malformed-input report contracts."""
 
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            (True, "passed"),
+            (False, "failed"),
+            (1, "passed"),
+            (0, "failed"),
+            ("1", "passed"),
+            ("0", "failed"),
+            ("unknown", "unknown"),
+            ("other", "unknown"),
+            (object(), "unknown"),
+        ],
+    )
+    def test_normalize_flag_accepts_v2_and_v3_values(self, value: object, expected: str) -> None:
+        """Read-only report normalization handles both schemas and invalid values."""
+        assert report_mod._normalize_flag(value) == expected
+
     def test_collection_failure_closes_database(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -696,6 +714,61 @@ class TestEdgeCases:
         assert '<span class="badge badge-unknown">?</span>' in html
         assert '<span class="badge badge-ok">+</span>' in html
         assert '<span class="badge badge-missing">-</span>' in html
+
+    def test_mixed_v2_and_v3_flag_values_are_read_without_migration(
+        self, tmp_path: Path, output_dir: Path
+    ) -> None:
+        """Read-only reports normalize legacy integers beside current text outcomes."""
+        database = tmp_path / "mixed.db"
+        columns = [column for _, column in report_mod._FLAG_COLUMNS]
+        with sqlite3.connect(database) as conn:
+            conn.execute(
+                "CREATE TABLE study (accession TEXT PRIMARY KEY, title TEXT, organism TEXT, instrument TEXT)"
+            )
+            conn.execute(
+                "CREATE TABLE audit (accession TEXT PRIMARY KEY, tier TEXT, quant_tier TEXT, "
+                + ", ".join(f"{column} TEXT" for column in columns)
+                + ", files_fetch_failed INTEGER, is_unverifiable INTEGER, ambiguity_count INTEGER, tier_logic_version TEXT)"
+            )
+            conn.executemany(
+                "INSERT INTO study VALUES (?, ?, ?, ?)",
+                [
+                    ("PXD000001", "Legacy", "Human", "Orbitrap"),
+                    ("PXD000002", "Current", "Human", "Orbitrap"),
+                ],
+            )
+            legacy_flags = [1 if column != "has_publication" else 0 for column in columns]
+            current_flags = ["unknown" if column == "has_title" else "passed" for column in columns]
+            prefix = "accession, tier, quant_tier, " + ", ".join(columns)
+            suffix = ", files_fetch_failed, is_unverifiable, ambiguity_count, tier_logic_version"
+            placeholders = ", ".join("?" for _ in range(3 + len(columns) + 4))
+            conn.execute(
+                f"INSERT INTO audit ({prefix}{suffix}) VALUES ({placeholders})",
+                ("PXD000001", "Gold", "Partial", *legacy_flags, 0, 0, 0, "v2.1"),
+            )
+            conn.execute(
+                f"INSERT INTO audit ({prefix}{suffix}) VALUES ({placeholders})",
+                ("PXD000002", "Diamond", "Partial", *current_flags, 0, 0, 1, "v3.0"),
+            )
+            conn.close()
+
+        conn = report_mod._open_db(database)
+        try:
+            rows = report_mod._query_all_accessions(conn)
+            gaps = report_mod._query_metadata_gaps(conn)
+        finally:
+            conn.close()
+        title_gap = next(item for item in gaps if item["field"] == "title")
+        assert title_gap["present"] == 1
+        assert title_gap["unknown"] == 1
+        assert title_gap["missing"] == 0
+        assert any(
+            'badge badge-unknown">?</span>' in flag for flag in rows[0]["flags"] + rows[1]["flags"]
+        )
+        assert [row["accession"] for row in rows] == ["PXD000002", "PXD000001"]
+
+        output = generate_report(database, output_dir, "Mixed")
+        assert "Unknown" in output.read_text(encoding="utf-8")
 
     def test_every_missing_flag_reports_one_hundred_percent(self, all_gaps_db: Path) -> None:
         """Every confirmed missing flag reports 100 percent without unknowns or presents."""

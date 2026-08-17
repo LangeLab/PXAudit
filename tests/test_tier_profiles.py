@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from pxaudit.tier_engine import AuditResult, compute_audit
+from pxaudit.tier_engine import AuditResult, FlagOutcome, compute_audit
 
 
 @dataclass(frozen=True)
@@ -82,22 +82,27 @@ def _expected(
     has_mztab: bool = False,
 ) -> AuditResult:
     """Build an exact expected result with complete mandatory metadata by default."""
+
+    def outcome(value: bool) -> FlagOutcome:
+        """Convert a binary profile expectation to a v3 outcome."""
+        return FlagOutcome.PASSED if value else FlagOutcome.FAILED
+
     return AuditResult(
         accession=accession,
         tier=tier,
-        has_title=True,
-        has_organism=True,
-        has_organism_id=True,
-        has_instrument=has_instrument,
-        has_result_files=has_result_files,
-        has_psi_results=has_psi_results,
-        has_open_spectra=has_open_spectra,
-        has_organism_part=has_organism_part,
-        has_publication=has_publication,
-        has_tabular_quant=has_tabular_quant,
-        has_quant_metadata=has_quant_metadata,
-        has_sdrf=has_sdrf,
-        has_mztab=has_mztab,
+        has_title=outcome(True),
+        has_organism=outcome(True),
+        has_organism_id=outcome(True),
+        has_instrument=outcome(has_instrument),
+        has_result_files=outcome(has_result_files),
+        has_psi_results=outcome(has_psi_results),
+        has_open_spectra=outcome(has_open_spectra),
+        has_organism_part=outcome(has_organism_part),
+        has_publication=outcome(has_publication),
+        has_tabular_quant=outcome(has_tabular_quant),
+        has_quant_metadata=outcome(has_quant_metadata),
+        has_sdrf=outcome(has_sdrf),
+        has_mztab=outcome(has_mztab),
         quant_tier=quant_tier,
     )
 

@@ -86,22 +86,23 @@ def test_pipeline_success_persists_aligned_record(
     assert _read_row(database, "audit") == {
         "accession": "PXD000001",
         "tier": "Gold",
-        "has_title": 1,
-        "has_organism": 1,
-        "has_organism_id": 1,
-        "has_instrument": 1,
-        "has_result_files": 1,
-        "has_psi_results": 1,
-        "has_open_spectra": 0,
-        "has_organism_part": 0,
-        "has_publication": 0,
-        "has_tabular_quant": 0,
-        "has_quant_metadata": 0,
-        "has_sdrf": 1,
-        "has_mztab": 1,
+        "has_title": "passed",
+        "has_organism": "passed",
+        "has_organism_id": "passed",
+        "has_instrument": "passed",
+        "has_result_files": "passed",
+        "has_psi_results": "passed",
+        "has_open_spectra": "failed",
+        "has_organism_part": "unknown",
+        "has_publication": "unknown",
+        "has_tabular_quant": "failed",
+        "has_quant_metadata": "unknown",
+        "has_sdrf": "passed",
+        "has_mztab": "passed",
         "files_fetch_failed": 0,
         "is_unverifiable": 0,
-        "tier_logic_version": "v2.1",
+        "ambiguity_count": 3,
+        "tier_logic_version": "v3.0",
         "quant_tier": "Partial",
     }
     study = _read_row(database, "study")
@@ -182,9 +183,9 @@ def test_pipeline_category_only_result_does_not_persist_psi_evidence(
     assert result.exit_code == 0
     audit = _read_row(database, "audit")
     assert audit["tier"] == "Bronze"
-    assert audit["has_result_files"] == 1
-    assert audit["has_psi_results"] == 0
-    assert audit["tier_logic_version"] == "v2.1"
+    assert audit["has_result_files"] == "passed"
+    assert audit["has_psi_results"] == "failed"
+    assert audit["tier_logic_version"] == "v3.0"
     assert _read_file_names(database) == ["results.csv"]
 
 
