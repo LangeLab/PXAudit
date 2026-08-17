@@ -33,6 +33,7 @@ def _write_pages(wiki_dir: Path, **pages: str) -> None:
 
 
 def test_current_wiki_passes() -> None:
+    """The tracked wiki pages pass structural and link validation."""
     result = _run_validator(_REPOSITORY_ROOT / "wiki")
 
     assert result.returncode == 0, result.stderr
@@ -40,6 +41,7 @@ def test_current_wiki_passes() -> None:
 
 
 def test_resolves_px_audit_space_and_hyphen_page_names(tmp_path: Path) -> None:
+    """Wiki links resolve page names with spaces and hyphens."""
     _write_pages(
         tmp_path / "wiki",
         **{
@@ -54,6 +56,7 @@ def test_resolves_px_audit_space_and_hyphen_page_names(tmp_path: Path) -> None:
 
 
 def test_rejects_missing_page_and_repository_style_link(tmp_path: Path) -> None:
+    """Missing pages and repository-style Markdown links are rejected."""
     _write_pages(tmp_path / "wiki", **{"Home.md": "See [[Missing]] and [Home](Home.md).\n"})
 
     result = _run_validator(tmp_path / "wiki")
@@ -65,6 +68,7 @@ def test_rejects_missing_page_and_repository_style_link(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("bad_entry", ["notes.txt", "assets"])
 def test_rejects_non_markdown_top_level_entries(tmp_path: Path, bad_entry: str) -> None:
+    """Non-Markdown top-level wiki entries are rejected with a clear error."""
     wiki_dir = tmp_path / "wiki"
     _write_pages(wiki_dir)
     bad_path = wiki_dir / bad_entry

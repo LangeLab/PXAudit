@@ -2842,6 +2842,8 @@ def test_bulk_quiet_disables_tqdm(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
     called: list[bool] = []
 
     class Boom:
+        """Fail the test if quiet mode constructs a progress wrapper."""
+
         def __init__(self, *a: object, **k: object) -> None:
             called.append(True)
 
@@ -3273,6 +3275,8 @@ def test_bulk_tqdm_used_when_tty(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     called: list[bool] = []
 
     class FakeTqdm:
+        """Minimal iterable progress-wrapper substitute for TTY output tests."""
+
         def __init__(self, iterable: Iterable[object], **kwargs: object) -> None:
             called.append(True)
             self._it = list(iterable)

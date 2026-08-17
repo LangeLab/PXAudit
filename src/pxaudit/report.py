@@ -770,16 +770,6 @@ def _render_html(data: ReportData, db_path: Path, title: str) -> str:
     env = jinja2.Environment(autoescape=True, undefined=jinja2.StrictUndefined)
     template = env.from_string(_HTML_TEMPLATE)
 
-    tier_dist = data.tier_dist
-    tier_with_data = tier_dist[tier_dist["count"] > 0]
-    best_tier = tier_with_data.iloc[0]["tier"] if not tier_with_data.empty else "-"
-    worst_tier = tier_with_data.iloc[-1]["tier"] if not tier_with_data.empty else "-"
-
-    quant_dist = data.quant_dist
-    quant_with_data = quant_dist[quant_dist["count"] > 0]
-    best_quant = quant_with_data.iloc[0]["quant_tier"] if not quant_with_data.empty else "-"
-    worst_quant = quant_with_data.iloc[-1]["quant_tier"] if not quant_with_data.empty else "-"
-
     context = {
         "title": title,
         "generated_at": _now_iso(),
@@ -788,10 +778,6 @@ def _render_html(data: ReportData, db_path: Path, title: str) -> str:
         "total_count": data.total_count,
         "verifiable_count": data.verifiable_count,
         "unverifiable_count": data.unverifiable_count,
-        "best_tier": best_tier,
-        "worst_tier": worst_tier,
-        "best_quant": best_quant,
-        "worst_quant": worst_quant,
         "minimum_dataset_warning": data.total_count < 10,
         "large_table_warning": len(data.rows) > 100,
         "tier_chart": _render_tier_chart(data.tier_dist),
@@ -864,7 +850,7 @@ def _render_tier_chart(df: pd.DataFrame) -> str:
         total = _series_int_sum(df["count"])
 
         colors = [_TIER_COLORS.get(t, "#999999") for t in df_plot["tier"]]
-        wedges, texts, autotexts = ax_pie.pie(
+        _, _, autotexts = ax_pie.pie(
             df_plot["count"],
             labels=None,
             colors=colors,
@@ -944,7 +930,7 @@ def _render_quant_tier_chart(df: pd.DataFrame) -> str:
         total = _series_int_sum(df["count"])
 
         colors = [_QUANT_TIER_COLORS.get(t, "#999999") for t in df_plot["quant_tier"]]
-        wedges, texts, autotexts = ax_pie.pie(
+        _, _, autotexts = ax_pie.pie(
             df_plot["count"],
             labels=None,
             colors=colors,

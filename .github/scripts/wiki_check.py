@@ -163,6 +163,7 @@ def validate(wiki_dir: Path) -> list[str]:
 
 
 def main() -> int:
+    """Validate the requested wiki directory and return its process status."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("wiki_dir", nargs="?", type=Path, default=Path("wiki"))
     args = parser.parse_args()

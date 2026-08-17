@@ -173,7 +173,7 @@ def test_color_override_and_quiet_mode_control_new_styles(
     _output.configure(no_color=True, color=True)
     assert _output.style_tier("Gold") == "Gold"
 
-    _output.configure(quiet=True, color=True)
+    _output.configure(quiet=True, no_color=False, color=True)
     assert _output.flag_glyph("passed") == "✔"
     assert _output.style_tier("not-a-tier") == "not-a-tier"
 

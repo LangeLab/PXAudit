@@ -536,6 +536,8 @@ def test_wal_setup_falls_back_to_default_journal_mode_with_warning() -> None:
     """Unavailable WAL setup selects DELETE mode and emits a warning."""
 
     class FakeResult:
+        """Minimal SQLite result substitute exposing the required row."""
+
         def __init__(self, row: tuple[str]) -> None:
             self.row = row
 
@@ -543,6 +545,8 @@ def test_wal_setup_falls_back_to_default_journal_mode_with_warning() -> None:
             return self.row
 
     class FakeConnection:
+        """Connection substitute that rejects WAL and records SQL statements."""
+
         def __init__(self, fail_wal: bool = True) -> None:
             self.statements: list[str] = []
             self.fail_wal = fail_wal
@@ -578,6 +582,8 @@ def test_wal_fallback_failure_is_reported() -> None:
     """A database that rejects both journal modes raises a typed SQLite error."""
 
     class FailingConnection:
+        """Connection substitute that rejects every journal-mode statement."""
+
         def execute(self, _statement: str) -> None:
             raise sqlite3.OperationalError("journal mode denied")
 

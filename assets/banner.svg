@@ -32,13 +32,13 @@
      inkscape:window-maximized="1"
      inkscape:current-layer="svg24" />
   <!--
-    PXAudit banner — 240×240 square.
+    PXAudit banner: 240×240 square.
 
     Layout (top → bottom):
       20 px  top padding
       icon   100×100, horizontally centered at x=120  (translate 70,20)
       16 px  gap
-      dots   7 × r=3.5, 14 px center-to-center, representing FAIR tiers 1–7
+      dots   7 × r=3.5, 14 px center-to-center, representing FAIR tiers 1-7
       16 px  gap
       text   "pxaudit" wordmark, font-size=32, baseline y=175
 
@@ -61,8 +61,8 @@
   -->
   <!-- ── Wordmark ───────────────────────────────────────────────────────── -->
   <!--
-    "px"    bold, accent color  — brand prefix
-    "audit" medium, base color  — descriptive word
+    "px"    bold, accent color: brand prefix
+    "audit" medium, base color: descriptive word
     Baseline at y=175, font-size 32.  text-anchor=middle at x=120.
   -->
   <g
@@ -72,43 +72,43 @@
        transform="matrix(1.3811904,0,0,1.3811904,50.803491,5.097314)"
        id="g16">
       <!-- 7 triangular facets (top→bottom: T7 opaque emerald → T1 faded gray) -->
-      <!-- 1: Table (TL–TR–IC) — T7: fully opaque emerald -->
+      <!-- 1: Table (TL-TR-IC): T7: fully opaque emerald -->
       <polygon
          points="76,12 50,42 24,12 "
          fill="#059669"
          fill-opacity="1"
          id="polygon2" />
-      <!-- 2: Left crown (TL–L–IC) — T6: strong green -->
+      <!-- 2: Left crown (TL-L-IC): T6: strong green -->
       <polygon
          points="6,52 50,42 24,12 "
          fill="#3d9b50"
          fill-opacity="0.84"
          id="polygon3" />
-      <!-- 3: Right crown (TR–IC–R) — T5: medium green -->
+      <!-- 3: Right crown (TR-IC-R): T5: medium green -->
       <polygon
          points="50,42 94,52 76,12 "
          fill="#509d63"
          fill-opacity="0.68"
          id="polygon4" />
-      <!-- 4: Left upper pavilion (L–IC–IP) — T4: muted green -->
+      <!-- 4: Left upper pavilion (L-IC-IP): T4: muted green -->
       <polygon
          points="50,42 50,65 6,52 "
          fill="#639e76"
          fill-opacity="0.55"
          id="polygon5" />
-      <!-- 5: Right upper pavilion (IC–R–IP) — T3: light sage -->
+      <!-- 5: Right upper pavilion (IC-R-IP): T3: light sage -->
       <polygon
          points="94,52 50,65 50,42 "
          fill="#76a089"
          fill-opacity="0.42"
          id="polygon6" />
-      <!-- 6: Left lower pavilion (L–IP–B) — T2: gray-green -->
+      <!-- 6: Left lower pavilion (L-IP-B): T2: gray-green -->
       <polygon
          points="50,65 50,94 6,52 "
          fill="#89a19c"
          fill-opacity="0.3"
          id="polygon7" />
-      <!-- 7: Right lower pavilion (IP–R–B) — T1: gray, most faded -->
+      <!-- 7: Right lower pavilion (IP-R-B): T1: gray, most faded -->
       <polygon
          points="94,52 50,94 50,65 "
          fill="#9ca3af"
