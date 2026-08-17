@@ -18,7 +18,7 @@ from __future__ import annotations
 import sqlite3
 import warnings
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import pandas as pd
 
@@ -171,6 +171,26 @@ _INSERT_AUDIT = (
     "tier_logic_version, quant_tier) "
     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
+
+
+class SummaryGap(NamedTuple):
+    """Aggregated failed and unknown counts for one verifiable evidence field."""
+
+    field: str
+    failed: int
+    unknown: int
+
+
+class SummaryData(NamedTuple):
+    """Aggregate values used by the terminal cohort summary."""
+
+    total_count: int
+    verifiable_count: int
+    unverifiable_count: int
+    tier_logic_version: str
+    tier_counts: dict[str, int]
+    quant_counts: dict[str, int]
+    gaps: tuple[SummaryGap, ...]
 
 
 def _flag_text(value: Any) -> str:
@@ -342,6 +362,81 @@ def open_existing_db(path: str | Path) -> sqlite3.Connection:
     conn = sqlite3.connect(uri, uri=True)
     conn.execute("PRAGMA query_only = ON")
     return conn
+
+
+def _summary_group_counts(conn: sqlite3.Connection, column: str) -> dict[str, int]:
+    """Return grouped counts for a fixed audit column, normalizing empty values."""
+    rows = conn.execute(
+        f"SELECT {column}, COUNT(*) FROM audit GROUP BY {column}"  # noqa: S608
+    ).fetchall()
+    return {str(value) if value else "Unknown": int(count) for value, count in rows}
+
+
+def summarize_database(conn: sqlite3.Connection) -> SummaryData:
+    """Return aggregate audit counts without scanning study or file rows.
+
+    Parameters
+    ----------
+    conn:
+        Open SQLite connection with the current audit schema applied.
+
+    Returns
+    -------
+    SummaryData
+        Counts for the terminal summary, including the six largest verifiable evidence gaps.
+    """
+    total_count = int(conn.execute("SELECT COUNT(*) FROM audit").fetchone()[0])
+    unverifiable_count = int(
+        conn.execute("SELECT COUNT(*) FROM audit WHERE is_unverifiable = 1").fetchone()[0]
+    )
+    verifiable_count = total_count - unverifiable_count
+
+    versions = {
+        str(row[0])
+        for row in conn.execute(
+            "SELECT DISTINCT tier_logic_version FROM audit "
+            "WHERE tier_logic_version IS NOT NULL AND tier_logic_version != ''"
+        )
+    }
+    if len(versions) == 1:
+        tier_logic_version = next(iter(versions))
+    elif versions:
+        tier_logic_version = "mixed"
+    else:
+        tier_logic_version = "unknown"
+
+    gap_expressions = ", ".join(
+        expression
+        for column in _FLAG_COLS
+        for expression in (
+            f"SUM(CASE WHEN {column} = 'failed' THEN 1 ELSE 0 END)",
+            f"SUM(CASE WHEN COALESCE({column}, 'unknown') NOT IN ('passed', 'failed') "
+            "THEN 1 ELSE 0 END)",
+        )
+    )
+    gap_row = conn.execute(
+        "SELECT " + gap_expressions + " FROM audit WHERE is_unverifiable = 0"
+    ).fetchone()
+    assert gap_row is not None
+    gaps = [
+        SummaryGap(
+            field=column,
+            failed=int(gap_row[index * 2] or 0),
+            unknown=int(gap_row[index * 2 + 1] or 0),
+        )
+        for index, column in enumerate(_FLAG_COLS)
+    ]
+    gaps.sort(key=lambda gap: (-gap.failed, -gap.unknown, _FLAG_COLS.index(gap.field)))
+
+    return SummaryData(
+        total_count=total_count,
+        verifiable_count=verifiable_count,
+        unverifiable_count=unverifiable_count,
+        tier_logic_version=tier_logic_version,
+        tier_counts=_summary_group_counts(conn, "tier"),
+        quant_counts=_summary_group_counts(conn, "quant_tier"),
+        gaps=tuple(gaps[:6]),
+    )
 
 
 def insert_study(conn: sqlite3.Connection, data: dict) -> None:
@@ -614,9 +709,12 @@ def migrate_study_files_v2(conn: sqlite3.Connection) -> None:
 
 
 __all__ = [
+    "SummaryData",
+    "SummaryGap",
     "create_tables",
     "get_or_create_db",
     "open_existing_db",
+    "summarize_database",
     "insert_audit",
     "insert_audit_record",
     "TransactionBatch",

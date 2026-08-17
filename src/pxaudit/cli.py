@@ -9,6 +9,7 @@ report       Generate a self-contained HTML report from a populated database.
 config show  Print effective configuration with source tags.
 cache info   Summarize the local API cache.
 cache clear  Delete cached API responses.
+summary      Print aggregate cohort counts from SQLite.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ import tempfile
 import time
 import typing
 import uuid
-from contextlib import suppress
+from contextlib import closing, suppress
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -54,10 +55,12 @@ from pxaudit.config import (
     merge_config,
 )
 from pxaudit.db import (
+    SummaryData,
     TransactionBatch,
     get_or_create_db,
     insert_audit_record,
     open_existing_db,
+    summarize_database,
 )
 from pxaudit.pride_client import (
     PrideAPIError,
@@ -202,8 +205,14 @@ def main(
         click.echo("Error: --quiet and --verbose are mutually exclusive.", err=True)
         sys.exit(2)
 
-    _output.configure(quiet=quiet, verbose=verbose, no_color=no_color)
     file_values, file_warnings = load_file_config()
+    configured_color = file_values.get("color")
+    _output.configure(
+        quiet=quiet,
+        verbose=verbose,
+        no_color=no_color,
+        color=configured_color if isinstance(configured_color, bool) else None,
+    )
     ctx.ensure_object(dict)
     ctx.obj["quiet"] = quiet
     ctx.obj["verbose"] = verbose
@@ -317,47 +326,35 @@ def _extract_files_df(accession: str, files: list[dict]) -> pd.DataFrame:
 
 def _print_result(result: AuditResult, study: dict, file_count: int) -> None:
     """Print a formatted audit summary to stdout."""
-    tick = "\u2714"
-    cross = "\u2718"
-
-    def flag(value: FlagOutcome | object) -> str:
-        """Render passed, failed, and unknown evidence without color.
-
-        Returns
-        -------
-        str
-            The corresponding check mark, cross, or question mark.
-        """
-        raw = getattr(value, "value", value)
-        if raw in (FlagOutcome.PASSED.value, True, 1):
-            return tick
-        if raw in (FlagOutcome.FAILED.value, False, 0):
-            return cross
-        return "?"
-
     click.echo(f"Accession : {result.accession}")
-    click.echo(f"Tier      : {result.tier}")
-    click.echo(f"Quant Tier: {result.quant_tier}")
+    click.echo(f"Tier      : {_output.style_tier(result.tier)}")
+    click.echo(f"Quant Tier: {_output.style_tier(result.quant_tier)}")
     click.echo("-" * 48)
     click.echo("Metadata")
     title = (study.get("title") or "")[:60]
-    click.echo(f"  {flag(result.has_title)} Title         {title}")
+    click.echo(f"  {_output.flag_glyph(result.has_title)} Title         {title}")
     organism = study.get("organism") or ""
     organism_id = study.get("organism_id") or ""
     org_str = f"{organism} ({organism_id})" if organism_id else organism
-    click.echo(f"  {flag(result.has_organism)} Organism      {org_str}")
-    click.echo(f"  {flag(result.has_instrument)} Instrument    {study.get('instrument') or ''}")
-    click.echo(f"  {flag(result.has_organism_part)} Organism part annotated")
-    click.echo(f"  {flag(result.has_publication)} Publication   linked")
-    click.echo(f"  {flag(result.has_quant_metadata)} Quant metadata (CV methods)")
+    click.echo(f"  {_output.flag_glyph(result.has_organism)} Organism      {org_str}")
+    click.echo(
+        f"  {_output.flag_glyph(result.has_instrument)} Instrument    "
+        f"{study.get('instrument') or ''}"
+    )
+    click.echo(f"  {_output.flag_glyph(result.has_organism_part)} Organism part annotated")
+    click.echo(f"  {_output.flag_glyph(result.has_publication)} Publication   linked")
+    click.echo(f"  {_output.flag_glyph(result.has_quant_metadata)} Quant metadata (CV methods)")
     click.echo("-" * 48)
     click.echo(f"Files ({file_count} total)")
-    click.echo(f"  {flag(result.has_result_files)} Result/Search files present")
-    click.echo(f"  {flag(result.has_psi_results)} PSI-standard results (mzIdentML / mzTab-ID)")
-    click.echo(f"  {flag(result.has_open_spectra)} Open spectra (mzML / MGF)")
-    click.echo(f"  {flag(result.has_sdrf)} SDRF file present")
-    click.echo(f"  {flag(result.has_mztab)} mzTab summary present")
-    click.echo(f"  {flag(result.has_tabular_quant)} Tabular quant summary or matrix")
+    click.echo(f"  {_output.flag_glyph(result.has_result_files)} Result/Search files present")
+    click.echo(
+        f"  {_output.flag_glyph(result.has_psi_results)} "
+        "PSI-standard results (mzIdentML / mzTab-ID)"
+    )
+    click.echo(f"  {_output.flag_glyph(result.has_open_spectra)} Open spectra (mzML / MGF)")
+    click.echo(f"  {_output.flag_glyph(result.has_sdrf)} SDRF file present")
+    click.echo(f"  {_output.flag_glyph(result.has_mztab)} mzTab summary present")
+    click.echo(f"  {_output.flag_glyph(result.has_tabular_quant)} Tabular quant summary or matrix")
     click.echo("-" * 48)
 
 
@@ -677,6 +674,67 @@ def _cache_stats(cache_dir: Path) -> tuple[int, int, int, float | None, float | 
     total = sum(entry.size for entry in inventory.entries)
     mtimes = [entry.modified_at for entry in inventory.entries]
     return len(inventory.entries), inventory.ignored, total, min(mtimes), max(mtimes)
+
+
+_SUMMARY_FAIR_TIERS = ("Diamond", "Platinum", "Gold", "Silver", "Bronze", "Raw", "None")
+_SUMMARY_QUANT_TIERS = ("Quant-Complete", "Quant-Ready", "Partial", "No Quant")
+
+
+def _summary_counts(
+    counts: dict[str, int], ordered_names: tuple[str, ...], *, include_unknown: bool = True
+) -> list[tuple[str, int]]:
+    """Return summary counts in display order, including nonzero unknown values."""
+    known = [(name, counts.get(name, 0)) for name in ordered_names]
+    if include_unknown and counts.get("Unknown", 0):
+        known.append(("Unknown", counts["Unknown"]))
+    return known
+
+
+def _print_summary(summary: SummaryData, db_path: str) -> None:
+    """Render the five-section human-readable cohort summary."""
+    click.echo(f"PXAudit summary  {db_path}  (tier_logic {summary.tier_logic_version})")
+    click.echo(
+        f"  accessions  {summary.total_count}   verifiable  {summary.verifiable_count}   "
+        f"unverifiable  {summary.unverifiable_count}"
+    )
+
+    click.echo("\nFAIR tiers")
+    for tier, count in _summary_counts(summary.tier_counts, _SUMMARY_FAIR_TIERS):
+        click.echo(f"  {_output.style_tier(f'{tier:<10}')} {count:>4}")
+
+    click.echo("\nQuant tiers")
+    for tier, count in _summary_counts(
+        summary.quant_counts, _SUMMARY_QUANT_TIERS, include_unknown=False
+    ):
+        click.echo(f"  {_output.style_tier(f'{tier:<14}')} {count:>4}")
+    if summary.quant_counts.get("Unverifiable", 0) or summary.quant_counts.get("Unknown", 0):
+        for tier in ("Unverifiable", "Unknown"):
+            if summary.quant_counts.get(tier, 0):
+                click.echo(f"  {_output.style_tier(f'{tier:<14}')} {summary.quant_counts[tier]:>4}")
+
+    click.echo("\nTop gaps (failed / unknown)")
+    for gap in summary.gaps:
+        click.echo(
+            f"  {gap.field:<20} {_output.style_outcome('failed')} {gap.failed:>4}   "
+            f"{_output.style_outcome('unknown')} {gap.unknown:>4}"
+        )
+
+    click.echo(f"\nHTML report: pxaudit report --db {db_path}")
+
+
+def _summary_quiet_line(summary: SummaryData) -> str:
+    """Return the stable one-line representation used by quiet summary runs."""
+    tokens = [
+        f"verifiable={summary.verifiable_count}",
+        f"unverifiable={summary.unverifiable_count}",
+        f"tier_logic={summary.tier_logic_version}",
+    ]
+    for tier in _SUMMARY_FAIR_TIERS:
+        tokens.append(f"{tier.casefold()}={summary.tier_counts.get(tier, 0)}")
+    for tier in _SUMMARY_QUANT_TIERS + ("Unverifiable", "Unknown"):
+        quant_key = tier.casefold().removeprefix("quant-").replace("-", "_").replace(" ", "_")
+        tokens.append(f"quant_{quant_key}={summary.quant_counts.get(tier, 0)}")
+    return f"summary {summary.total_count} accessions " + " ".join(tokens)
 
 
 @main.command("check")
@@ -1034,10 +1092,43 @@ def bulk_audit(
         if results:
             tier_dist = pd.Series([r.tier for r in results]).value_counts()
             for tier, count in tier_dist.items():
-                _output.status(f"    {tier:<12} {count}")
+                _output.status(f"    {_output.style_tier(f'{tier:<12}')} {count}")
         for acc in failed:
             if ctx.obj["verbose"]:
                 _output.detail(f"failed: {acc}")
+
+
+@main.command("summary")
+@click.option(
+    "--db",
+    "db_path",
+    default=None,
+    help="SQLite database path (default: config or pxaudit_results.db).",
+)
+@click.pass_context
+def summary(ctx: click.Context, db_path: str | None) -> None:
+    """Print an aggregate cohort summary from the audit database."""
+    cfg = _resolve_effective(ctx, db_path=db_path)
+    _emit_config_warnings(cfg)
+    database_path = Path(cfg.db_path)
+    if not database_path.exists():
+        _output.error(f"Error: database not found: {database_path}")
+        sys.exit(2)
+    if not database_path.is_file():
+        _output.error(f"Error: database path is not a file: {database_path}")
+        sys.exit(2)
+
+    try:
+        with closing(get_or_create_db(database_path)) as connection:
+            summary_data = summarize_database(connection)
+    except (OSError, sqlite3.DatabaseError) as exc:
+        _output.error(f"Error: cannot read database {database_path}: {exc}")
+        sys.exit(1)
+
+    if ctx.obj["quiet"]:
+        _output.status(_summary_quiet_line(summary_data))
+    else:
+        _print_summary(summary_data, str(database_path))
 
 
 @main.command("manifest")

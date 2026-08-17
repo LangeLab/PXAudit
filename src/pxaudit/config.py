@@ -41,6 +41,7 @@ CONFIG_KEYS: tuple[str, ...] = (
     "request_delay",
     "bulk_delay",
     "export_format",
+    "color",
 )
 
 Source = typing.Literal["default", "config", "flag"]
@@ -52,6 +53,7 @@ DEFAULTS: dict[str, object] = {
     "request_delay": 0.5,
     "bulk_delay": 1.0,
     "export_format": None,
+    "color": None,
 }
 
 _KEY_TYPES: dict[str, type | tuple[type, ...]] = {
@@ -61,6 +63,7 @@ _KEY_TYPES: dict[str, type | tuple[type, ...]] = {
     "request_delay": (int, float),
     "bulk_delay": (int, float),
     "export_format": str,
+    "color": bool,
 }
 
 _EXPORT_FORMATS = frozenset({"tsv", "csv", "json"})
@@ -84,6 +87,8 @@ class EffectiveConfig:
         Inter-accession pause in ``bulk-audit``.
     export_format:
         Optional default export format for ``bulk-audit`` (``tsv``/``csv``/``json``).
+    color:
+        Optional override for terminal color detection. ``None`` follows the output stream.
     sources:
         Map of setting name to ``default``, ``config``, or ``flag``.
     warnings:
@@ -96,6 +101,7 @@ class EffectiveConfig:
     request_delay: float
     bulk_delay: float
     export_format: str | None
+    color: bool | None
     sources: dict[str, Source]
     warnings: tuple[str, ...]
 
@@ -212,6 +218,7 @@ def merge_config(
     bulk_delay: float | None = None,
     export_format: str | None = None,
     cache_ttl_seconds: float | None = None,
+    color: bool | None = None,
 ) -> EffectiveConfig:
     """Merge defaults, file values, and explicit CLI overrides.
 
@@ -221,8 +228,20 @@ def merge_config(
         Validated values from :func:`load_file_config`.
     file_warnings:
         Warnings produced while loading the file.
-    cache_dir, db_path, request_delay, bulk_delay, export_format, cache_ttl_seconds:
-        CLI overrides. ``None`` means the flag was not provided.
+    cache_dir:
+        CLI override. ``None`` means the flag was not provided.
+    db_path:
+        CLI override. ``None`` means the flag was not provided.
+    request_delay:
+        CLI override. ``None`` means the flag was not provided.
+    bulk_delay:
+        CLI override. ``None`` means the flag was not provided.
+    export_format:
+        CLI override. ``None`` means the flag was not provided.
+    cache_ttl_seconds:
+        CLI override. ``None`` means the flag was not provided.
+    color:
+        CLI override. ``None`` means the flag was not provided.
 
     Returns
     -------
@@ -244,6 +263,7 @@ def merge_config(
         "bulk_delay": bulk_delay,
         "export_format": export_format,
         "cache_ttl_seconds": cache_ttl_seconds,
+        "color": color,
     }
     for key, flag_val in flag_map.items():
         if flag_val is None:
@@ -258,6 +278,10 @@ def merge_config(
             if not _type_ok(key, flag_val):
                 continue
             values[key] = _normalize(key, flag_val)
+        elif key == "color":
+            if not _type_ok(key, flag_val):
+                continue
+            values[key] = bool(flag_val)
         else:
             values[key] = str(flag_val)
         sources[key] = "flag"
@@ -270,6 +294,7 @@ def merge_config(
         request_delay=float(values["request_delay"]),  # type: ignore[arg-type]
         bulk_delay=float(values["bulk_delay"]),  # type: ignore[arg-type]
         export_format=None if export_val is None else str(export_val),
+        color=None if values["color"] is None else bool(values["color"]),
         sources=sources,
         warnings=file_warnings,
     )
