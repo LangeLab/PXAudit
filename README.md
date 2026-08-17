@@ -9,7 +9,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.12--3.14-2D7D46?style=flat-square&logo=python&logoColor=white" alt="Python 3.12-3.14">
-  <img src="https://img.shields.io/badge/version-0.5.2-8B5CF6?style=flat-square" alt="v0.5.2">
+  <img src="https://img.shields.io/badge/version-0.5.3-8B5CF6?style=flat-square" alt="v0.5.3">
   <img src="https://img.shields.io/badge/status-beta-C17D10?style=flat-square" alt="Beta">
   <a href="https://github.com/LangeLab/PXAudit/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/LangeLab/PXAudit/ci.yml?branch=main&style=flat-square&logo=github&label=CI" alt="CI"></a>
   <a href="https://codecov.io/gh/LangeLab/PXAudit"><img src="https://img.shields.io/codecov/c/github/LangeLab/PXAudit?branch=main&style=flat-square&logo=codecov&logoColor=white" alt="Coverage"></a>
@@ -40,6 +40,8 @@ uv run pxaudit check PXD000001
 The first audit queries PRIDE and creates `pxaudit_results.db` in the current directory. API responses are cached under `~/.pxaudit_cache/`, so a fresh repeat audit does not need another request.
 
 PXAudit currently audits PRIDE `PXD` accessions. Safe identifiers from other ProteomeXchange repositories are accepted as `Unverifiable`; repository adapters are not implemented yet.
+
+Audit evidence uses the v3 outcomes `passed`, `failed`, and `unknown`. Unknown evidence is shown as `?`, does not block tier progression, and is counted in `ambiguity_count`; export consumers should treat `has_*` columns as strings rather than integer booleans.
 
 ## Common tasks
 
@@ -88,7 +90,7 @@ If you use PXAudit in your research, please cite it as:
   author   = {Ergin, Enes Kemal},
   title    = {{PXAudit}: A command-line tool for auditing {Proteomics Exchange} study metadata},
   year     = {2026},
-  version  = {0.5.2},
+  version  = {0.5.3},
   url      = {https://github.com/LangeLab/PXAudit},
   license  = {MIT},
 }

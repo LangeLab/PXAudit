@@ -4,6 +4,27 @@
 
 All notable changes to PXAudit are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project follows [Semantic Versioning](https://semver.org/).
 
+## 0.5.3 - 2026-08-17
+
+Three-valued evidence outcomes and the v3 audit schema.
+
+### Added
+
+- `FlagOutcome` values `passed`, `failed`, and `unknown` for every `has_*` evidence flag.
+- `ambiguity_count` records how many evidence flags are unknown.
+- HTML reports show confirmed failed gaps separately from unknown gaps and normalize legacy v2 rows.
+
+### Changed
+
+- Audit `has_*` columns are now TEXT outcomes instead of integer booleans, and new rows use `tier_logic_version = "v3.0"`.
+- Unknown evidence does not block tier progression, but confirmed failed evidence still does. Absent, malformed, or unavailable evidence is unknown; verified empty evidence is failed.
+- CLI terminal output renders unknown evidence as `?`; TSV, CSV, and JSON exports serialize evidence outcomes as strings and include `ambiguity_count`.
+
+### Migration
+
+- `migrate_audit_v3()` maps legacy `0` to `failed`, `1` to `passed`, and `NULL` or other legacy values to `unknown`, while preserving tier assignments. The migration is idempotent and has no automated downgrade; back up databases before upgrading.
+- Export consumers that parse `has_*` columns as integers must be updated for the v3 string vocabulary.
+
 ## 0.5.2 - 2026-07-27
 
 Scalability and performance improvements for large local bulk audits.
