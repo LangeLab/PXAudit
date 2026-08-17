@@ -4,6 +4,20 @@
 
 All notable changes to PXAudit are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project follows [Semantic Versioning](https://semver.org/).
 
+## 0.5.4 - 2026-08-17
+
+Terminal output polish and aggregate database summaries.
+
+### Added
+
+- `pxaudit summary --db PATH` reports aggregate FAIR tiers, quantification tiers, failed and unknown metadata gaps, and the related HTML report command.
+- The optional `color` configuration key controls terminal color when set to `true` or `false`.
+
+### Changed
+
+- TTY output uses restrained ANSI styling for passed, failed, and unknown glyphs plus FAIR and quantification tier names. Non-TTY, quiet, `NO_COLOR`, and `--no-color` output remains plain text.
+- Summary aggregation reads audit rows only and opens legacy databases through the normal migration path.
+
 ## 0.5.3 - 2026-08-17
 
 Three-valued evidence outcomes and the v3 audit schema.
