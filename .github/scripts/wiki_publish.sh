@@ -45,7 +45,7 @@ git -C "$wiki_repo" commit --quiet -m "Sync wiki from ${source_sha}"
 
 if ! git -c "http.extraheader=AUTHORIZATION: basic ${auth_header}" \
   -C "$wiki_repo" push --quiet origin "HEAD:${wiki_branch}"; then
-  echo "wiki push failed; the live wiki may have changed concurrently—resolve it and rerun the workflow" >&2
+  echo "wiki push failed; the live wiki may have changed concurrently; resolve it and rerun the workflow" >&2
   exit 1
 fi
 

@@ -123,6 +123,7 @@ class _IncompleteAuditError(RuntimeError):
 
 
 def _emit_config_warnings(cfg: EffectiveConfig) -> None:
+    """Emit configuration warnings through the shared CLI output channel."""
     for message in cfg.warnings:
         _output.warn(message)
 
@@ -210,11 +211,6 @@ def main(
     ctx.obj["cli_cache_dir"] = cache_dir
     ctx.obj["file_values"] = file_values
     ctx.obj["file_warnings"] = file_warnings
-
-
-# ---------------------------------------------------------------------------
-# Data extraction helpers
-# ---------------------------------------------------------------------------
 
 
 def _parse_submission_year(date_str: str) -> int | None:
@@ -319,18 +315,19 @@ def _extract_files_df(accession: str, files: list[dict]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-# ---------------------------------------------------------------------------
-# Output formatter
-# ---------------------------------------------------------------------------
-
-
 def _print_result(result: AuditResult, study: dict, file_count: int) -> None:
     """Print a formatted audit summary to stdout."""
     tick = "\u2714"
     cross = "\u2718"
 
     def flag(value: FlagOutcome | object) -> str:
-        """Render passed, failed, and unknown evidence without color."""
+        """Render passed, failed, and unknown evidence without color.
+
+        Returns
+        -------
+        str
+            The corresponding check mark, cross, or question mark.
+        """
         raw = getattr(value, "value", value)
         if raw in (FlagOutcome.PASSED.value, True, 1):
             return tick
@@ -362,11 +359,6 @@ def _print_result(result: AuditResult, study: dict, file_count: int) -> None:
     click.echo(f"  {flag(result.has_mztab)} mzTab summary present")
     click.echo(f"  {flag(result.has_tabular_quant)} Tabular quant summary or matrix")
     click.echo("-" * 48)
-
-
-# ---------------------------------------------------------------------------
-# Core audit pipeline (shared by check and bulk-audit)
-# ---------------------------------------------------------------------------
 
 
 def _audit_single(
@@ -413,7 +405,13 @@ def _audit_single(
     persist_cache = cache_mode != "disabled"
 
     def live_response(data: dict | list) -> CachedResponse:
-        """Attach retrieval and audit-snapshot provenance to a live response."""
+        """Attach retrieval and audit-snapshot provenance to a live response.
+
+        Returns
+        -------
+        CachedResponse
+            The response with the current retrieval time and audit snapshot identifier.
+        """
         return CachedResponse(
             data=data,
             retrieved_at=datetime.now(UTC).isoformat(),
@@ -557,11 +555,6 @@ def _audit_single(
     )
 
 
-# ---------------------------------------------------------------------------
-# Input helpers
-# ---------------------------------------------------------------------------
-
-
 def _read_accessions(input_path: str) -> list[tuple[int, str]]:
     """Read numbered accession records from a file or stdin (``-``).
 
@@ -581,11 +574,6 @@ def _read_accessions(input_path: str) -> list[tuple[int, str]]:
             continue
         accessions.append((line_number, acc))
     return accessions
-
-
-# ---------------------------------------------------------------------------
-# Export helpers
-# ---------------------------------------------------------------------------
 
 
 def _default_export_path(fmt: str) -> str:
@@ -689,11 +677,6 @@ def _cache_stats(cache_dir: Path) -> tuple[int, int, int, float | None, float | 
     total = sum(entry.size for entry in inventory.entries)
     mtimes = [entry.modified_at for entry in inventory.entries]
     return len(inventory.entries), inventory.ignored, total, min(mtimes), max(mtimes)
-
-
-# ---------------------------------------------------------------------------
-# Commands
-# ---------------------------------------------------------------------------
 
 
 @main.command("check")
@@ -922,7 +905,13 @@ def bulk_audit(
     rolled_back = 0
 
     def rollback_active_batch() -> int:
-        """Roll back pending rows and remove their results from partial exports."""
+        """Roll back pending rows and remove their results from partial exports.
+
+        Returns
+        -------
+        int
+            The number of accessions removed from the active batch and partial results.
+        """
         if transaction_batch is None:
             return 0
         count = transaction_batch.rollback()

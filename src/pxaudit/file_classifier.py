@@ -25,10 +25,6 @@ from __future__ import annotations
 import re
 from enum import StrEnum
 
-# ---------------------------------------------------------------------------
-# FileClass
-# ---------------------------------------------------------------------------
-
 
 class FileClass(StrEnum):
     """Broad category for a single file in a PRIDE submission.
@@ -51,10 +47,6 @@ class FileClass(StrEnum):
     ID_LIST = "ID_LIST"  # PSM / evidence-level scan list (no quant summary)
     OTHER = "OTHER"  # Ancillary or unrecognised file
 
-
-# ---------------------------------------------------------------------------
-# Compression stripping
-# ---------------------------------------------------------------------------
 
 # Ordered longest-first so .tar.gz is matched before .gz when iterating.
 _COMPRESSION_EXTS: tuple[str, ...] = (
@@ -88,6 +80,11 @@ def strip_compression(filename: str) -> str:
     'archive'
     >>> strip_compression("results.mzid")
     'results.mzid'
+
+    Returns
+    -------
+    str
+        The filename with all recognized trailing compression suffixes removed.
     """
     lower = filename.lower()
     while True:
@@ -103,12 +100,7 @@ def strip_compression(filename: str) -> str:
     return filename
 
 
-# ---------------------------------------------------------------------------
-# Extension registry
-# ---------------------------------------------------------------------------
-
 _EXTENSION_TO_CLASS: dict[str, FileClass] = {
-    # -- Vendor RAW (proprietary mass-spec native) --------------------------------------------
     ".raw": FileClass.RAW,  # Thermo Fisher (Xcalibur)
     ".wiff": FileClass.RAW,  # Sciex
     ".wiff2": FileClass.RAW,  # Sciex (newer format)
@@ -125,7 +117,6 @@ _EXTENSION_TO_CLASS: dict[str, FileClass] = {
     ".yep": FileClass.RAW,  # Bruker (older; pre-compact format)
     ".fid": FileClass.RAW,  # Bruker raw FID signal file
     ".uimf": FileClass.RAW,  # PNNL ion-mobility raw format (SLIM/IMS)
-    # -- Open-format spectra (PEAK) -----------------------------------------------------------
     ".mzml": FileClass.PEAK,  # HUPO-PSI; gold-standard open format
     ".mzxml": FileClass.PEAK,  # ProteoWizard legacy; widely supported
     ".mgf": FileClass.PEAK,  # Mascot Generic Format; text peak list
@@ -136,13 +127,11 @@ _EXTENSION_TO_CLASS: dict[str, FileClass] = {
     ".apl": FileClass.PEAK,  # Andromeda peak list (MaxQuant input)
     ".ms1": FileClass.PEAK,  # MS1 spectrum file
     ".cms2": FileClass.PEAK,  # Crux/SEQUEST MS2 variant (newer)
-    # -- PSI-standard identification results (RESULT) -----------------------------------------
     ".mzidentml": FileClass.RESULT,  # PSI mzIdentML; canonical open-standard
     ".mzid": FileClass.RESULT,  # alias for .mzidentml
     ".mztab": FileClass.RESULT,  # PSI mzTab proteomics exchange format
     # .xml is intentionally absent; too broad (workflow.xml, parameters.xml).
     # PRIDE XML is caught by _PROCESSED_RESULT_BASENAME_PATTERNS as SEARCH evidence.
-    # Proprietary search-engine output (SEARCH)
     ".idxml": FileClass.SEARCH,  # OpenMS-native identification output
     ".dat": FileClass.SEARCH,  # Mascot result file
     ".msf": FileClass.SEARCH,  # Thermo Proteome Discoverer
@@ -159,30 +148,22 @@ _EXTENSION_TO_CLASS: dict[str, FileClass] = {
     ".sky.zip": FileClass.SEARCH,  # Skyline document archive (DIA results)
     ".pin": FileClass.SEARCH,  # Percolator input (post-search feature table)
     ".pout": FileClass.SEARCH,  # Percolator output (re-scored PSMs)
-    # -- Recognized files outside the proteomics identification gate --------------------------
     ".mztab-m": FileClass.OTHER,  # Metabolomics evidence
     ".mzqc": FileClass.OTHER,  # Quality-control evidence
-    # -- Sequence databases (FASTA) -----------------------------------------------------------
     ".fasta": FileClass.FASTA,
     ".fa": FileClass.FASTA,
     ".fas": FileClass.FASTA,
     ".faa": FileClass.FASTA,  # protein FASTA (NCBI convention)
     ".fna": FileClass.FASTA,  # nucleotide FASTA (NCBI convention; rare in proteomics)
-    # -- OpenMS feature file (ID_LIST) --------------------------------------------------------
     # Placed in the extension registry (not in _ID_LIST_PATTERNS) so that compressed
-    # variants like .featurexml.gz are correctly handled via Step 1 after compression strip.
+    # variants like .featurexml.gz are correctly handled after compression stripping.
     # featureXML stores LC-MS feature detections (precursor-level), not strictly PSM-level IDs.
     # ID_LIST is the closest semantic bucket in the current tier model.
     ".featurexml": FileClass.ID_LIST,
-    # -- SDRF (bare extension) -----------------------------------------------------------------
     # Covers files named e.g. 'experiment.sdrf'.  The more common '.sdrf.tsv' / '.sdrf.txt'
-    # compound forms are handled upstream in classify() Step 3 (substring + tabular guard).
+    # compound forms are handled upstream in classify() (substring + tabular guard).
     ".sdrf": FileClass.SDRF,
 }
-
-# ---------------------------------------------------------------------------
-# Exact-stem registry (MaxQuant fixed-output filenames)
-# ---------------------------------------------------------------------------
 
 _EXACT_STEM_TO_CLASS: dict[str, FileClass] = {
     # MaxQuant fixes these output stems, so exact matching avoids generic table names.
@@ -196,10 +177,6 @@ _EXACT_STEM_TO_CLASS: dict[str, FileClass] = {
     # 'summary' and 'parameters' are intentionally absent: stems too generic.
 }
 
-
-# ---------------------------------------------------------------------------
-# Basename / pattern registries
-# ---------------------------------------------------------------------------
 
 # Processed-result hints that do not establish a PSI identification format.
 _PROCESSED_RESULT_BASENAME_PATTERNS: re.Pattern[str] = re.compile(
@@ -244,11 +221,6 @@ _PRIDE_CATEGORY_MAP: dict[str, FileClass] = {
 }
 
 
-# ---------------------------------------------------------------------------
-# FileTypeClassifier
-# ---------------------------------------------------------------------------
-
-
 class FileTypeClassifier:
     """Classify proteomics filenames from PRIDE submissions into FileClass values.
 
@@ -289,8 +261,6 @@ class FileTypeClassifier:
         self._compound_exts = tuple(
             sorted((key for key in self._ext_map if "." in key[1:]), key=len, reverse=True)
         )
-
-    # ------------------------------------------------------------------
 
     def classify(self, filename: str, pride_category: str | None = None) -> FileClass:
         """Classify a single filename into a FileClass.
@@ -341,12 +311,9 @@ class FileTypeClassifier:
             else:
                 break
 
-        # Step 2: Exact stem (MaxQuant fixed-output filenames like proteinGroups.txt).
         stem = lower_base.rsplit(".", 1)[0] if "." in lower_base else lower_base
         if stem in self._stem_map:
             return self._stem_map[stem]
-
-        # Steps 3-6 all search on lower_base (de-compressed + lower-case).
 
         category = pride_category.casefold() if pride_category else ""
         has_sdrf_token = _SDRF_TOKEN.search(lower_base) is not None
@@ -364,15 +331,12 @@ class FileTypeClassifier:
         if _ID_LIST_PATTERNS.search(lower_base):
             return FileClass.ID_LIST
 
-        # Step 7: PRIDE fileCategory fallback (only for categories we can trust).
         if pride_category:
             mapped = _PRIDE_CATEGORY_MAP.get(pride_category.upper())
             if mapped is not None:
                 return mapped
 
         return FileClass.OTHER
-
-    # ------------------------------------------------------------------
 
     def _extract_ext(self, lower_base: str) -> str:
         """Return the longest matching extension from *lower_base*.

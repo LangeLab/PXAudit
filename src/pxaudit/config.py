@@ -101,7 +101,14 @@ class EffectiveConfig:
 
 
 def default_config_path() -> Path:
-    """Return the user config path (``PXAUDIT_CONFIG`` or ``~/.pxaudit.toml``)."""
+    """Return the user config path (``PXAUDIT_CONFIG`` or ``~/.pxaudit.toml``).
+
+    Returns
+    -------
+    pathlib.Path
+        The explicit ``PXAUDIT_CONFIG`` path, or the default path under the user's home
+        directory.
+    """
     override = os.environ.get("PXAUDIT_CONFIG")
     if override:
         return Path(override)
@@ -269,7 +276,18 @@ def merge_config(
 
 
 def format_config_show(cfg: EffectiveConfig) -> str:
-    """Render ``config show`` text with source tags."""
+    """Render ``config show`` text with source tags.
+
+    Parameters
+    ----------
+    cfg:
+        Effective settings and their provenance metadata.
+
+    Returns
+    -------
+    str
+        One ``key=value`` line for each configured setting.
+    """
     lines = []
     for key in CONFIG_KEYS:
         val = getattr(cfg, key)

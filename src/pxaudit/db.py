@@ -90,10 +90,6 @@ _AUDIT_COLS = (
     "quant_tier",
 )
 
-# ---------------------------------------------------------------------------
-# DDL
-# ---------------------------------------------------------------------------
-
 _CREATE_STUDY = """
 CREATE TABLE IF NOT EXISTS study (
     accession        TEXT NOT NULL PRIMARY KEY,
@@ -151,10 +147,6 @@ CREATE TABLE IF NOT EXISTS audit (
     quant_tier          TEXT
 );
 """
-
-# ---------------------------------------------------------------------------
-# DML
-# ---------------------------------------------------------------------------
 
 _INSERT_STUDY = (
     "INSERT OR REPLACE INTO study "
@@ -238,17 +230,18 @@ class TransactionBatch:
         self.pending_count = 0
 
     def rollback(self) -> int:
-        """Roll back pending accessions and return the number discarded."""
+        """Roll back pending accessions and return the number discarded.
+
+        Returns
+        -------
+        int
+            The number of accessions removed from the active transaction batch.
+        """
         rolled_back = self.pending_count
         if self.conn.in_transaction:
             self.conn.rollback()
         self.pending_count = 0
         return rolled_back
-
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
 
 
 def create_tables(conn: sqlite3.Connection) -> None:
@@ -268,6 +261,11 @@ def get_or_create_db(path: str | Path) -> sqlite3.Connection:
 
     Migrations are called after schema creation so that databases from an
     earlier schema version are transparently upgraded on first use.
+
+    Returns
+    -------
+    sqlite3.Connection
+        An autocommit connection with foreign keys, schema, and migrations configured.
     """
     conn = sqlite3.connect(str(Path(path)), isolation_level=None)
     conn.execute("PRAGMA foreign_keys = ON")
@@ -543,6 +541,13 @@ def migrate_audit_v3(conn: sqlite3.Connection) -> None:
     rows = conn.execute(f"SELECT {', '.join(selected_columns)} FROM audit").fetchall()  # noqa: S608
 
     def v3_row(row: tuple[Any, ...]) -> tuple[Any, ...]:
+        """Normalize one legacy row into the v3 audit column order.
+
+        Returns
+        -------
+        tuple[Any, ...]
+            The normalized row in ``_AUDIT_COLS`` order.
+        """
         data = dict(zip(_AUDIT_COLS, row, strict=True))
         for column in _FLAG_COLS:
             data[column] = _flag_text(data[column])

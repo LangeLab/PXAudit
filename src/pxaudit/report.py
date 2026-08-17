@@ -42,10 +42,6 @@ JINJA2_MISSING_MSG = (
 )
 MATPLOTLIB_MISSING_MSG = "matplotlib is required for charts. Install with: uv sync --extra report"
 
-# ---------------------------------------------------------------------------
-# Tier metadata (colours and display order)
-# ---------------------------------------------------------------------------
-
 _TIER_ORDER: list[str] = [
     "Diamond",
     "Platinum",
@@ -104,10 +100,6 @@ _FLAG_COLUMNS: list[tuple[str, str]] = [
     ("quant_metadata", "has_quant_metadata"),
     ("mztab", "has_mztab"),
 ]
-
-# ---------------------------------------------------------------------------
-# Jinja2 HTML template
-# ---------------------------------------------------------------------------
 
 _HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
@@ -424,11 +416,6 @@ Quality distribution by organism and instrument type.
 """
 
 
-# ---------------------------------------------------------------------------
-# Data containers
-# ---------------------------------------------------------------------------
-
-
 @dataclass(frozen=True)
 class ReportData:
     """Aggregated report data."""
@@ -442,11 +429,6 @@ class ReportData:
     gap_items: list[dict]
     cohort_organism: pd.DataFrame
     cohort_instrument: pd.DataFrame
-
-
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
 
 
 def _series_int_sum(series: pd.Series) -> int:
@@ -468,11 +450,6 @@ def _normalize_flag(value: object) -> str:
         if normalized in {"0", "1"}:
             return "passed" if normalized == "1" else "failed"
     return "unknown"
-
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
 
 
 def generate_report(db_path: str | Path, output_dir: str | Path, title: str) -> Path:
@@ -559,11 +536,6 @@ def _write_report(out_path: Path, html: str) -> None:
                 _log.warning("Could not remove report temporary file %s", temporary_path.name)
 
 
-# ---------------------------------------------------------------------------
-# Data collection
-# ---------------------------------------------------------------------------
-
-
 def _open_db(db_path: Path) -> sqlite3.Connection:
     """Open an existing report database without creating or migrating it."""
     from pxaudit.db import open_existing_db
@@ -616,11 +588,6 @@ def _get_version() -> str:
         return importlib_metadata.version("pxaudit")
     except importlib_metadata.PackageNotFoundError:
         return "unknown"
-
-
-# ---------------------------------------------------------------------------
-# Query functions
-# ---------------------------------------------------------------------------
 
 
 def _query_tier_distribution(conn: sqlite3.Connection) -> pd.DataFrame:
@@ -700,7 +667,6 @@ def _query_all_accessions(conn: sqlite3.Connection) -> list[dict]:
     return rows
 
 
-# Metadata gap severity levels.
 _GAP_SEVERITY: dict[str, str] = {
     "result_files": "critical",
     "instrument": "critical",
@@ -798,11 +764,6 @@ def _limit_cohorts(df: pd.DataFrame, group_col: str) -> pd.DataFrame:
     return df[df[group_col].isin(totals[group_col])].copy()
 
 
-# ---------------------------------------------------------------------------
-# HTML rendering
-# ---------------------------------------------------------------------------
-
-
 def _render_html(data: ReportData, db_path: Path, title: str) -> str:
     """Build the full HTML report string from collected data."""
     jinja2 = _import_jinja2()
@@ -810,7 +771,6 @@ def _render_html(data: ReportData, db_path: Path, title: str) -> str:
     template = env.from_string(_HTML_TEMPLATE)
 
     tier_dist = data.tier_dist
-    # Find best/worst tiers that actually have data.
     tier_with_data = tier_dist[tier_dist["count"] > 0]
     best_tier = tier_with_data.iloc[0]["tier"] if not tier_with_data.empty else "-"
     worst_tier = tier_with_data.iloc[-1]["tier"] if not tier_with_data.empty else "-"
@@ -845,11 +805,6 @@ def _render_html(data: ReportData, db_path: Path, title: str) -> str:
         "row_count": len(data.rows),
     }
     return str(template.render(**context))
-
-
-# ---------------------------------------------------------------------------
-# Chart rendering
-# ---------------------------------------------------------------------------
 
 
 def _render_chart(func: typing.Any, *args: typing.Any, **kwargs: typing.Any) -> str:
@@ -905,7 +860,6 @@ def _render_tier_chart(df: pd.DataFrame) -> str:
             1, 2, figsize=(8, 4), gridspec_kw={"width_ratios": [1, 0.8]}
         )
 
-        # Filter out zero counts for the pie chart.
         df_plot = df[df["count"] > 0].copy()
         total = _series_int_sum(df["count"])
 
@@ -924,7 +878,6 @@ def _render_tier_chart(df: pd.DataFrame) -> str:
             autotext.set_fontweight("bold")
             autotext.set_color("white")
 
-        # Center text.
         ax_pie.text(
             0,
             0,
@@ -940,7 +893,7 @@ def _render_tier_chart(df: pd.DataFrame) -> str:
             "Qualitative Tiers", fontsize=11, fontweight="600", color="#1f2937", pad=10
         )
 
-        # Full legend showing ALL tiers (even with count=0).
+        # Keep zero-count tiers in the legend for a stable key.
         ax_legend.axis("off")
         y_pos = 0.95
         for tier in _TIER_ORDER:
@@ -948,7 +901,6 @@ def _render_tier_chart(df: pd.DataFrame) -> str:
             pct = round(100.0 * cnt / total, 1) if total > 0 else 0.0
             color = _TIER_COLORS.get(tier, "#999999")
 
-            # Draw colored square.
             ax_legend.add_patch(
                 plt.Rectangle(
                     (0.05, y_pos - 0.02),
@@ -959,11 +911,9 @@ def _render_tier_chart(df: pd.DataFrame) -> str:
                     linewidth=1,
                 )
             )
-            # Tier name.
             ax_legend.text(
                 0.18, y_pos, tier, fontsize=9, fontweight="600", color="#1f2937", va="center"
             )
-            # Count and percentage.
             ax_legend.text(
                 0.75, y_pos, f"{cnt} ({pct}%)", fontsize=8, color="#6b7280", va="center", ha="right"
             )
@@ -990,7 +940,6 @@ def _render_quant_tier_chart(df: pd.DataFrame) -> str:
             1, 2, figsize=(8, 4), gridspec_kw={"width_ratios": [1, 0.8]}
         )
 
-        # Filter out zero counts for the pie chart.
         df_plot = df[df["count"] > 0].copy()
         total = _series_int_sum(df["count"])
 
@@ -1009,7 +958,6 @@ def _render_quant_tier_chart(df: pd.DataFrame) -> str:
             autotext.set_fontweight("bold")
             autotext.set_color("white")
 
-        # Center text.
         ax_pie.text(
             0,
             0,
@@ -1025,7 +973,7 @@ def _render_quant_tier_chart(df: pd.DataFrame) -> str:
             "Quantitative Tiers", fontsize=11, fontweight="600", color="#1f2937", pad=10
         )
 
-        # Full legend showing ALL tiers (even with count=0).
+        # Keep zero-count tiers in the legend for a stable key.
         ax_legend.axis("off")
         y_pos = 0.95
         for tier in _QUANT_TIER_ORDER:
@@ -1033,7 +981,6 @@ def _render_quant_tier_chart(df: pd.DataFrame) -> str:
             pct = round(100.0 * cnt / total, 1) if total > 0 else 0.0
             color = _QUANT_TIER_COLORS.get(tier, "#999999")
 
-            # Draw colored square.
             ax_legend.add_patch(
                 plt.Rectangle(
                     (0.05, y_pos - 0.02),
@@ -1044,11 +991,9 @@ def _render_quant_tier_chart(df: pd.DataFrame) -> str:
                     linewidth=1,
                 )
             )
-            # Tier name.
             ax_legend.text(
                 0.18, y_pos, tier, fontsize=9, fontweight="600", color="#1f2937", va="center"
             )
-            # Count and percentage.
             ax_legend.text(
                 0.75, y_pos, f"{cnt} ({pct}%)", fontsize=8, color="#6b7280", va="center", ha="right"
             )
@@ -1106,10 +1051,8 @@ def _render_cohort_chart(df: pd.DataFrame, group_col: str) -> str:
         import matplotlib.pyplot as plt
 
         pivot = df.pivot_table(index=group_col, columns="tier", values="count", fill_value=0)
-        # Reorder columns to match _TIER_ORDER.
         ordered_cols = [t for t in _TIER_ORDER if t in pivot.columns]
         pivot = pivot[ordered_cols]
-        # Sort rows by total count descending.
         pivot = pivot.loc[pivot.sum(axis=1).sort_values(ascending=True).index]
         fig, ax = plt.subplots(figsize=(6, 0.35 * len(pivot) + 0.8))
         colors = [_TIER_COLORS.get(t, "#999999") for t in ordered_cols]
@@ -1120,11 +1063,6 @@ def _render_cohort_chart(df: pd.DataFrame, group_col: str) -> str:
         return fig
 
     return _render_chart(_build)
-
-
-# ---------------------------------------------------------------------------
-# Optional dependency import helper
-# ---------------------------------------------------------------------------
 
 
 def _import_jinja2() -> typing.Any:

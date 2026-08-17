@@ -34,10 +34,6 @@ from pxaudit import _PRIDE_PREFIX
 from pxaudit.accession import normalize_accession
 from pxaudit.file_classifier import FileClass, FileTypeClassifier, strip_compression
 
-# ---------------------------------------------------------------------------
-# Module-level constants
-# ---------------------------------------------------------------------------
-
 _TIER_LOGIC_VERSION: str = "v3.0"
 _PSI_RESULT_EXTENSIONS: tuple[str, ...] = (".mzid", ".mzidentml", ".mztab")
 _FLAG_FIELDS: tuple[str, ...] = (
@@ -58,11 +54,6 @@ _FLAG_FIELDS: tuple[str, ...] = (
 
 # Module-level classifier instance: stateless after construction, safe to share.
 _classifier: FileTypeClassifier = FileTypeClassifier()
-
-
-# ---------------------------------------------------------------------------
-# Private helpers
-# ---------------------------------------------------------------------------
 
 
 class FlagOutcome(StrEnum):
@@ -205,11 +196,6 @@ def _is_psi_result(filename: str) -> bool:
     return base.endswith(_PSI_RESULT_EXTENSIONS)
 
 
-# ---------------------------------------------------------------------------
-# Public dataclass
-# ---------------------------------------------------------------------------
-
-
 @dataclass
 class AuditResult:
     """One audit row, ready for :func:`pxaudit.db.insert_audit` via ``asdict()``.
@@ -221,23 +207,19 @@ class AuditResult:
     through ``asdict()`` to the database layer.
     """
 
-    # Identifying (required) fields
     accession: str
     tier: str
-    # Metadata flags
     has_title: FlagOutcome = FlagOutcome.UNKNOWN
     has_organism: FlagOutcome = FlagOutcome.UNKNOWN
     has_organism_id: FlagOutcome = FlagOutcome.UNKNOWN
     has_instrument: FlagOutcome = FlagOutcome.UNKNOWN
     has_result_files: FlagOutcome = FlagOutcome.UNKNOWN
-    # File-level flags
     has_psi_results: FlagOutcome = FlagOutcome.UNKNOWN
     has_open_spectra: FlagOutcome = FlagOutcome.UNKNOWN  # FileClass.PEAK found
     has_organism_part: FlagOutcome = FlagOutcome.UNKNOWN  # meaningful organism-part name present
     has_publication: FlagOutcome = FlagOutcome.UNKNOWN  # positive PubMed ID linked
     has_tabular_quant: FlagOutcome = FlagOutcome.UNKNOWN
     has_quant_metadata: FlagOutcome = FlagOutcome.UNKNOWN
-    # Legacy flags
     has_sdrf: FlagOutcome = FlagOutcome.UNKNOWN
     has_mztab: FlagOutcome = FlagOutcome.UNKNOWN
     files_fetch_failed: bool = False
@@ -245,11 +227,6 @@ class AuditResult:
     ambiguity_count: int = 0
     tier_logic_version: str = _TIER_LOGIC_VERSION
     quant_tier: str = "No Quant"
-
-
-# ---------------------------------------------------------------------------
-# Public function
-# ---------------------------------------------------------------------------
 
 
 def compute_audit(
@@ -287,9 +264,6 @@ def compute_audit(
     """
     accession = normalize_accession(accession)
 
-    # ------------------------------------------------------------------
-    # 2.  Non-PRIDE short-circuit
-    # ------------------------------------------------------------------
     if not accession.upper().startswith(_PRIDE_PREFIX):
         unknown_flags = {name: FlagOutcome.UNKNOWN for name in _FLAG_FIELDS}
         return AuditResult(
@@ -302,14 +276,8 @@ def compute_audit(
             quant_tier="Unverifiable",
         )
 
-    # ------------------------------------------------------------------
-    # 3.  Normalise inputs
-    # ------------------------------------------------------------------
     project_data = project_data if isinstance(project_data, dict) else {}
 
-    # ------------------------------------------------------------------
-    # 4.  Project-level flags
-    # ------------------------------------------------------------------
     has_title = _outcome_for_value(project_data.get("title"), present="title" in project_data)
     has_organism = _first_entry_outcome(project_data, "organisms", "name")
     has_organism_id = _first_entry_outcome(project_data, "organisms", "accession")
@@ -323,9 +291,6 @@ def compute_audit(
         submission_type_value.strip().upper() if isinstance(submission_type_value, str) else None
     )
 
-    # ------------------------------------------------------------------
-    # 5.  File-level flags
-    # ------------------------------------------------------------------
     has_psi_results = FlagOutcome.UNKNOWN
     has_open_spectra = FlagOutcome.UNKNOWN
     has_tabular_quant = FlagOutcome.UNKNOWN
@@ -414,10 +379,8 @@ def compute_audit(
             uncertain_filename,
         )
 
-    # ------------------------------------------------------------------
-    # 6.  Tier derivation  (mirrors SQL CASE in the wiki Database Schema page)
-    # ------------------------------------------------------------------
-    # 7-tier FAIR ladder.  Each tier adds one more requirement:
+    # Tier derivation mirrors the SQL CASE in the wiki Database Schema page.
+    # FAIR ladder. Each tier adds one more requirement:
     #   None     : missing basic metadata (title / organism / instrument)
     #   Raw      : has metadata but no processed result files at all
     #   Bronze   : has result files but none are PSI-standard (mzIdentML / mzTab)
@@ -456,9 +419,6 @@ def compute_audit(
     else:
         tier = "Diamond"
 
-    # ------------------------------------------------------------------
-    # 7.  Quant-tier derivation (secondary scoring axis)
-    # ------------------------------------------------------------------
     if _failed(has_psi_results) and _failed(has_tabular_quant):
         quant_tier = "No Quant"
     elif _failed(has_psi_results) or _failed(has_tabular_quant):
