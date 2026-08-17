@@ -21,7 +21,7 @@ Canonical PRIDE identifiers must be `PXD` followed by at least six digits. Input
 pxaudit check pxd000001  # audited as PXD000001
 ```
 
-Safe 3 to 64 character identifiers from other repositories are accepted, including MassIVE (`MSV`), jPOST (`JPST`), and iProX (`IPX`) identifiers. They score `Unverifiable` because PXAudit 0.5.3 only queries PRIDE.
+Safe 3 to 64 character identifiers from other repositories are accepted, including MassIVE (`MSV`), jPOST (`JPST`), and iProX (`IPX`) identifiers. They score `Unverifiable` because PXAudit 0.5.4 only queries PRIDE.
 
 Embedded whitespace, path separators, query or fragment markers, control characters, `..`, unsafe endpoints, and malformed PXD-like values are rejected.
 
@@ -209,7 +209,7 @@ The repository includes `CITATION.cff`, which GitHub and reference managers can 
   author   = {Ergin, Enes Kemal},
   title    = {{PXAudit}: A command-line tool for auditing {Proteomics Exchange} study metadata},
   year     = {2026},
-  version  = {0.5.3},
+  version  = {0.5.4},
   url      = {https://github.com/LangeLab/PXAudit},
   license  = {MIT},
 }

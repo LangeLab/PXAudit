@@ -1,6 +1,6 @@
 # CLI Reference
 
-This page documents the PXAudit 0.5.3 command line. Examples use `pxaudit` for readability. From a source checkout, run the same commands with `uv run`, for example `uv run pxaudit check PXD000001`.
+This page documents the PXAudit 0.5.4 command line. Examples use `pxaudit` for readability. From a source checkout, run the same commands with `uv run`, for example `uv run pxaudit check PXD000001`.
 
 ## Command map
 
@@ -8,6 +8,7 @@ This page documents the PXAudit 0.5.3 command line. Examples use `pxaudit` for r
 | --- | --- | --- | --- |
 | `check ACCESSION` | Audit one accession | For `PXD` accessions when cache does not satisfy the request | Yes, after a complete audit |
 | `bulk-audit --input PATH` | Audit a list and optionally export it | Uses default cache and live-fetch behavior per accession | Yes, one completed accession at a time |
+| `summary --db PATH` | Print aggregate audit counts and metadata gaps | No | May migrate a legacy database |
 | `manifest ACCESSION` | Print a stored file inventory | No | No |
 | `report --db PATH` | Build `report.html` from stored audits | No | No |
 | `config show` | Print resolved configuration and its source | No | No |
@@ -28,7 +29,7 @@ pxaudit check -q PXD004683  # error: -q is in the wrong position
 
 - `-q`, `--quiet` uses compact status output where the command supports it.
 - `-v`, `--verbose` includes cache, fetch, skipped-accession, or report details.
-- `--no-color` disables ANSI color. `NO_COLOR` and non-TTY output are also respected.
+- `--no-color` disables ANSI color. `NO_COLOR`, quiet mode, and non-TTY output are also respected.
 - `--cache-dir PATH` overrides the configured API cache directory.
 - `--version` prints the installed PXAudit version.
 - `--help` prints command help.
@@ -52,6 +53,8 @@ db_path = "pxaudit_results.db"
 request_delay = 0.5
 bulk_delay = 1.0
 export_format = "tsv"
+# Optional: true or false. Unset follows TTY detection.
+color = true
 ```
 
 The file is flat TOML. Nested tables are ignored with a warning. Unknown keys and invalid values are ignored individually, so one bad setting does not discard the valid settings beside it.
@@ -64,6 +67,7 @@ The file is flat TOML. Nested tables are ignored with a warning. Unknown keys an
 | `request_delay` | `0.5` | Non-negative, finite delay before each PRIDE request |
 | `bulk_delay` | `1.0` | Non-negative, finite delay between accessions after network use |
 | `export_format` | unset | `tsv`, `csv`, or `json` |
+| `color` | unset | `true` or `false`; unset enables color only for TTY output |
 
 Booleans are rejected for numeric settings even though Python normally treats them as integers. Configuration precedence is:
 
@@ -79,6 +83,22 @@ Inspect the resolved value and source for every key:
 ```bash
 pxaudit config show
 ```
+
+## Terminal visual system
+
+Color is an optional scan aid. The glyph and label carry the meaning when output is plain text, and data bodies such as manifest TSV and JSON are never colored.
+
+| Meaning | Glyph | Color when enabled |
+| --- | --- | --- |
+| Passed | `✔` | Green |
+| Failed | `✘` | Red |
+| Unknown | `?` | Yellow |
+
+FAIR and quantification tier names use one restrained color per tier: Diamond is cyan, Platinum is bright cyan, Gold is yellow, Silver is bright white, Bronze is dim yellow, Raw is muted, and None is dim. `Quant-Complete`, `Quant-Ready`, `Partial`, and `No Quant` use the same restrained treatment. There are no background fills, box frames, or decorative banners.
+
+In `summary`, the `failed` and `unknown` gap markers use the same red and yellow outcome styles as checklist flags when color is enabled.
+
+Color is enabled for a TTY unless `color = false`, `--no-color`, `NO_COLOR`, or quiet mode suppresses it. Non-TTY output is plain by default; an explicit `color = true` setting is the opt-in override. Windows Terminal and a modern UTF-8 locale are expected for the `✔`, `✘`, and `?` glyphs; `--no-color` changes styling only, not the glyph vocabulary.
 
 ## `pxaudit check`
 
@@ -106,6 +126,37 @@ pxaudit check PXD000001 --no-cache
 
 # Store the completed audit in another database
 pxaudit check PXD000001 --db ~/audits/pride.db
+```
+
+Successful human-readable output follows this shape. Metadata values and the file count come from the accession; ANSI styling is omitted here:
+
+```text
+Accession : PXD000001
+Tier      : Diamond
+Quant Tier: Quant-Complete
+------------------------------------------------
+Metadata
+  ✔ Title         Example study
+  ✔ Organism      Homo sapiens (NEWT:9606)
+  ✔ Instrument    Orbitrap Fusion
+  ✔ Organism part annotated
+  ✔ Publication   linked
+  ✔ Quant metadata (CV methods)
+------------------------------------------------
+Files (5 total)
+  ✔ Result/Search files present
+  ✔ PSI-standard results (mzIdentML / mzTab-ID)
+  ✔ Open spectra (mzML / MGF)
+  ✔ SDRF file present
+  ✔ mzTab summary present
+  ✔ Tabular quant summary or matrix
+------------------------------------------------
+```
+
+For automation, `-q` replaces the checklist with one stable line:
+
+```text
+PXD000001  Diamond  Quant-Complete  db=pxaudit_results.db
 ```
 
 Input is trimmed and canonicalized to uppercase. A PRIDE accession must be `PXD` followed by at least six digits. Other identifiers may contain 3 to 64 ASCII letters, digits, dots, underscores, or hyphens, must begin and end with an alphanumeric character, and may not contain `..`. Safe non-PRIDE identifiers are stored as `Unverifiable` because PXAudit does not query their repositories.
@@ -171,11 +222,74 @@ printf 'PXD000001\nPXD004683\n' | \
   pxaudit bulk-audit --input - --continue-on-error
 ```
 
+The normal end block is compact and keeps progress counts separate from the tier distribution:
+
+```text
+Batch audit complete (<elapsed>s)
+  Total     : 3
+  Completed : 3
+  Failed    : 0
+    Gold         2
+    Diamond      1
+```
+
+With `-q`, the end block becomes one machine-oriented line such as `bulk-audit  total=3  completed=3  failed=0`. Warnings and malformed-input details remain on standard error so a redirected export stays usable.
+
 The inter-accession delay runs only after network use. Fresh two-endpoint cache hits do not incur it. On a TTY, the command displays a progress bar unless quiet mode is active. Interruption exits with code 130 after preserving completed database rows and attempting any requested partial export.
 
 TSV, CSV, and JSON exports serialize every `has_*` outcome as the string `passed`, `failed`, or `unknown`. They also include `ambiguity_count` and `tier_logic_version`; consumers must not parse evidence columns as integer booleans.
 
 Export paths are not silently replaced. Without `--overwrite`, an existing file is an input error. Symbolic links and non-file targets are refused.
+
+## `pxaudit summary`
+
+Print an aggregate snapshot from an existing audit database:
+
+```bash
+pxaudit summary --db pxaudit_results.db
+pxaudit -q summary --db pxaudit_results.db
+```
+
+The default output has five sections: a header with the database path, accession counts, and `tier_logic_version`; FAIR tier counts; quantification tier counts; the six largest failed or unknown metadata gaps; and a footer pointing to the HTML report. FAIR counts cover verifiable rows, while the quantification section includes `Unverifiable` rows separately. The command queries audit aggregates only and does not scan `study_files`.
+
+```text
+PXAudit summary  results.db  (tier_logic v3.0)
+  accessions  128   verifiable  120   unverifiable  8
+
+FAIR tiers
+  Diamond     4
+  Platinum   11
+  Gold       18
+  Silver     31
+  Bronze     27
+  Raw        22
+  None        7
+
+Quant tiers
+  Quant-Complete  9
+  Quant-Ready    14
+  Partial        41
+  No Quant       56
+  Unverifiable    8
+
+Top gaps (failed / unknown)
+  has_sdrf             failed   64   unknown    3
+  has_tabular_quant    failed   51   unknown    0
+  has_organism_part    failed   38   unknown    7
+  has_publication      failed   29   unknown    1
+  has_open_spectra     failed   22   unknown    0
+  has_psi_results       failed   18   unknown    2
+
+HTML report: pxaudit report --db results.db
+```
+
+Quiet mode emits one stable line for scripts and does not emit ANSI styling:
+
+```text
+summary 128 accessions verifiable=120 unverifiable=8 tier_logic=v3.0 diamond=4 platinum=11 gold=18 silver=31 bronze=27 raw=22 none=7 quant_complete=9 quant_ready=14 quant_partial=41 quant_no_quant=56 quant_unverifiable=8 quant_unknown=0
+```
+
+An empty valid database exits `0` with zero counts. A missing database path exits `2`; an unreadable or schema-incompatible database exits `1`. Legacy databases are opened through the normal migration path when possible.
 
 ## `pxaudit manifest`
 

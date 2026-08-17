@@ -72,6 +72,7 @@ The manifest command reads a stored file inventory without contacting PRIDE:
 ```bash
 uv run pxaudit manifest PXD004683
 uv run pxaudit manifest PXD004683 --format json
+uv run pxaudit summary --db pxaudit_results.db
 ```
 
 Install the optional report dependencies and generate a self-contained HTML report:
@@ -94,7 +95,7 @@ Default and `--refresh` runs may use compatible stale cache entries after a live
 
 ## Current scope
 
-PXAudit 0.5.3 queries PRIDE for canonical `PXD` accessions. Safe identifiers from MassIVE, jPOST, iProX, and other repositories are accepted for storage but score `Unverifiable`; PXAudit does not pretend that PRIDE supplied evidence for them.
+PXAudit 0.5.4 queries PRIDE for canonical `PXD` accessions. Safe identifiers from MassIVE, jPOST, iProX, and other repositories are accepted for storage but score `Unverifiable`; PXAudit does not pretend that PRIDE supplied evidence for them.
 
 ## Find the detail you need
 

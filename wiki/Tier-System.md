@@ -40,7 +40,7 @@ These examples isolate the gate that determines each score. Other evidence may b
 - **Platinum:** PSI results, SDRF, open spectra, and organism part are present, but `pubmedID` is absent or `0`.
 - **Diamond:** PSI results, SDRF, open spectra, organism part, and a positive integer PubMed ID are all present.
 
-The ladder is versioned. PXAudit 0.5.3 writes `tier_logic_version = "v3.0"` into every new audit row. Re-auditing an accession applies current logic to current or cached evidence; it does not silently rewrite older rows in bulk.
+The ladder is versioned. PXAudit 0.5.4 writes `tier_logic_version = "v3.0"` into every new audit row. Re-auditing an accession applies current logic to current or cached evidence; it does not silently rewrite older rows in bulk.
 
 ## Three-valued outcomes
 

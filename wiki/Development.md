@@ -2,7 +2,7 @@
 
 The part I worry about most is a test that passes while encoding the wrong scientific meaning. Coverage still matters, but it cannot tell me whether the evidence behind a tier is defensible. Changes to PXAudit need both software evidence and domain evidence.
 
-This page describes the public repository workflow for PXAudit 0.5.3.
+This page describes the public repository workflow for PXAudit 0.5.4.
 
 ## Set up a checkout
 
