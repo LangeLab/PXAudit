@@ -71,7 +71,8 @@ def test_load_valid_keys(tmp_path: Path) -> None:
         'db_path = "custom.db"\n'
         "request_delay = 0.25\n"
         "bulk_delay = 2\n"
-        'export_format = "TSV"\n',
+        'export_format = "TSV"\n'
+        "color = true\n",
         encoding="utf-8",
     )
 
@@ -85,6 +86,7 @@ def test_load_valid_keys(tmp_path: Path) -> None:
         "request_delay": 0.25,
         "bulk_delay": 2.0,
         "export_format": "tsv",
+        "color": True,
     }
 
 
@@ -290,6 +292,13 @@ def test_merge_invalid_export_format_flag_ignored() -> None:
     assert cfg.sources["export_format"] == "config"
 
 
+def test_merge_invalid_color_flag_ignored() -> None:
+    """An invalid defensive color override preserves the configured value."""
+    cfg = merge_config({"color": False}, color=object())  # type: ignore[arg-type]
+    assert cfg.color is False
+    assert cfg.sources["color"] == "config"
+
+
 def test_merge_valid_flags_preserve_values_and_provenance() -> None:
     """Valid overrides are normalized independently and marked as flags."""
     cfg = merge_config(
@@ -299,6 +308,7 @@ def test_merge_valid_flags_preserve_values_and_provenance() -> None:
         request_delay=0.01,
         bulk_delay=2.0,
         export_format="JSON",
+        color=False,
     )
 
     assert (
@@ -308,8 +318,20 @@ def test_merge_valid_flags_preserve_values_and_provenance() -> None:
         cfg.request_delay,
         cfg.bulk_delay,
         cfg.export_format,
-    ) == ("flag-cache", 9.0, "flag.db", 0.01, 2.0, "json")
+        cfg.color,
+    ) == ("flag-cache", 9.0, "flag.db", 0.01, 2.0, "json", False)
     assert set(cfg.sources.values()) == {"flag"}
+
+
+def test_color_config_precedence() -> None:
+    """Color follows config unless an explicit merge override supplies a value."""
+    from_file = merge_config({"color": False})
+    from_flag = merge_config({"color": False}, color=True)
+
+    assert from_file.color is False
+    assert from_file.sources["color"] == "config"
+    assert from_flag.color is True
+    assert from_flag.sources["color"] == "flag"
 
 
 @pytest.mark.parametrize(
@@ -321,6 +343,7 @@ def test_merge_valid_flags_preserve_values_and_provenance() -> None:
         pytest.param("request_delay", "true", id="request-bool"),
         pytest.param("bulk_delay", "-1", id="bulk-negative"),
         pytest.param("export_format", '"xml"', id="format-choice"),
+        pytest.param("color", '"yes"', id="color-type"),
         pytest.param("cache_ttl_seconds", "nan", id="ttl-nan"),
         pytest.param("request_delay", "inf", id="request-infinity"),
         pytest.param("bulk_delay", "-inf", id="bulk-negative-infinity"),

@@ -31,6 +31,7 @@ from pxaudit.cli import (
     _print_result,
     _read_accessions,
     _result_to_row,
+    _summary_counts,
     _write_export,
     main,
 )
@@ -124,6 +125,72 @@ def _cached(
 ) -> CachedResponse:
     """Build deterministic cache provenance for CLI orchestration tests."""
     return CachedResponse(data, retrieved_at, snapshot_id, age)
+
+
+def _create_summary_db(tmp_path: Path) -> Path:
+    """Create a small v3 database with failed, unknown, and unverifiable rows."""
+    from pxaudit.db import get_or_create_db, insert_audit
+
+    database = tmp_path / "summary.db"
+    connection = get_or_create_db(database)
+    try:
+        flags = {
+            f"has_{name}": "passed"
+            for name in (
+                "title",
+                "organism",
+                "organism_id",
+                "instrument",
+                "result_files",
+                "psi_results",
+                "open_spectra",
+                "organism_part",
+                "publication",
+                "tabular_quant",
+                "quant_metadata",
+                "sdrf",
+                "mztab",
+            )
+        }
+        insert_audit(
+            connection,
+            {
+                "accession": "PXD000001",
+                "tier": "Diamond",
+                "quant_tier": "Quant-Complete",
+                "is_unverifiable": 0,
+                **flags,
+            },
+        )
+        insert_audit(
+            connection,
+            {
+                "accession": "PXD000002",
+                "tier": "Gold",
+                "quant_tier": "Partial",
+                "is_unverifiable": 0,
+                "has_sdrf": "failed",
+                "has_publication": "unknown",
+                **{
+                    key: value
+                    for key, value in flags.items()
+                    if key not in {"has_sdrf", "has_publication"}
+                },
+            },
+        )
+        insert_audit(
+            connection,
+            {
+                "accession": "MSV000001",
+                "tier": "Unverifiable",
+                "quant_tier": "Unverifiable",
+                "is_unverifiable": 1,
+                **{key: "unknown" for key in flags},
+            },
+        )
+    finally:
+        connection.close()
+    return database
 
 
 @pytest.fixture()
@@ -2136,6 +2203,23 @@ def test_bulk_audit_tier_distribution_in_summary(bulk_mocks: dict, tmp_path: Pat
     assert "Diamond" in result.output
 
 
+def test_bulk_audit_routes_tier_distribution_through_style_helper(
+    bulk_mocks: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Bulk tier names use the shared presentation helper without changing counts."""
+    styled = MagicMock(side_effect=lambda name: f"<{name}>")
+    monkeypatch.setattr("pxaudit.cli._output.style_tier", styled)
+    acc_file = tmp_path / "ids.txt"
+    acc_file.write_text("PXD000001\nPXD000002\n")
+
+    result = CliRunner().invoke(main, ["bulk-audit", "--input", str(acc_file)])
+
+    assert result.exit_code == 0
+    assert "<Gold        >" in result.output
+    assert "<Diamond     >" in result.output
+    assert styled.call_count == 2
+
+
 def test_bulk_audit_keyboard_interrupt(bulk_mocks: dict, tmp_path: Path) -> None:
     """Ctrl+C interrupts the batch cleanly."""
 
@@ -2412,6 +2496,220 @@ def test_check_verbose_includes_detail(mocks: dict) -> None:
     assert result.exit_code == 0
     assert "Metadata" in result.output
     assert "cache miss" in result.output or "fetch:" in result.output
+
+
+def test_check_checklist_preserves_label_order_and_plain_shape(mocks: dict) -> None:
+    """Color styling leaves the established checklist labels and order unchanged."""
+    result = CliRunner().invoke(main, ["check", "PXD000001"])
+
+    assert result.exit_code == 0
+    lines = result.stdout.splitlines()
+    labels = [
+        "Accession :",
+        "Tier      :",
+        "Quant Tier:",
+        "Metadata",
+        "Files (",
+    ]
+    positions = [
+        next(index for index, line in enumerate(lines) if line.startswith(label))
+        for label in labels
+    ]
+    assert positions == sorted(positions)
+    assert "\x1b[" not in result.stdout
+
+
+def test_color_config_reaches_output_enablement(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The color config value reaches output setup while ``--no-color`` remains dominant."""
+    from pxaudit import _output
+
+    config = tmp_path / "color.toml"
+    config.write_text("color = true\n", encoding="utf-8")
+    monkeypatch.setenv("PXAUDIT_CONFIG", str(config))
+    configure = MagicMock(wraps=_output.configure)
+    monkeypatch.setattr("pxaudit.cli._output.configure", configure)
+
+    result = CliRunner().invoke(main, ["--no-color", "config", "show"])
+
+    assert result.exit_code == 0
+    assert configure.call_args.kwargs["color"] is True
+    assert configure.call_args.kwargs["no_color"] is True
+
+
+def test_summary_default_is_a_fixed_plain_text_snapshot(tmp_path: Path) -> None:
+    """Summary renders all sections and distinguishes failed from unknown gaps."""
+    database = _create_summary_db(tmp_path)
+
+    result = CliRunner().invoke(main, ["summary", "--db", str(database)])
+
+    assert result.exit_code == 0
+    assert result.stderr == ""
+    assert result.stdout == (
+        f"PXAudit summary  {database}  (tier_logic v3.0)\n"
+        "  accessions  3   verifiable  2   unverifiable  1\n"
+        "\nFAIR tiers\n"
+        "  Diamond       1\n"
+        "  Platinum      0\n"
+        "  Gold          1\n"
+        "  Silver        0\n"
+        "  Bronze        0\n"
+        "  Raw           0\n"
+        "  None          0\n"
+        "\nQuant tiers\n"
+        "  Quant-Complete    1\n"
+        "  Quant-Ready       0\n"
+        "  Partial           1\n"
+        "  No Quant          0\n"
+        "  Unverifiable      1\n"
+        "\nTop gaps (failed / unknown)\n"
+        "  has_sdrf             failed    1   unknown    0\n"
+        "  has_publication      failed    0   unknown    1\n"
+        "  has_title            failed    0   unknown    0\n"
+        "  has_organism         failed    0   unknown    0\n"
+        "  has_organism_id      failed    0   unknown    0\n"
+        "  has_instrument       failed    0   unknown    0\n"
+        f"\nHTML report: pxaudit report --db {database}\n"
+    )
+    assert "\x1b[" not in result.stdout
+
+
+def test_summary_gap_markers_use_shared_outcome_styles(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Summary routes failed and unknown gap labels through the shared style helper."""
+    database = _create_summary_db(tmp_path)
+    styled = MagicMock(side_effect=lambda outcome: f"<{outcome}>")
+    monkeypatch.setattr("pxaudit.cli._output.style_outcome", styled)
+
+    result = CliRunner().invoke(main, ["summary", "--db", str(database)])
+
+    assert result.exit_code == 0
+    assert "<failed>" in result.stdout
+    assert "<unknown>" in result.stdout
+    assert [call.args[0] for call in styled.call_args_list] == [
+        outcome for _ in range(6) for outcome in ("failed", "unknown")
+    ]
+
+
+def test_summary_quiet_is_one_stable_status_line(tmp_path: Path) -> None:
+    """Quiet summary emits stable key-value tokens without section headers or ANSI."""
+    database = _create_summary_db(tmp_path)
+
+    result = CliRunner().invoke(main, ["-q", "summary", "--db", str(database)])
+
+    assert result.exit_code == 0
+    assert result.stdout == (
+        "summary 3 accessions verifiable=2 unverifiable=1 tier_logic=v3.0 "
+        "diamond=1 platinum=0 gold=1 silver=0 bronze=0 raw=0 none=0 "
+        "quant_complete=1 quant_ready=0 quant_partial=1 quant_no_quant=0 "
+        "quant_unverifiable=1 quant_unknown=0\n"
+    )
+    assert "FAIR tiers" not in result.stdout
+    assert "\x1b[" not in result.stdout
+
+
+def test_summary_counts_adds_nonzero_unknown_values() -> None:
+    """Summary display ordering preserves known tiers and appends unknown values."""
+    assert _summary_counts({"Diamond": 2, "Unknown": 3}, ("Diamond",)) == [
+        ("Diamond", 2),
+        ("Unknown", 3),
+    ]
+
+
+def test_summary_empty_database_is_successful(tmp_path: Path) -> None:
+    """A valid empty database returns a complete zero-count summary."""
+    from pxaudit.db import get_or_create_db
+
+    database = tmp_path / "empty.db"
+    get_or_create_db(database).close()
+
+    result = CliRunner().invoke(main, ["summary", "--db", str(database)])
+
+    assert result.exit_code == 0
+    assert "accessions  0   verifiable  0   unverifiable  0" in result.stdout
+    assert "FAIR tiers" in result.stdout
+    assert "Top gaps (failed / unknown)" in result.stdout
+
+
+@pytest.mark.parametrize("database_kind", ["missing", "directory", "corrupt"])
+def test_summary_database_path_errors_exit_two_or_one(tmp_path: Path, database_kind: str) -> None:
+    """Missing paths exit two while existing unreadable databases exit one."""
+    database = tmp_path / "bad.db"
+    if database_kind == "directory":
+        database.mkdir()
+    elif database_kind == "corrupt":
+        database.write_bytes(b"not a sqlite database")
+
+    result = CliRunner().invoke(main, ["summary", "--db", str(database)])
+
+    expected_code = 2 if database_kind in {"missing", "directory"} else 1
+    assert result.exit_code == expected_code
+    assert "Error:" in result.stderr
+
+
+def test_summary_database_open_failure_is_reported(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Summary reports a database-open failure with the command error contract."""
+    database = tmp_path / "unavailable.db"
+    database.touch()
+    monkeypatch.setattr(
+        "pxaudit.cli.get_or_create_db", MagicMock(side_effect=sqlite3.DatabaseError("offline"))
+    )
+
+    result = CliRunner().invoke(main, ["summary", "--db", str(database)])
+
+    assert result.exit_code == 1
+    assert "cannot read database" in result.stderr
+
+
+def test_summary_migrates_pre_v3_database(tmp_path: Path) -> None:
+    """Summary opens a legacy integer-flag database through the normal migration path."""
+    database = tmp_path / "legacy.db"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "CREATE TABLE audit ("
+            "accession TEXT PRIMARY KEY, tier TEXT, has_title INTEGER, "
+            "has_organism INTEGER, has_organism_id INTEGER, has_instrument INTEGER, "
+            "has_result_files INTEGER, has_psi_results INTEGER, has_open_spectra INTEGER, "
+            "has_organism_part INTEGER, has_publication INTEGER, has_tabular_quant INTEGER, "
+            "has_quant_metadata INTEGER, has_sdrf INTEGER, has_mztab INTEGER, "
+            "files_fetch_failed INTEGER, is_unverifiable INTEGER, ambiguity_count INTEGER, "
+            "tier_logic_version TEXT, quant_tier TEXT)"
+        )
+        connection.execute(
+            "INSERT INTO audit VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "PXD000001",
+                "Gold",
+                1,
+                1,
+                1,
+                1,
+                1,
+                0,
+                1,
+                1,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                "v2.0",
+                "Partial",
+            ),
+        )
+
+    result = CliRunner().invoke(main, ["summary", "--db", str(database)])
+
+    assert result.exit_code == 0
+    assert "tier_logic v3.0" in result.stdout
+    assert "failed" in result.stdout
 
 
 @pytest.mark.parametrize("global_flags", [[], ["-q"], ["-v"]])

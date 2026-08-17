@@ -126,10 +126,71 @@ def test_emitters_use_exact_documented_tty_styles(monkeypatch: pytest.MonkeyPatc
     assert stderr.getvalue() == "\x1b[33mwarning\x1b[0m\n\x1b[31merror\x1b[0m\n"
 
 
+def test_flag_glyphs_and_tier_names_use_restrained_tty_styles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Evidence glyphs and tier names receive stable colors only on a TTY."""
+    stdout = _TTYStream(is_tty=True)
+    monkeypatch.setattr(sys, "stdout", stdout)
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    _output.configure()
+
+    passed = _output.flag_glyph("passed")
+    failed = _output.flag_glyph("failed")
+    unknown = _output.flag_glyph("unknown")
+    failed_label = _output.style_outcome("failed")
+    unknown_label = _output.style_outcome("unknown")
+    tier = _output.style_tier("Diamond")
+    quant = _output.style_tier("Quant-Complete")
+
+    assert click.unstyle(passed) == "✔"
+    assert click.unstyle(failed) == "✘"
+    assert click.unstyle(unknown) == "?"
+    assert click.unstyle(failed_label) == "failed"
+    assert click.unstyle(unknown_label) == "unknown"
+    assert click.unstyle(tier) == "Diamond"
+    assert click.unstyle(quant) == "Quant-Complete"
+    assert all(
+        "\x1b[" in value
+        for value in (passed, failed, unknown, failed_label, unknown_label, tier, quant)
+    )
+
+
+def test_color_override_and_quiet_mode_control_new_styles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Config color overrides TTY detection while quiet mode always stays plain."""
+    stdout = _TTYStream(is_tty=False)
+    monkeypatch.setattr(sys, "stdout", stdout)
+    monkeypatch.delenv("NO_COLOR", raising=False)
+
+    _output.configure(color=True)
+    assert "\x1b[" in _output.style_tier("Gold")
+
+    _output.configure(color=False)
+    assert _output.style_tier("Gold") == "Gold"
+
+    _output.configure(no_color=True, color=True)
+    assert _output.style_tier("Gold") == "Gold"
+
+    _output.configure(quiet=True, color=True)
+    assert _output.flag_glyph("passed") == "✔"
+    assert _output.style_tier("not-a-tier") == "not-a-tier"
+
+
 def test_public_api_is_explicit_and_stable() -> None:
-    """The module exports only the five supported terminal operations."""
-    assert set(_output.__all__) == {"configure", "detail", "error", "status", "warn"}
-    assert len(_output.__all__) == 5
+    """The module exports only the supported terminal operations."""
+    assert set(_output.__all__) == {
+        "configure",
+        "detail",
+        "error",
+        "flag_glyph",
+        "status",
+        "style_outcome",
+        "style_tier",
+        "warn",
+    }
+    assert len(_output.__all__) == 8
 
 
 def test_output_module_imports_no_domain_or_storage_modules() -> None:

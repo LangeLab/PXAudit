@@ -25,6 +25,7 @@ from pxaudit.db import (
     migrate_study_files_v2,
     migrate_study_v2,
     open_existing_db,
+    summarize_database,
 )
 
 _STUDY_DATA: dict = {
@@ -110,6 +111,86 @@ def test_create_tables_builds_complete_idempotent_schema(
     indexes = {name for kind, name in schema if kind == "index"}
     assert tables == {"study", "study_files", "audit"}
     assert "idx_study_files_accession" in indexes
+
+
+def test_summarize_database_aggregates_tiers_quant_and_verifiable_gaps(
+    conn: sqlite3.Connection,
+) -> None:
+    """Summary aggregation returns stable counts without reading study files."""
+    rows = [
+        {
+            **_AUDIT_DATA,
+            "accession": "PXD000001",
+            "tier": "Diamond",
+            "quant_tier": "Quant-Complete",
+        },
+        {
+            **_AUDIT_DATA,
+            "accession": "PXD000002",
+            "tier": "Gold",
+            "quant_tier": "Partial",
+            "has_psi_results": "failed",
+            "has_sdrf": "failed",
+        },
+        {
+            **_AUDIT_DATA,
+            "accession": "MSV000001",
+            "tier": "Unverifiable",
+            "quant_tier": "Unverifiable",
+            "is_unverifiable": 1,
+            **{column: "unknown" for column in _AUDIT_DATA if column.startswith("has_")},
+        },
+        {
+            **_AUDIT_DATA,
+            "accession": "PXD000003",
+            "tier": None,
+            "quant_tier": None,
+            "tier_logic_version": "v2.0",
+            "has_title": "unknown",
+            "has_psi_results": "unknown",
+        },
+    ]
+    for row in rows:
+        insert_audit(conn, row)
+
+    summary = summarize_database(conn)
+
+    assert summary.total_count == 4
+    assert summary.verifiable_count == 3
+    assert summary.unverifiable_count == 1
+    assert summary.tier_logic_version == "mixed"
+    assert summary.tier_counts == {"Diamond": 1, "Gold": 1, "Unverifiable": 1, "Unknown": 1}
+    assert summary.quant_counts == {
+        "Quant-Complete": 1,
+        "Partial": 1,
+        "Unverifiable": 1,
+        "Unknown": 1,
+    }
+    psi_gap = next(gap for gap in summary.gaps if gap.field == "has_psi_results")
+    assert (psi_gap.failed, psi_gap.unknown) == (1, 1)
+    assert len(summary.gaps) == 6
+
+
+def test_summarize_empty_database_has_unknown_version_and_zero_gaps(
+    conn: sqlite3.Connection,
+) -> None:
+    """An empty audit table produces a complete zero-count summary."""
+    summary = summarize_database(conn)
+
+    assert summary.total_count == 0
+    assert summary.verifiable_count == 0
+    assert summary.unverifiable_count == 0
+    assert summary.tier_logic_version == "unknown"
+    assert summary.tier_counts == {}
+    assert summary.quant_counts == {}
+    assert all((gap.failed, gap.unknown) == (0, 0) for gap in summary.gaps)
+
+
+def test_summarize_single_version_reports_that_version(conn: sqlite3.Connection) -> None:
+    """A database containing one schema version reports that version directly."""
+    insert_audit(conn, _AUDIT_DATA)
+
+    assert summarize_database(conn).tier_logic_version == "v3.0"
 
 
 def test_transaction_batch_commits_at_boundary_and_tracks_progress(
