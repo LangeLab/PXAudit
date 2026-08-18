@@ -4,9 +4,9 @@
 
 All notable changes to PXAudit are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project follows [Semantic Versioning](https://semver.org/).
 
-## [0.6.0] - 2026-07-18
+## [0.6.0] - 2026-08-18
 
-This unreleased entry prepares the first public package release as v0.6.0. It consolidates the untagged v0.5.1 through v0.5.4 work after the tagged v0.5.0 baseline. The tagged v0.5.0 release remains documented separately below rather than being duplicated here. The release focuses on safer local auditing, deterministic PRIDE evidence, three-valued outcomes, and readable terminal triage. It remains PRIDE-only; partner adapters are deferred until after publication.
+This first public package release as v0.6.0 consolidates the untagged v0.5.1 through v0.5.4 work after the tagged v0.5.0 baseline. The tagged v0.5.0 release remains documented separately below rather than being duplicated here. The release focuses on safer local auditing, deterministic PRIDE evidence, three-valued outcomes, and readable terminal triage. It remains PRIDE-only; partner adapters are deferred until after publication.
 
 **Maintenance:**
 
