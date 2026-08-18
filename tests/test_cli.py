@@ -1599,7 +1599,7 @@ def test_bulk_audit_database_open_failure_closes_no_connection(
     bulk_mocks["_audit_single"].assert_not_called()
 
 
-def test_release_smoke_check_bulk_manifest_report(
+def test_release_smoke_check_bulk_summary_manifest_report(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """The documented check-to-report workflow succeeds in a clean temporary directory."""
@@ -1630,13 +1630,16 @@ def test_release_smoke_check_bulk_manifest_report(
             "0",
         ],
     )
+    summary = runner.invoke(main, ["summary", "--db", str(db_path)])
     manifest = runner.invoke(main, ["manifest", "PXD000001", "--db", str(db_path)])
     report = runner.invoke(main, ["report", "--db", str(db_path), "--output", str(report_dir)])
 
     assert check.exit_code == 0, check.output
     assert bulk.exit_code == 0, bulk.output
+    assert summary.exit_code == 0, summary.output
     assert manifest.exit_code == 0, manifest.output
     assert report.exit_code == 0, report.output
+    assert "PXAudit summary" in summary.output
     assert db_path.is_file()
     assert "PXD000001" in export_path.read_text(encoding="utf-8")
     assert "results.mzid" in manifest.output
@@ -3193,6 +3196,20 @@ def test_main_help_mentions_global_flag_order() -> None:
     result = runner.invoke(main, ["--help"])
     assert result.exit_code == 0
     assert "before the subcommand" in result.output
+
+
+def test_help_includes_command_examples() -> None:
+    """Top-level and check help show copyable command examples."""
+    runner = CliRunner()
+
+    main_help = runner.invoke(main, ["--help"])
+    check_help = runner.invoke(main, ["check", "--help"])
+
+    assert main_help.exit_code == 0
+    assert "pxaudit check PXD000001" in main_help.output
+    assert "pxaudit bulk-audit --input accessions.txt" in main_help.output
+    assert check_help.exit_code == 0
+    assert "pxaudit check PXD000001 --db audits.db" in check_help.output
 
 
 def test_bulk_delay_flag_overrides_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

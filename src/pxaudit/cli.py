@@ -200,7 +200,14 @@ def main(
     no_color: bool,
     cache_dir: str | None,
 ) -> None:
-    """Audit Proteomics Exchange study metadata."""
+    """Audit Proteomics Exchange study metadata.
+
+    \b
+    Examples:
+      pxaudit check PXD000001
+      pxaudit bulk-audit --input accessions.txt --format tsv
+      pxaudit summary --db pxaudit_results.db
+    """
     if quiet and verbose:
         click.echo("Error: --quiet and --verbose are mutually exclusive.", err=True)
         sys.exit(2)
@@ -769,7 +776,12 @@ def check(
     no_cache: bool,
     db_path: str | None,
 ) -> None:
-    """Audit a single Proteomics Exchange accession."""
+    """Audit one Proteomics Exchange accession and save its evidence to SQLite.
+
+    \b
+    Example:
+      pxaudit check PXD000001 --db audits.db
+    """
     cfg = _resolve_effective(ctx, db_path=db_path)
     _emit_config_warnings(cfg)
     resolved_db = cfg.db_path
@@ -880,7 +892,12 @@ def bulk_audit(
     overwrite: bool,
     batch_size: int,
 ) -> None:
-    """Audit multiple Proteomics Exchange accessions."""
+    """Audit multiple accessions sequentially and optionally write an export.
+
+    \b
+    Example:
+      pxaudit bulk-audit --input accessions.txt --format tsv --output audit.tsv
+    """
     cfg = _resolve_effective(ctx, db_path=db_path, bulk_delay=delay, export_format=fmt)
     _emit_config_warnings(cfg)
     if delay is not None and (not math.isfinite(delay) or delay < 0):
@@ -1107,7 +1124,12 @@ def bulk_audit(
 )
 @click.pass_context
 def summary(ctx: click.Context, db_path: str | None) -> None:
-    """Print an aggregate cohort summary from the audit database."""
+    """Print aggregate cohort counts and evidence gaps from SQLite.
+
+    \b
+    Example:
+      pxaudit summary --db pxaudit_results.db
+    """
     cfg = _resolve_effective(ctx, db_path=db_path)
     _emit_config_warnings(cfg)
     database_path = Path(cfg.db_path)
@@ -1149,7 +1171,12 @@ def summary(ctx: click.Context, db_path: str | None) -> None:
 )
 @click.pass_context
 def manifest(ctx: click.Context, accession: str, db_path: str | None, fmt: str) -> None:
-    """List files for an accession from the audit database."""
+    """List the stored file inventory for one accession.
+
+    \b
+    Example:
+      pxaudit manifest PXD000001 --format json
+    """
     cfg = _resolve_effective(ctx, db_path=db_path)
     _emit_config_warnings(cfg)
     resolved_db = cfg.db_path
@@ -1243,7 +1270,12 @@ def report(
     title: str,
     overwrite: bool,
 ) -> None:
-    """Generate a self-contained HTML report from a populated database."""
+    """Generate a self-contained HTML report from a populated database.
+
+    \b
+    Example:
+      pxaudit report --db pxaudit_results.db --output report/
+    """
     from pxaudit.report import generate_report
 
     _emit_config_warnings(_resolve_effective(ctx))

@@ -45,6 +45,16 @@ def test_console_script_resolves_to_click_group() -> None:
     assert result.output == f"pxaudit, version {_PROJECT['version']}\n"
 
 
+def test_project_urls_cover_public_release_links() -> None:
+    """Project metadata exposes stable homepage, repository, issue, and changelog links."""
+    assert _PROJECT["urls"] == {
+        "Homepage": "https://github.com/LangeLab/PXAudit",
+        "Repository": "https://github.com/LangeLab/PXAudit",
+        "Issues": "https://github.com/LangeLab/PXAudit/issues",
+        "Changelog": "https://github.com/LangeLab/PXAudit/blob/main/CHANGELOG.md",
+    }
+
+
 def test_discovered_package_modules_are_importable() -> None:
     """Every module shipped beneath :mod:`pxaudit` imports successfully."""
     module_names = [
