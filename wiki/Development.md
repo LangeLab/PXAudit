@@ -152,8 +152,10 @@ uv run pre-commit run --all-files
 
 The main CI workflow runs:
 
-- Ruff lint, Ruff format checking, and mypy on Ubuntu with Python 3.12;
-- the complete offline suite on Python 3.12, 3.13, and 3.14 across Ubuntu, macOS, and Windows;
+- Ruff lint, Ruff format checking, and mypy on the Ubuntu x86_64 Python 3.12 job;
+- the complete offline suite with coverage enforcement on Ubuntu x86_64 Python 3.12, 3.13, and 3.14;
+- the complete Python 3.12 offline suite on Ubuntu arm64, macOS x86_64, macOS arm64, Windows x86_64, and Windows arm64;
+- one coverage upload from Ubuntu x86_64 Python 3.12;
 - a hash-verified dependency audit from the lockfile.
 
 Workflow actions use explicit version tags, permissions are scoped per job, redundant runs on the same ref are cancelled, and jobs have explicit timeouts.

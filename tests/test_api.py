@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock
+from unittest.mock import call as mock_call
 
 import pytest
 
@@ -75,9 +76,9 @@ def test_audit_accessions_preserves_input_order(monkeypatch: pytest.MonkeyPatch)
     )
 
     assert actual == [results["PXD000002"], results["PXD000001"]]
-    assert [call.args[0] for call in check.call_args_list] == ["PXD000002", "PXD000001"]
+    assert [record.args[0] for record in check.call_args_list] == ["PXD000002", "PXD000001"]
     assert check.call_args_list == [
-        call(
+        mock_call(
             accession,
             db_path="audits.db",
             no_cache=True,

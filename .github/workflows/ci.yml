@@ -14,46 +14,66 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  quality:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v7.0.1
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v9.0.0
-        with:
-          enable-cache: true
-          cache-suffix: quality-3.12
-
-      - name: Set up Python 3.12
-        run: uv python pin 3.12
-
-      - name: Install dependencies
-        run: uv sync --frozen --dev --all-extras
-
-      - name: Lint
-        run: uv run ruff check src/ tests/
-
-      - name: Check formatting
-        run: uv run ruff format --check src/ tests/
-
-      - name: Check types
-        run: uv run mypy src/ tests/
-
   test:
+    name: test (${{ matrix.os }}, ${{ matrix.architecture }}, Python ${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ["3.12", "3.13", "3.14"]
         include:
-          - os: ubuntu-latest
+          # Full Python 3.12 suite across every supported system.
+          - os: ubuntu-24.04
+            architecture: x86_64
             python-version: "3.12"
+            quality: true
             coverage: true
+            coverage_upload: true
+          - os: ubuntu-24.04-arm
+            architecture: arm64
+            python-version: "3.12"
+            quality: false
+            coverage: false
+            coverage_upload: false
+          - os: macos-15
+            architecture: arm64
+            python-version: "3.12"
+            quality: false
+            coverage: false
+            coverage_upload: false
+          - os: macos-15-intel
+            architecture: x86_64
+            python-version: "3.12"
+            quality: false
+            coverage: false
+            coverage_upload: false
+          - os: windows-2025
+            architecture: x86_64
+            python-version: "3.12"
+            quality: false
+            coverage: false
+            coverage_upload: false
+          - os: windows-11-arm
+            architecture: arm64
+            python-version: "3.12"
+            quality: false
+            coverage: false
+            coverage_upload: false
+
+          # Future Python versions stay on Ubuntu until cross-platform support
+          # needs the additional matrix expansion.
+          - os: ubuntu-24.04
+            architecture: x86_64
+            python-version: "3.13"
+            quality: false
+            coverage: true
+            coverage_upload: false
+          - os: ubuntu-24.04
+            architecture: x86_64
+            python-version: "3.14"
+            quality: false
+            coverage: true
+            coverage_upload: false
 
     steps:
       - name: Check out repository
@@ -63,7 +83,7 @@ jobs:
         uses: astral-sh/setup-uv@v9.0.0
         with:
           enable-cache: true
-          cache-suffix: ${{ matrix.os }}-${{ matrix.python-version }}
+          cache-suffix: ${{ matrix.os }}-${{ matrix.architecture }}-${{ matrix.python-version }}
 
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python pin ${{ matrix.python-version }}
@@ -71,11 +91,30 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen --dev --all-extras
 
+      - name: Verify runner architecture
+        run: >-
+          uv run python -c
+          "import platform; actual=platform.machine().lower(); expected='${{ matrix.architecture }}';
+          aliases={'x86_64': {'x86_64', 'amd64'}, 'arm64': {'arm64', 'aarch64'}};
+          assert actual in aliases[expected], (expected, actual); print(f'runner={actual}')"
+
+      - name: Lint
+        if: matrix.quality == true
+        run: uv run ruff check src/ tests/
+
+      - name: Check formatting
+        if: matrix.quality == true
+        run: uv run ruff format --check src/ tests/
+
+      - name: Check types
+        if: matrix.quality == true
+        run: uv run mypy src/ tests/
+
       - name: Run offline suite
-        run: uv run pytest ${{ matrix.coverage && '--cov-report=xml' || '' }}
+        run: uv run pytest ${{ matrix.coverage && '--cov-report=xml' || '--no-cov' }}
 
       - name: Upload coverage to Codecov
-        if: matrix.coverage == true && github.event_name == 'push'
+        if: matrix.coverage_upload == true && github.event_name == 'push'
         uses: codecov/codecov-action@v7.0.0
         with:
           files: ./coverage.xml
@@ -85,7 +124,7 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
 
   dependency-audit:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out repository
