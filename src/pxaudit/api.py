@@ -57,6 +57,8 @@ def check_accession(
     ------
     InvalidAccessionError
         If ``accession`` does not satisfy the supported identifier grammar.
+    CacheError
+        If a cache entry cannot be validated or written.
     PrideAPIError
         If required PRIDE responses cannot be retrieved or validated.
     OSError
@@ -69,17 +71,21 @@ def check_accession(
     This function performs the same local persistence and remote-fetch work as
     ``pxaudit check``. It does not print terminal output.
     """
-    from pxaudit.cli import _audit_single
+    from pxaudit.cli import _audit_single, _IncompleteAuditError
+    from pxaudit.pride_client import PrideAPIError
 
-    return _audit_single(
-        accession,
-        str(db_path),
-        no_cache=no_cache,
-        refresh=refresh,
-        cache_dir=cache_dir,
-        cache_ttl_seconds=cache_ttl_seconds,
-        request_delay=request_delay,
-    ).result
+    try:
+        return _audit_single(
+            accession,
+            str(db_path),
+            no_cache=no_cache,
+            refresh=refresh,
+            cache_dir=cache_dir,
+            cache_ttl_seconds=cache_ttl_seconds,
+            request_delay=request_delay,
+        ).result
+    except _IncompleteAuditError as exc:
+        raise PrideAPIError(str(exc)) from exc
 
 
 def audit_accessions(
@@ -122,6 +128,8 @@ def audit_accessions(
     ------
     InvalidAccessionError
         If an accession does not satisfy the supported identifier grammar.
+    CacheError
+        If a cache entry cannot be validated or written.
     PrideAPIError
         If a required PRIDE response cannot be retrieved or validated.
     OSError

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import pytest
 
@@ -67,8 +67,36 @@ def test_audit_accessions_preserves_input_order(monkeypatch: pytest.MonkeyPatch)
     actual = audit_accessions(
         (accession for accession in ("PXD000002", "PXD000001")),
         db_path="audits.db",
+        no_cache=True,
+        refresh=True,
+        cache_dir="cache",
+        cache_ttl_seconds=12.5,
         request_delay=0,
     )
 
     assert actual == [results["PXD000002"], results["PXD000001"]]
     assert [call.args[0] for call in check.call_args_list] == ["PXD000002", "PXD000001"]
+    assert check.call_args_list == [
+        call(
+            accession,
+            db_path="audits.db",
+            no_cache=True,
+            refresh=True,
+            cache_dir="cache",
+            cache_ttl_seconds=12.5,
+            request_delay=0,
+        )
+        for accession in ("PXD000002", "PXD000001")
+    ]
+
+
+def test_check_accession_translates_incomplete_fetch_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The public helper exposes incomplete remote evidence as a typed API error."""
+    from pxaudit.cli import _IncompleteAuditError
+    from pxaudit.pride_client import PrideAPIError
+
+    audit = MagicMock(side_effect=_IncompleteAuditError("files unavailable"))
+    monkeypatch.setattr("pxaudit.cli._audit_single", audit)
+
+    with pytest.raises(PrideAPIError, match="files unavailable"):
+        check_accession("PXD000001")
