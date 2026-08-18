@@ -4,86 +4,98 @@
 
 All notable changes to PXAudit are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project follows [Semantic Versioning](https://semver.org/).
 
-## 0.5.4 - 2026-08-17
+## [0.6.0] - 2026-07-18
 
-Terminal output polish and aggregate database summaries.
+This unreleased entry prepares the first public package release as v0.6.0. It consolidates the untagged v0.5.1 through v0.5.4 work after the tagged v0.5.0 baseline. The tagged v0.5.0 release remains documented separately below rather than being duplicated here. The release focuses on safer local auditing, deterministic PRIDE evidence, three-valued outcomes, and readable terminal triage. It remains PRIDE-only; partner adapters are deferred until after publication.
 
-### Added
+**Maintenance:**
 
-- `pxaudit summary --db PATH` reports aggregate FAIR tiers, quantification tiers, failed and unknown metadata gaps, and the related HTML report command.
-- The optional `color` configuration key controls terminal color when set to `true` or `false`.
+- CI workflows use explicit action version tags for readability.
+- The post-push secret scan was removed because it did not provide pre-publication protection.
 
-### Changed
+### v0.5.1: Safety and scientific contracts
 
-- TTY output uses restrained ANSI styling for passed, failed, and unknown glyphs plus FAIR and quantification tier names. Non-TTY, quiet, `NO_COLOR`, and `--no-color` output remains plain text.
-- Summary aggregation reads audit rows only and opens legacy databases through the normal migration path.
+This work hardens the audit pipeline before public packaging. It closes filesystem, database, HTTP, scientific-evidence, CLI, and test-architecture gaps while keeping live PRIDE verification explicit and separate from the offline suite.
 
-## 0.5.3 - 2026-08-17
+**Added:**
 
-Three-valued evidence outcomes and the v3 audit schema.
+- Cross-platform CI and dependency controls:
+  - Python 3.12 through 3.14 on Ubuntu, macOS, and Windows.
+  - Hash-verified dependency auditing from the lockfile.
+- Evidence tiers for offline unit tests, component workflows, recorded PRIDE payloads, and explicit live integration checks.
 
-### Added
-
-- `FlagOutcome` values `passed`, `failed`, and `unknown` for every `has_*` evidence flag.
-- `ambiguity_count` records how many evidence flags are unknown.
-- HTML reports show confirmed failed gaps separately from unknown gaps and normalize legacy v2 rows.
-
-### Changed
-
-- Audit `has_*` columns are now TEXT outcomes instead of integer booleans, and new rows use `tier_logic_version = "v3.0"`.
-- Unknown evidence does not block tier progression, but confirmed failed evidence still does. Absent, malformed, or unavailable evidence is unknown; verified empty evidence is failed.
-- CLI terminal output renders unknown evidence as `?`; TSV, CSV, and JSON exports serialize evidence outcomes as strings and include `ambiguity_count`.
-
-### Migration
-
-- `migrate_audit_v3()` maps legacy `0` to `failed`, `1` to `passed`, and `NULL` or other legacy values to `unknown`, while preserving tier assignments. The migration is idempotent and has no automated downgrade; back up databases before upgrading.
-- Export consumers that parse `has_*` columns as integers must be updated for the v3 string vocabulary.
-
-## 0.5.2 - 2026-07-27
-
-Scalability and performance improvements for large local bulk audits.
-
-### Added
-
-- Opt-in `--batch-size N` commits completed accessions in bounded transaction batches; the default remains per-accession durability.
-
-### Changed
-
-- `bulk-audit` reuses one configured SQLite connection and releases completed per-accession audit payloads, including file-list DataFrames.
-- Batch progress reports committed and rolled-back accessions while preserving the active batch rollback boundary.
-
-### Fixed
-
-- SQLite WAL setup now falls back to the default journal mode with a warning when WAL is unavailable, while preserving typed errors when both modes fail.
-- Database, API, interruption, and disk-full failures preserve earlier committed batches and report the affected progress clearly.
-- Empty manifests now distinguish a stored study with zero files from an unknown accession.
-- Live and cached PRIDE payloads validate the fields consumed by audit extraction before classification or persistence.
-- Audit evidence rejects whitespace-only metadata, empty organism-part records, and non-positive PubMed identifiers.
-- Network pacing no longer commits an incomplete opt-in transaction batch, and bulk exports replace their destination only after successful serialization.
-
-## 0.5.1 - 2026-07-18
-
-Safety, scientific-contract, resilience, test-architecture, and documentation corrections for the v0.5 line.
-
-### Added
-
-- A nine-job Python 3.12 through 3.14 CI matrix across Ubuntu, macOS, and Windows, plus locked-dependency auditing and secret scanning.
-
-### Changed
+**Changed:**
 
 - Tier logic v2.1 separates generic processed results from supported PSI identification evidence, restricts quantitative evidence to recognized abundance summaries or matrices, and requires usable quantification-method CV metadata.
 - Cache envelopes preserve endpoint retrieval and snapshot provenance. `--no-cache` performs no cache I/O; `--refresh` retains its documented stale-outage fallback.
-- Accession normalization, PRIDE response validation, retry policy, session ownership, and pagination termination now use explicit bounded contracts.
+- Accession normalization, PRIDE response validation, retry policy, session ownership, and pagination termination use explicit bounded contracts.
 - Reports use a static, quality-sorted accession table and deterministic top-ten cohorts. Nullable flags remain unknown rather than being counted as present or missing.
-- Test contracts now cover exact semantics, deterministic edge cases, exhaustive state combinations, metamorphic invariants, failure paths, component workflows, recorded PRIDE payloads, and explicit live verification.
+- Test contracts cover exact semantics, deterministic edge cases, exhaustive state combinations, metamorphic invariants, failure paths, component workflows, recorded PRIDE payloads, and explicit live verification.
 
-### Fixed
+**Fixed:**
 
 - Cache cleanup validates ownership and refuses dangerous roots; cache keys cannot escape the configured directory; concurrent writers use unique temporary files.
 - Incomplete file fetches no longer replace prior manifests or persist false evidence, and completed audits write study, file, and audit rows atomically.
 - Non-PRIDE rows no longer claim PRIDE provenance. Manifest and report commands open existing databases read-only.
 - Report output protection applies to `report.html`, so the default current-directory output works when that file is absent.
 - CLI validation, operational errors, exit codes, and manifest stdout remain consistent across output modes.
+
+### v0.5.2: Scalable local bulk auditing
+
+This work improves large local audits without changing the default per-accession durability contract. Bulk runs can group commits explicitly while preserving clear rollback boundaries, bounded memory use, and safe exports.
+
+**Added:**
+
+- Opt-in `--batch-size N` commits completed accessions in bounded transaction batches; the default remains per-accession durability.
+
+**Changed:**
+
+- `bulk-audit` reuses one configured SQLite connection and releases completed per-accession audit payloads, including file-list DataFrames.
+- Batch progress reports committed and rolled-back accessions while preserving the active batch rollback boundary.
+
+**Fixed:**
+
+- SQLite WAL setup falls back to the default journal mode with a warning when WAL is unavailable, while preserving typed errors when both modes fail.
+- Database, API, interruption, and disk-full failures preserve earlier committed batches and report affected progress clearly.
+- Empty manifests distinguish a stored study with zero files from an unknown accession.
+- Live and cached PRIDE payloads validate the fields consumed by audit extraction before classification or persistence.
+- Audit evidence rejects whitespace-only metadata, empty organism-part records, and non-positive PubMed identifiers.
+- Network pacing no longer commits an incomplete opt-in transaction batch, and bulk exports replace their destination only after successful serialization.
+
+### v0.5.3: Three-valued evidence and schema v3
+
+This work replaces Boolean audit evidence with explicit `passed`, `failed`, and `unknown` outcomes. The schema records ambiguity instead of forcing missing or unavailable information into a misleading negative result, while preserving a documented migration path for existing databases.
+
+**Added:**
+
+- `FlagOutcome` values `passed`, `failed`, and `unknown` for every `has_*` evidence flag.
+- `ambiguity_count` records how many evidence flags are unknown.
+- HTML reports show confirmed failed gaps separately from unknown gaps and normalize legacy v2 rows.
+
+**Changed:**
+
+- Audit `has_*` columns are now TEXT outcomes instead of integer booleans, and new rows use `tier_logic_version = "v3.0"`.
+- Unknown evidence does not block tier progression, but confirmed failed evidence still does. Absent, malformed, or unavailable evidence is unknown; verified empty evidence is failed.
+- CLI terminal output renders unknown evidence as `?`; TSV, CSV, and JSON exports serialize evidence outcomes as strings and include `ambiguity_count`.
+
+**Migration:**
+
+- `migrate_audit_v3()` maps legacy `0` to `failed`, `1` to `passed`, and `NULL` or other legacy values to `unknown`, while preserving tier assignments.
+- The migration is idempotent and has no automated downgrade. Export consumers that parse `has_*` columns as integers must be updated for the v3 string vocabulary.
+
+### v0.5.4: Terminal flavour and cohort summaries
+
+This work gives the CLI a consistent visual language and a compact cohort view without turning it into a TUI. Plain output remains the default for quiet, non-TTY, `NO_COLOR`, and `--no-color` environments, and the HTML report remains the detailed view.
+
+**Added:**
+
+- `pxaudit summary --db PATH` reports aggregate FAIR tiers, quantification tiers, failed and unknown metadata gaps, and the related HTML report command.
+- The optional `color` configuration key controls terminal color when set to `true` or `false`.
+
+**Changed:**
+
+- TTY output uses restrained ANSI styling for passed, failed, and unknown glyphs plus FAIR and quantification tier names. Non-TTY, quiet, `NO_COLOR`, and `--no-color` output remains plain text.
+- Summary aggregation reads audit rows only and opens legacy databases through the normal migration path.
 
 ## [0.5.0] - 2026-07-10
 
@@ -249,6 +261,7 @@ First tagged release. Single-study auditing with a 7-tier FAIR ladder and quanti
 - Cache dir resolved relative to CWD; now uses absolute `~/.pxaudit_cache/` (#2).
 - `fetch_files` fetched only the first 100 files; added pagination loop (#4).
 
+[0.6.0]: https://github.com/LangeLab/PXAudit/releases/tag/v0.6.0
 [0.5.0]: https://github.com/LangeLab/PXAudit/releases/tag/v0.5.0
 [0.3.0]: https://github.com/LangeLab/PXAudit/releases/tag/v0.3.0
 [0.2.0]: https://github.com/LangeLab/PXAudit/releases/tag/v0.2.0

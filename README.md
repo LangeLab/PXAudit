@@ -9,7 +9,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.12--3.14-2D7D46?style=flat-square&logo=python&logoColor=white" alt="Python 3.12-3.14">
-  <img src="https://img.shields.io/badge/version-0.5.4-8B5CF6?style=flat-square" alt="v0.5.4">
+  <img src="https://img.shields.io/badge/version-0.6.0-8B5CF6?style=flat-square" alt="v0.6.0">
   <img src="https://img.shields.io/badge/status-beta-C17D10?style=flat-square" alt="Beta">
   <a href="https://github.com/LangeLab/PXAudit/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/LangeLab/PXAudit/ci.yml?branch=main&style=flat-square&logo=github&label=CI" alt="CI"></a>
   <a href="https://codecov.io/gh/LangeLab/PXAudit"><img src="https://img.shields.io/codecov/c/github/LangeLab/PXAudit?branch=main&style=flat-square&logo=codecov&logoColor=white" alt="Coverage"></a>
@@ -39,7 +39,7 @@ uv run pxaudit check PXD000001
 
 The first audit queries PRIDE and creates `pxaudit_results.db` in the current directory. API responses are cached under `~/.pxaudit_cache/`, so a fresh repeat audit does not need another request.
 
-PXAudit currently audits PRIDE `PXD` accessions. Safe identifiers from other ProteomeXchange repositories are accepted as `Unverifiable`; repository adapters are not implemented yet.
+PXAudit currently audits PRIDE `PXD` accessions. Safe identifiers from other ProteomeXchange repositories are accepted as `Unverifiable`; repository adapters are not implemented yet. The unreleased v0.6.0 package is PRIDE-only. Partner adapters are planned after publication.
 
 Audit evidence uses the v3 outcomes `passed`, `failed`, and `unknown`. Unknown evidence is shown as `?`, does not block tier progression, and is counted in `ambiguity_count`; export consumers should treat `has_*` columns as strings rather than integer booleans.
 
@@ -71,6 +71,22 @@ The default batch size is `1`, preserving per-accession durability. A stop-on-er
 
 Run `uv run pxaudit --help` or `uv run pxaudit COMMAND --help` for command-line help.
 
+## Use as a Python library
+
+The public Python API provides the same single-accession audit used by the CLI and persists the completed result to SQLite:
+
+```python
+from pxaudit import audit_accessions, check_accession
+
+one = check_accession("PXD000001", db_path="audits.db")
+print(one.tier, one.quant_tier)
+
+cohort = audit_accessions(["PXD000001", "PXD004683"], db_path="audits.db")
+print(len(cohort))
+```
+
+`db_path` may be a string or `pathlib.Path`. The helpers use the local JSON cache, normalize accessions, and stop on the first error. Use the CLI `bulk-audit --continue-on-error` command when a batch must continue after an individual failure. Lower-level callers can import `compute_audit` and `FileClass` for deterministic scoring and filename classification.
+
 ## Documentation
 
 The [wiki](https://github.com/LangeLab/PXAudit/wiki) contains the detailed contracts and examples:
@@ -95,7 +111,7 @@ If you use PXAudit in your research, please cite it as:
   author   = {Ergin, Enes Kemal},
   title    = {{PXAudit}: A command-line tool for auditing {Proteomics Exchange} study metadata},
   year     = {2026},
-  version  = {0.5.4},
+  version  = {0.6.0},
   url      = {https://github.com/LangeLab/PXAudit},
   license  = {MIT},
 }
