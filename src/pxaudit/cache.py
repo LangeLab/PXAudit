@@ -238,8 +238,10 @@ def _read_json_file(
         file_stat = os.fstat(descriptor)
         if not stat.S_ISREG(file_stat.st_mode):
             return None
-        if max_age is not None and time.time() - file_stat.st_mtime >= max_age:
-            return None
+        if max_age is not None:
+            age = max(0.0, time.time() - file_stat.st_mtime)
+            if age >= max_age:
+                return None
         with os.fdopen(descriptor, encoding="utf-8") as handle:
             descriptor = None
             return json.load(handle), file_stat

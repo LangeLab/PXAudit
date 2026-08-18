@@ -211,10 +211,12 @@ def test_ttl_boundary_applies_exact_expiry_contract(
     assert path.exists()
 
 
-def test_ttl_zero_max_age_bypasses_fresh_cache(tmp_path: Path) -> None:
-    """max_age=0 treats any cache as stale (equivalent to --refresh at CLI)."""
+@patch("time.time", return_value=1_000.0)
+def test_ttl_zero_max_age_bypasses_future_dated_cache(mock_time: MagicMock, tmp_path: Path) -> None:
+    """max_age=0 treats even a slightly future-dated cache as stale."""
     write_cache("PXD000001", "project", {"key": "value"}, cache_dir=tmp_path)
     path = tmp_path / "PXD000001_project.json"
+    os.utime(path, (1_001.0, 1_001.0))
     assert path.exists()
     result = read_cache("PXD000001", "project", cache_dir=tmp_path, max_age=0)
     assert result is None
