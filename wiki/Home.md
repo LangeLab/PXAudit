@@ -10,6 +10,8 @@ PXAudit reads project metadata and file listings from the [PRIDE Archive](https:
 - a file inventory; and
 - a local SQLite record that can be queried, exported, or rendered as an HTML report.
 
+The unreleased v0.6.0 package is PRIDE-only. Partner repository adapters are planned after publication.
+
 ## Start with one dataset
 
 PXAudit supports Python 3.12 through 3.14. From a source checkout:
@@ -95,7 +97,7 @@ Default and `--refresh` runs may use compatible stale cache entries after a live
 
 ## Current scope
 
-PXAudit 0.5.4 queries PRIDE for canonical `PXD` accessions. Safe identifiers from MassIVE, jPOST, iProX, and other repositories are accepted for storage but score `Unverifiable`; PXAudit does not pretend that PRIDE supplied evidence for them.
+PXAudit 0.6.0 queries PRIDE for canonical `PXD` accessions. Safe identifiers from MassIVE, jPOST, iProX, and other repositories are accepted for storage but score `Unverifiable`; PXAudit does not pretend that PRIDE supplied evidence for them.
 
 ## Find the detail you need
 

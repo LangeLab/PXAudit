@@ -2,7 +2,9 @@
 
 The part I worry about most is a test that passes while encoding the wrong scientific meaning. Coverage still matters, but it cannot tell me whether the evidence behind a tier is defensible. Changes to PXAudit need both software evidence and domain evidence.
 
-This page describes the public repository workflow for PXAudit 0.5.4.
+This page describes the public repository workflow for PXAudit 0.6.0.
+
+The unreleased v0.6.0 package is PRIDE-only. Adapter work begins after publication.
 
 ## Set up a checkout
 
@@ -152,10 +154,9 @@ The main CI workflow runs:
 
 - Ruff lint, Ruff format checking, and mypy on Ubuntu with Python 3.12;
 - the complete offline suite on Python 3.12, 3.13, and 3.14 across Ubuntu, macOS, and Windows;
-- a hash-verified dependency audit from the lockfile; and
-- a secret scan with the full Git history available.
+- a hash-verified dependency audit from the lockfile.
 
-Workflow actions are pinned to commit SHAs, permissions are scoped per job, redundant runs on the same ref are cancelled, and jobs have explicit timeouts.
+Workflow actions use explicit version tags, permissions are scoped per job, redundant runs on the same ref are cancelled, and jobs have explicit timeouts.
 
 The live PRIDE workflow is manual, separate from default CI, and uploads its verification record even when the live assertions detect drift.
 

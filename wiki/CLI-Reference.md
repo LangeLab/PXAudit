@@ -1,6 +1,6 @@
 # CLI Reference
 
-This page documents the PXAudit 0.5.4 command line. Examples use `pxaudit` for readability. From a source checkout, run the same commands with `uv run`, for example `uv run pxaudit check PXD000001`.
+This page documents the PXAudit 0.6.0 command line. Examples use `pxaudit` for readability. From a source checkout, run the same commands with `uv run`, for example `uv run pxaudit check PXD000001`.
 
 ## Command map
 
