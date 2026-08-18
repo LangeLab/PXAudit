@@ -10,7 +10,7 @@ PXAudit reads project metadata and file listings from the [PRIDE Archive](https:
 - a file inventory; and
 - a local SQLite record that can be queried, exported, or rendered as an HTML report.
 
-The unreleased v0.6.0 package is PRIDE-only. Partner repository adapters are planned after publication.
+The v0.6.0 package is PRIDE-only. Partner repository adapters are planned after publication.
 
 ## Start with one dataset
 

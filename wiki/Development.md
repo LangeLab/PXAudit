@@ -4,7 +4,7 @@ The part I worry about most is a test that passes while encoding the wrong scien
 
 This page describes the public repository workflow for PXAudit 0.6.0.
 
-The unreleased v0.6.0 package is PRIDE-only. Adapter work begins after publication.
+The v0.6.0 package is PRIDE-only. Adapter work begins after publication.
 
 ## Set up a checkout
 
@@ -235,6 +235,6 @@ The changelog is the source of truth for release notes. The workflow does not in
 
 ### PyPI publication
 
-The `Publish package` workflow publishes one immutable release tag directly to PyPI. Enter the exact tag when dispatching it. The build job validates the tag, package version, lockfile, and distributions before the publish job uploads them with Trusted Publishing. The `pypi` environment should require maintainer approval.
+The `Publish package` workflow publishes one immutable release tag directly to PyPI. It runs automatically for exact `vX.Y.Z` tags and also supports manual dispatch for a controlled retry. The build job validates the tag, package version, lockfile, and distributions before the publish job uploads them with Trusted Publishing. The `pypi` environment should require maintainer approval.
 
 The workflow does not accept branch refs for publication and does not use API-token secrets. Configure the `pypi` GitHub environment and PyPI Trusted Publisher for the workflow filename `publish.yml`, stored at `.github/workflows/publish.yml`, before the first upload.
