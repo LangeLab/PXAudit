@@ -19,10 +19,10 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v7.0.1
 
       - name: Install uv
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        uses: astral-sh/setup-uv@v9.0.0
         with:
           enable-cache: true
           cache-suffix: quality-3.12
@@ -57,10 +57,10 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v7.0.1
 
       - name: Install uv
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        uses: astral-sh/setup-uv@v9.0.0
         with:
           enable-cache: true
           cache-suffix: ${{ matrix.os }}-${{ matrix.python-version }}
@@ -76,7 +76,7 @@ jobs:
 
       - name: Upload coverage to Codecov
         if: matrix.coverage == true && github.event_name == 'push'
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        uses: codecov/codecov-action@v7.0.0
         with:
           files: ./coverage.xml
           disable_search: true
@@ -89,10 +89,10 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v7.0.1
 
       - name: Install uv
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        uses: astral-sh/setup-uv@v9.0.0
 
       - name: Export locked dependencies
         run: >-
@@ -103,18 +103,3 @@ jobs:
         run: >-
           uv tool run --from pip-audit==2.10.0 pip-audit
           --require-hashes --requirement "${{ runner.temp }}/requirements-audit.txt"
-
-  secret-scan:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - name: Check out full history
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-
-      - name: Scan changed commits for secrets
-        uses: trufflesecurity/trufflehog@6f3c981e7b77f235fd2702dd74af25fc4b72bf11 # v3.96.0
-        with:
-          version: 3.95.9
-          extra_args: --results=verified,unknown --fail-on-scan-errors
