@@ -1,4 +1,4 @@
-"""Expose the PXAudit package version and shared PRIDE accession prefix."""
+"""Expose PXAudit version, public API helpers, and shared accession constants."""
 
 from __future__ import annotations
 
@@ -11,7 +11,22 @@ except importlib.metadata.PackageNotFoundError:
 
 _PRIDE_PREFIX = "PXD"
 
+from pxaudit.api import (  # noqa: E402
+    AuditResult,
+    FileClass,
+    FlagOutcome,
+    audit_accessions,
+    check_accession,
+    compute_audit,
+)
+
 __all__ = [
     "__version__",
     "_PRIDE_PREFIX",
+    "AuditResult",
+    "FileClass",
+    "FlagOutcome",
+    "audit_accessions",
+    "check_accession",
+    "compute_audit",
 ]
