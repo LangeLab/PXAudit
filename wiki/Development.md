@@ -235,6 +235,6 @@ The changelog is the source of truth for release notes. The workflow does not in
 
 ### PyPI publication
 
-The `Publish package` workflow promotes one immutable release tag in two manual stages. Select `testpypi` and enter the exact tag first. The build job validates the tag, package version, lockfile, and distributions before the publish job uploads them with Trusted Publishing. Install and smoke-test that TestPyPI package on the supported systems before selecting `pypi` for the same tag. The `pypi` environment should require maintainer approval.
+The `Publish package` workflow publishes one immutable release tag directly to PyPI. Enter the exact tag when dispatching it. The build job validates the tag, package version, lockfile, and distributions before the publish job uploads them with Trusted Publishing. The `pypi` environment should require maintainer approval.
 
-The workflow does not accept branch refs for publication and does not use API-token secrets. Configure matching `testpypi` and `pypi` GitHub environments and PyPI Trusted Publishers for the workflow filename `publish.yml`, stored at `.github/workflows/publish.yml`, before the first upload.
+The workflow does not accept branch refs for publication and does not use API-token secrets. Configure the `pypi` GitHub environment and PyPI Trusted Publisher for the workflow filename `publish.yml`, stored at `.github/workflows/publish.yml`, before the first upload.

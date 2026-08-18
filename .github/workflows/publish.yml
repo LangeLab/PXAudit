@@ -3,14 +3,6 @@ name: Publish package
 on:
   workflow_dispatch:
     inputs:
-      repository:
-        description: Upload target
-        required: true
-        default: testpypi
-        type: choice
-        options:
-          - testpypi
-          - pypi
       ref:
         description: Exact release tag, for example v0.6.0
         required: true
@@ -88,13 +80,13 @@ jobs:
           retention-days: 7
 
   publish:
-    name: Upload to ${{ inputs.repository }}
+    name: Upload to PyPI
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment:
-      name: ${{ inputs.repository }}
-      url: ${{ inputs.repository == 'pypi' && 'https://pypi.org/project/pxaudit/' || 'https://test.pypi.org/project/pxaudit/' }}
+      name: pypi
+      url: https://pypi.org/project/pxaudit/
     permissions:
       id-token: write
     steps:
@@ -104,12 +96,5 @@ jobs:
           name: pxaudit-dist
           path: dist
 
-      - name: Publish to TestPyPI
-        if: inputs.repository == 'testpypi'
-        uses: pypa/gh-action-pypi-publish@v1.14.0
-        with:
-          repository-url: https://test.pypi.org/legacy/
-
       - name: Publish to PyPI
-        if: inputs.repository == 'pypi'
         uses: pypa/gh-action-pypi-publish@v1.14.0
