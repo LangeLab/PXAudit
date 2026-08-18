@@ -228,3 +228,7 @@ For a version change, keep these surfaces synchronized:
 - CLI `--version` output after reinstalling the editable package.
 
 Do not rewrite version numbers inside historical changelog entries or recorded fixture metadata.
+
+When a release is ready, update the matching changelog section from its unreleased state, commit it on `main`, and push a tag in the form `vX.Y.Z`. The release workflow validates the tag against `pyproject.toml`, requires the tag to point at the current `main` commit, extracts the matching top-level section, and creates the GitHub Release from that text. It rejects a missing, duplicate, empty, or still-unreleased section.
+
+The changelog is the source of truth for release notes. The workflow does not infer contributors from arbitrary `@mentions`, issue references, or commit authors. Add an explicit `### Contributors` subsection inside the version section when contributor credit belongs in the published notes; it is preserved as written.
