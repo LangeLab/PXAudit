@@ -232,3 +232,9 @@ Do not rewrite version numbers inside historical changelog entries or recorded f
 When a release is ready, update the matching changelog section from its unreleased state, commit it on `main`, and push a tag in the form `vX.Y.Z`. The release workflow validates the tag against `pyproject.toml`, requires the tag to point at the current `main` commit, extracts the matching top-level section, and creates the GitHub Release from that text. It rejects a missing, duplicate, empty, or still-unreleased section.
 
 The changelog is the source of truth for release notes. The workflow does not infer contributors from arbitrary `@mentions`, issue references, or commit authors. Add an explicit `### Contributors` subsection inside the version section when contributor credit belongs in the published notes; it is preserved as written.
+
+### PyPI publication
+
+The `Publish package` workflow promotes one immutable release tag in two manual stages. Select `testpypi` and enter the exact tag first. The build job validates the tag, package version, lockfile, and distributions before the publish job uploads them with Trusted Publishing. Install and smoke-test that TestPyPI package on the supported systems before selecting `pypi` for the same tag. The `pypi` environment should require maintainer approval.
+
+The workflow does not accept branch refs for publication and does not use API-token secrets. Configure matching `testpypi` and `pypi` GitHub environments and PyPI Trusted Publishers for the workflow filename `publish.yml`, stored at `.github/workflows/publish.yml`, before the first upload.

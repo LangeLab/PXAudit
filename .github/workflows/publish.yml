@@ -1,0 +1,115 @@
+name: Publish package
+
+on:
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: Upload target
+        required: true
+        default: testpypi
+        type: choice
+        options:
+          - testpypi
+          - pypi
+      ref:
+        description: Exact release tag, for example v0.6.0
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-${{ inputs.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build ${{ inputs.ref }} distributions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+          cache-suffix: publish
+
+      - name: Validate release ref and package version
+        env:
+          RELEASE_REF: ${{ inputs.ref }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "publishing requires an exact vX.Y.Z tag: $RELEASE_REF" >&2
+            exit 1
+          }
+          git show-ref --verify --quiet "refs/tags/$RELEASE_REF" || {
+            echo "release tag does not exist: $RELEASE_REF" >&2
+            exit 1
+          }
+          [[ "$(git rev-parse HEAD)" == "$(git rev-parse "$RELEASE_REF^{commit}")" ]] || {
+            echo "checkout is not at the requested release tag: $RELEASE_REF" >&2
+            exit 1
+          }
+          version="${RELEASE_REF#v}"
+          package_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' pyproject.toml | head -n1)"
+          [[ "$package_version" == "$version" ]] || {
+            echo "tag version $version does not match pyproject.toml version $package_version" >&2
+            exit 1
+          }
+
+      - name: Verify lockfile
+        run: uv lock --check
+
+      - name: Clean distribution directory
+        run: rm -rf dist
+
+      - name: Build distributions
+        run: uv build
+
+      - name: Validate distributions
+        run: uvx twine check dist/*
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: pxaudit-dist
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Upload to ${{ inputs.repository }}
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: ${{ inputs.repository }}
+      url: ${{ inputs.repository == 'pypi' && 'https://pypi.org/project/pxaudit/' || 'https://test.pypi.org/project/pxaudit/' }}
+    permissions:
+      id-token: write
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v8.0.0
+        with:
+          name: pxaudit-dist
+          path: dist
+
+      - name: Publish to TestPyPI
+        if: inputs.repository == 'testpypi'
+        uses: pypa/gh-action-pypi-publish@v1.14.0
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+      - name: Publish to PyPI
+        if: inputs.repository == 'pypi'
+        uses: pypa/gh-action-pypi-publish@v1.14.0
